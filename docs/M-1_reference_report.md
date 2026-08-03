@@ -472,13 +472,24 @@ arm). `config/scene.yaml` has been corrected — see below. The 0.0=open/0.8=clo
 range the donor reported does hold numerically (`limit lower=0.0 upper=0.8`), so
 that part of §3 stands; only the joint *name* was wrong.
 
-**5. `tool0` → finger-pad-contact-midpoint offset** — still open by design. Per the
-original plan this requires the merged URDF (arm + gripper in one tree) to measure;
-it cannot be read off either package in isolation. Remains `null` in `scene.yaml`
-until the merge xacro exists.
+**5. `tool0` → finger-pad-contact-midpoint offset** — measured against Gazebo
+ground truth now that the merged URDF exists, using the same
+measure-against-physical-truth-not-belief discipline as M0-C. Result was more
+interesting than a single number: the fingertip midpoint sits on tool0's local
+Z axis to within ~2e-7 m at every aperture tested (lateral symmetry holds
+exactly), but the *distance* along that axis is NOT constant as the gripper
+opens and closes — it varies 0.1093 m (open) to 0.1230 m (near-closed), 13.6 mm
+of non-linear variation, larger than M3's own 5 mm slip criterion. Treating
+`tcp_offset` as one fixed scalar is therefore a real approximation, not a
+measured constant like items 1–4. `scene.yaml` records the full measured curve
+and uses the 0.4 rad sample (0.1204 m) as a placeholder tied to similarity with
+the M0-C probe's 40 mm test box, not a computed value for this project's actual
+45 mm object — to be re-derived once `gripper.width_map` exists and the real
+contact aperture for this object's width is known.
 
-All of 1–4 are now real, observed values. Item 5 is the one legitimate carry-over
-into the merge step.
+All of 1–4 are exact, observed values. Item 5 is real and measured, but is an
+approximation until `width_map` lets it be computed at the actual grasp
+aperture rather than read off a table by eye.
 
 ---
 
