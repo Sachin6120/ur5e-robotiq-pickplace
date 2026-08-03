@@ -1,0 +1,133 @@
+# scene.yaml — SINGLE SOURCE OF TRUTH
+#
+# Read by, and only by, these three consumers:
+#   1. the Gazebo world spawner        (where the object physically is)
+#   2. the static TF publisher          (object_frame in the TF tree)
+#   3. the MoveIt planning scene loader (table + object as CollisionObjects)
+#
+# Because all three read this file, sim and planner cannot drift apart.
+# Nothing downstream is permitted to hardcode a pose. If you find yourself
+# typing a coordinate into a .cpp or .launch.py file, it belongs here instead.
+#
+# Fields marked  # RECON  are placeholders. They are filled from the output of
+# scripts/00_recon.sh run against the real merged URDF. Do not guess them.
+
+# ---------------------------------------------------------------------------
+frames:
+  world:  world
+  base:   base_link
+  flange: tool0            # RECON — confirm UR5e flange frame name
+  tcp:    grasp_tcp        # frame published at the finger-pad contact midpoint
+
+# ---------------------------------------------------------------------------
+table:
+  # Box collision object. `pose` is the CENTRE of the box, expressed in `world`.
+  size: [1.20, 0.80, 0.75]          # x, y, z  [m]
+  pose:
+    x: 0.55
+    y: 0.00
+    z: 0.375                        # = size.z / 2, so the base sits on z=0
+    roll:  0.0
+    pitch: 0.0
+    yaw:   0.0
+  surface_z: 0.75                   # derived: pose.z + size.z/2
+
+# ---------------------------------------------------------------------------
+object:
+  name: pick_target
+  type: box
+  size: [0.045, 0.045, 0.090]       # x, y, z  [m]
+  grasp_width_axis: 0               # index into size[] the fingers close ACROSS
+                                    #   -> object width = size[grasp_width_axis]
+  mass: 0.150                       # [kg]
+
+  # Pose is the CENTRE of the object, in `world`.
+  # z = table.surface_z + size.z/2  so it rests on the table, not in it.
+  pick_pose:
+    x:  0.450
+    y: -0.150
+    z:  0.795
+    roll:  0.0
+    pitch: 0.0
+    yaw:   0.0
+
+  place_pose:
+    x:  0.450
+    y:  0.200
+    z:  0.795
+    roll:  0.0
+    pitch: 0.0
+    yaw:   0.0
+
+  # Surface physics. DART is Harmonic's default engine — ODE-era Gazebo Classic
+  # friction folklore does NOT transfer. These are starting points to be
+  # re-derived during M3, not values copied from a working ODE setup.
+  surface:
+    mu:  1.0                        # M3 tuning knob
+    mu2: 1.0                        # M3 tuning knob
+    restitution: 0.0
+
+# ---------------------------------------------------------------------------
+grasp:
+  # The grasp is defined RELATIVE TO object_frame. Move the object in this file
+  # and the grasp, pre-grasp, lift and place all follow automatically through
+  # tf2 composition. Nothing is expressed as a world-Z offset.
+
+  approach_axis: [0.0, 0.0, -1.0]   # in object_frame: descend from above
+  standoff:      0.100              # pre-grasp distance back along -approach [m]
+  retreat:       0.120              # post-grasp lift distance along -approach [m]
+  gripper_roll:  0.0                # rotation about the approach axis [rad]
+
+  # Distance from `frames.flange` to the finger-pad contact midpoint, along the
+  # gripper's approach axis. Defines where grasp_tcp is published.
+  tcp_offset: null                  # RECON — measure from merged URDF
+
+# ---------------------------------------------------------------------------
+gripper:
+  actuated_joint: finger_joint
+
+  # Donor repo reports 0.0 = open, 0.8 = closed. TREAT AS UNVERIFIED.
+  # These are left null on purpose: the node reads them at runtime from
+  #   RobotModel::getJointModel(actuated_joint)->getVariableBounds()
+  # and logs what it found. Filling them in here would defeat that check.
+  open_position:   null             # resolved at runtime from joint bounds
+  closed_position: null             # resolved at runtime from joint bounds
+
+  # Joint-value -> finger-opening-width mapping for the 2F-85 four-bar linkage.
+  # This is NOT linear and NOT the two-prismatic-finger case. Populated from
+  # recon (URDF geometry or vendor curve), then used to solve for the joint
+  # angle corresponding to object width.
+  width_map: null                   # RECON — [[joint_rad, width_m], ...]
+
+  # How far PAST first contact to keep commanding closed. This is the grip-force
+  # knob in a position-controlled sim.
+  # UNITS: RADIANS OF ACTUATED JOINT ANGLE. Not metres of width.
+  squeeze: 0.020                    # M3 tuning knob
+
+  max_effort: 50.0                  # ceiling passed in GripperCommand [N]
+  command_timeout_s: 5.0
+
+  # If M0-B finds the sim gripper is EFFORT-controlled rather than position-
+  # controlled, set this false. The squeeze knob above then no longer applies
+  # and commanded effort becomes the primary knob. Say so explicitly in the
+  # run log; do not silently reuse the position formula.
+  position_controlled: true         # RECON — confirm at M0-B
+
+# ---------------------------------------------------------------------------
+thresholds:
+  cartesian_fraction_min: 0.95      # below this -> abort, logged reason
+  tf_lookup_timeout_s:    2.0       # exceeded -> abort
+  post_lift_slip_max_m:   0.005     # M3 pass criterion: 5 mm
+  plan_attempts:          10
+  planning_time_s:        5.0
+  execute_timeout_s:      30.0
+
+# ---------------------------------------------------------------------------
+grasp_mode:
+  # Logged verbatim at startup, one line, every run. It must never be ambiguous
+  # later which mode a screenshot or CSV came from.
+  #   friction  -> "GRASP MODE: friction (physics)"
+  #   contact   -> "GRASP MODE: contact-triggered attach (fallback)"
+  # Switching to `contact` REQUIRES explicit permission. Do not change this
+  # value without it.
+  mode: friction
