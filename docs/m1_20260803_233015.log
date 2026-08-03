@@ -1,0 +1,116 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-08-03-23-30-16-248830-Sachin-28968
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [m1_joint_goal-1]: process started with pid [28973]
+[m1_joint_goal-1] [0m[INFO] [1785792616.553320833] [m1_joint_goal]: GRASP MODE: friction (physics) (M1 performs no grasp; line emitted for log uniformity)[0m
+[m1_joint_goal-1] [33m[WARN] [1785792616.554599587] [rcl.logging_rosout]: Publisher already registered for node name: 'm1_joint_goal'. If this is due to multiple nodes with the same name then all logs for the logger named 'm1_joint_goal' will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.[0m
+[m1_joint_goal-1] [0m[INFO] [1785792616.563446450] [m1_joint_goal.moveit.ros.rdf_loader]: Loaded robot model in 0 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792616.563545335] [m1_joint_goal.moveit.core.robot_model]: Loading robot model 'ur5e_robotiq'...[0m
+[m1_joint_goal-1] [0m[INFO] [1785792616.563576730] [m1_joint_goal.moveit.core.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint[0m
+[m1_joint_goal-1] [0m[INFO] [1785792616.576420076] [m1_joint_goal.moveit.kinematics.kdl_kinematics_plugin]: Joint weights for group 'arm': 1 1 1 1 1 1[0m
+[m1_joint_goal-1] [0m[INFO] [1785792621.688424609] [m1_joint_goal.moveit.ros.move_group_interface]: Ready to take commands for planning group arm.[0m
+[m1_joint_goal-1] [0m[INFO] [1785792621.688507014] [m1_joint_goal]: planning frame: world | end effector link: tool0[0m
+[m1_joint_goal-1] [0m[INFO] [1785792621.688539661] [m1_joint_goal]: fixed joint goal: shoulder_pan_joint=0.500000, shoulder_lift_joint=-1.200000, elbow_joint=1.000000, wrist_1_joint=-1.400000, wrist_2_joint=-1.570800, wrist_3_joint=0.000000[0m
+[m1_joint_goal-1] [0m[INFO] [1785792621.688699302] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792621.690408509] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792622.725270983] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792622.725621221] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792622.725700040] [m1_joint_goal]: trial  1/20: PLAN FAILURE after 1037.1 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792622.725881295] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792622.726357320] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792623.749454064] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792623.750326396] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792623.750391890] [m1_joint_goal]: trial  2/20: PLAN FAILURE after 1024.6 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792623.750536356] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792623.751253135] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792624.763081369] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792624.763204190] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792624.763266527] [m1_joint_goal]: trial  3/20: PLAN FAILURE after 1012.8 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792624.763408655] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792624.763887092] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792625.783046847] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792625.783791862] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792625.783851705] [m1_joint_goal]: trial  4/20: PLAN FAILURE after 1020.5 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792625.783988571] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792625.784415770] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792626.797494907] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792626.798325046] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792626.798392253] [m1_joint_goal]: trial  5/20: PLAN FAILURE after 1014.5 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792626.798563725] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792626.799260743] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792627.817777288] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792627.818253594] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792627.818310613] [m1_joint_goal]: trial  6/20: PLAN FAILURE after 1019.9 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792627.818451156] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792627.818886546] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792629.506765382] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792629.507296513] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792629.507515937] [m1_joint_goal]: trial  7/20: PLAN FAILURE after 1014.0 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792629.508041419] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792629.509105567] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792630.523448522] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792630.523546100] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792630.523684971] [m1_joint_goal]: trial  8/20: PLAN FAILURE after 1016.0 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792630.523849871] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792630.524357932] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792631.546149114] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792631.546345863] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792631.546405526] [m1_joint_goal]: trial  9/20: PLAN FAILURE after 1022.7 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792631.546548293] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792631.547085230] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792632.559281663] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792632.560260853] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792632.560428524] [m1_joint_goal]: trial 10/20: PLAN FAILURE after 1014.0 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792632.560625713] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792632.561449976] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792633.582859965] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792633.582918093] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792633.583063497] [m1_joint_goal]: trial 11/20: PLAN FAILURE after 1022.6 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792633.583283155] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792633.583876807] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792634.603047173] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792634.603491590] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792634.603553027] [m1_joint_goal]: trial 12/20: PLAN FAILURE after 1020.4 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792634.603691838] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792634.604205864] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792635.617588559] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792635.617739351] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792635.617800646] [m1_joint_goal]: trial 13/20: PLAN FAILURE after 1014.2 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792635.617985119] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792635.618483082] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792636.640145467] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792636.640385156] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792636.640443725] [m1_joint_goal]: trial 14/20: PLAN FAILURE after 1022.6 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792636.640571215] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792636.641019891] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792637.651323376] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792637.651595712] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792637.651680980] [m1_joint_goal]: trial 15/20: PLAN FAILURE after 1011.2 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792637.651834512] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792637.652464830] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792638.675495361] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792638.675693592] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792638.675754845] [m1_joint_goal]: trial 16/20: PLAN FAILURE after 1024.0 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792638.675898079] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792638.676468653] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792639.700152713] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792639.700363915] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792639.700417820] [m1_joint_goal]: trial 17/20: PLAN FAILURE after 1024.6 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792639.700586679] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792639.701126268] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792640.723925645] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792640.724533101] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792640.724605895] [m1_joint_goal]: trial 18/20: PLAN FAILURE after 1024.1 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792640.724765272] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792640.725630750] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792641.747965952] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792641.748405745] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792641.748472221] [m1_joint_goal]: trial 19/20: PLAN FAILURE after 1023.8 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [0m[INFO] [1785792641.748621201] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792641.749083757] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792642.760893198] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792642.761732434] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::plan() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792642.761794219] [m1_joint_goal]: trial 20/20: PLAN FAILURE after 1013.3 ms — planner returned no solution for the fixed joint goal[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792642.761823948] [m1_joint_goal]: no successful plan to execute — skipping execution[0m
+[m1_joint_goal-1] [0m[INFO] [1785792642.778997827] [m1_joint_goal]: wrote 20 trials to m1_planning.csv[0m
+[m1_joint_goal-1] [0m[INFO] [1785792642.779111731] [m1_joint_goal]: RUN SUMMARY: milestone=M1 result=PLAN_FAILURE trials=20 planned=0 rate=0.0% mean_plan_ms=1019.8 executed=no[0m
+[ERROR] [m1_joint_goal-1]: process has died [pid 28973, exit code 1, cmd '/home/user/ur5e_ws/install/ur5e_pick_place/lib/ur5e_pick_place/m1_joint_goal --ros-args -r __node:=m1_joint_goal --params-file /tmp/launch_params_t82mi5mz --params-file /tmp/launch_params__ipv_b03 --params-file /tmp/launch_params_50auzg2p --params-file /tmp/launch_params_7z4srbkr --params-file /tmp/launch_params_uthamx_0 --params-file /tmp/launch_params_r2j5jkua'].

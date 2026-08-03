@@ -1,0 +1,120 @@
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-08-03-23-35-18-711915-Sachin-29816
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [m1_joint_goal-1]: process started with pid [29821]
+[m1_joint_goal-1] [0m[INFO] [1785792919.027194164] [m1_joint_goal]: GRASP MODE: friction (physics) (M1 performs no grasp; line emitted for log uniformity)[0m
+[m1_joint_goal-1] [33m[WARN] [1785792919.028523023] [rcl.logging_rosout]: Publisher already registered for node name: 'm1_joint_goal'. If this is due to multiple nodes with the same name then all logs for the logger named 'm1_joint_goal' will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.[0m
+[m1_joint_goal-1] [0m[INFO] [1785792919.036684126] [m1_joint_goal.moveit.ros.rdf_loader]: Loaded robot model in 0 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792919.036758708] [m1_joint_goal.moveit.core.robot_model]: Loading robot model 'ur5e_robotiq'...[0m
+[m1_joint_goal-1] [0m[INFO] [1785792919.036786079] [m1_joint_goal.moveit.core.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint[0m
+[m1_joint_goal-1] [0m[INFO] [1785792919.051355732] [m1_joint_goal.moveit.kinematics.kdl_kinematics_plugin]: Joint weights for group 'arm': 1 1 1 1 1 1[0m
+[m1_joint_goal-1] [0m[INFO] [1785792921.207560012] [m1_joint_goal.moveit.ros.move_group_interface]: Ready to take commands for planning group arm.[0m
+[m1_joint_goal-1] [0m[INFO] [1785792921.207619152] [m1_joint_goal]: planning frame: world | end effector link: tool0[0m
+[m1_joint_goal-1] [0m[INFO] [1785792921.207648385] [m1_joint_goal]: fixed joint goal: shoulder_pan_joint=0.500000, shoulder_lift_joint=-1.200000, elbow_joint=1.000000, wrist_1_joint=-1.400000, wrist_2_joint=-1.570800, wrist_3_joint=0.000000[0m
+[m1_joint_goal-1] [0m[INFO] [1785792921.207778833] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792921.216070508] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792922.235190045] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792922.235583679] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0204831 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792922.235687332] [m1_joint_goal]: trial  1/20: PLAN OK    1028.0 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792922.235846498] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792922.236374855] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792923.250027515] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792923.250618317] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0100569 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792923.250821387] [m1_joint_goal]: trial  2/20: PLAN OK    1015.0 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792923.250996009] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792923.251718590] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792924.282217816] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792924.282896186] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.026818 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792924.282969745] [m1_joint_goal]: trial  3/20: PLAN OK    1032.1 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792924.283125884] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792924.283924501] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792925.631663682] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792925.632605043] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0117268 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792925.632678936] [m1_joint_goal]: trial  4/20: PLAN OK     699.0 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792925.632833195] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792925.633493288] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792926.644664465] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792926.645175466] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00808261 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792926.645311621] [m1_joint_goal]: trial  5/20: PLAN OK    1012.6 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792926.645481632] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792926.645992505] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792927.671401101] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792927.672148731] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0219509 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792927.672214853] [m1_joint_goal]: trial  6/20: PLAN OK    1026.8 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792927.672361009] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792927.672788181] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792928.694205548] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792928.694518359] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0181606 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792928.694575742] [m1_joint_goal]: trial  7/20: PLAN OK    1022.3 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792928.694707766] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792928.695249170] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792929.717708250] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792929.718551907] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0194712 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792929.718610546] [m1_joint_goal]: trial  8/20: PLAN OK    1024.0 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792929.718728800] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792929.719287859] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792930.731950897] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792930.732441701] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00969484 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792930.732504864] [m1_joint_goal]: trial  9/20: PLAN OK    1013.9 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792930.732649858] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792930.733341292] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792931.758507568] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792931.759281090] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0213535 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792931.759355597] [m1_joint_goal]: trial 10/20: PLAN OK    1026.8 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792931.759503794] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792931.760346104] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792932.771488849] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792932.772377653] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00827122 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792932.772447675] [m1_joint_goal]: trial 11/20: PLAN OK    1013.0 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792932.772595851] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792932.773218118] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792933.787028872] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792933.787685188] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0100048 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792933.787767690] [m1_joint_goal]: trial 12/20: PLAN OK    1015.3 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792933.787943869] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792933.788525295] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792934.815523929] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792934.815658169] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0223968 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792934.815760614] [m1_joint_goal]: trial 13/20: PLAN OK    1027.9 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792934.815985343] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792934.816720053] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792935.841543060] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792935.841617693] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.021009 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792935.841681685] [m1_joint_goal]: trial 14/20: PLAN OK    1025.8 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792935.841822111] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792935.842319732] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792936.854701198] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792936.855722533] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00906034 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792936.855810475] [m1_joint_goal]: trial 15/20: PLAN OK    1014.1 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792936.855957028] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792936.856462293] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792937.882383206] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792937.882448494] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0219062 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792937.882598167] [m1_joint_goal]: trial 16/20: PLAN OK    1026.7 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792937.882760261] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792937.883159158] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792938.897301552] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792938.898030148] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0106823 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792938.898101868] [m1_joint_goal]: trial 17/20: PLAN OK    1015.4 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792938.898245282] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792938.899027803] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792939.925130547] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792939.925381521] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.0210729 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792939.925479100] [m1_joint_goal]: trial 18/20: PLAN OK    1027.3 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792939.925667263] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792939.926219414] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792940.938504852] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792940.939133437] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00875139 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792940.939204345] [m1_joint_goal]: trial 19/20: PLAN OK    1013.6 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792940.939363768] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m1_joint_goal-1] [0m[INFO] [1785792940.940000724] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.953752486] [m1_joint_goal.moveit.ros.move_group_interface]: Planning request complete![0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.953982576] [m1_joint_goal.moveit.ros.move_group_interface]: time taken to generate plan: 0.00923299 seconds[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.954157370] [m1_joint_goal]: trial 20/20: PLAN OK    1014.9 ms  30 points[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.954284473] [m1_joint_goal]: executing the last successful plan...[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.955039779] [m1_joint_goal.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.955614520] [m1_joint_goal.moveit.ros.move_group_interface]: Execute request aborted[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792941.955711342] [m1_joint_goal.moveit.ros.move_group_interface]: MoveGroupInterface::execute() failed or timeout reached[0m
+[m1_joint_goal-1] [31m[ERROR] [1785792941.955769523] [m1_joint_goal]: EXECUTE_FAILURE: MoveIt returned error code -4. A plan existed, so this is the controller path, not the planner. Check that arm_controller is active and that moveit_controllers.yaml names it exactly as the bringup spawns it.[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.976580531] [m1_joint_goal]: wrote 20 trials to m1_planning.csv[0m
+[m1_joint_goal-1] [0m[INFO] [1785792941.976712106] [m1_joint_goal]: RUN SUMMARY: milestone=M1 result=EXECUTE_FAILURE trials=20 planned=20 rate=100.0% mean_plan_ms=1004.7 executed=no[0m
+[ERROR] [m1_joint_goal-1]: process has died [pid 29821, exit code 1, cmd '/home/user/ur5e_ws/install/ur5e_pick_place/lib/ur5e_pick_place/m1_joint_goal --ros-args -r __node:=m1_joint_goal --params-file /tmp/launch_params_xvumym4i --params-file /tmp/launch_params_ivmiaean --params-file /tmp/launch_params_8cw0pb3i --params-file /tmp/launch_params_vetivwpd --params-file /tmp/launch_params_18u4ildp --params-file /tmp/launch_params_5fofxag8'].
