@@ -64,8 +64,17 @@ dpkg -l 2>/dev/null | grep -Ei 'gz-(sim|tools|msgs|transport|physics|rendering)|
   | awk '{printf "  %-42s %s\n", $2, $3}' || miss "no gz packages found via dpkg"
 
 printf '\n-- DART physics plugin present? (Harmonic default engine) --\n'
-find /usr/lib /opt -name '*physics-dartsim*' 2>/dev/null | head -5 \
-  || miss "dartsim physics plugin not located"
+# Capture first, then test content — don't trust this pipeline's exit code.
+# `find` returns 1 on ANY permission-denied subdir it walks past (e.g. WSL's
+# /usr/lib/modules/*/lost+found), even when it found and printed the plugin
+# fine. Under `set -o pipefail` that nonzero taints `| head` and wrongly
+# reports [MISSING] on a machine where the plugin is actually present.
+DARTSIM=$(find /usr/lib /opt -name '*physics-dartsim*' 2>/dev/null)
+if [[ -n "$DARTSIM" ]]; then
+  printf '%s\n' "$DARTSIM" | head -5
+else
+  miss "dartsim physics plugin not located"
+fi
 
 # ---------------------------------------------------------------------------
 sec "2. Relevant ROS 2 package inventory"
@@ -104,7 +113,9 @@ if [[ -d "$UR_DESC" ]]; then
   done
 
   printf '\n-- declared tool/flange frames --\n'
-  grep -rnoE '"(tool0|flange|wrist_3_link|tool0_controller)"' "$UR_DESC/urdf" \
+  # Frame names are tf_prefix-parameterised (e.g. name="${tf_prefix}flange"),
+  # so a bare '"flange"' literal never matches. Match on the substring instead.
+  grep -rnoE 'name="[^"]*(tool0|flange|wrist_3_link|tool0_controller)[^"]*"' "$UR_DESC/urdf" \
     | sort -u | head -20 | sed 's|^|  |'
 else
   miss "ur_description not installed — cannot read macro signature"
@@ -120,11 +131,22 @@ if [[ -d "$ROBOTIQ" ]]; then
   printf '\n-- xacro macro signatures --\n'
   grep -rnE '<xacro:macro' "$ROBOTIQ/urdf" 2>/dev/null | sed 's|^|  |'
 
-  printf '\n-- mimic joint declarations (expect 5 off finger_joint) --\n'
+  printf '\n-- mimic joint declarations (expect 5, off one master joint) --\n'
   grep -rnE '<mimic ' "$ROBOTIQ/urdf" 2>/dev/null | sed 's|^|  |'
 
-  printf '\n-- finger_joint limit block --\n'
-  grep -rnA4 'name="finger_joint"' "$ROBOTIQ/urdf" 2>/dev/null | sed 's|^|  |'
+  # Do not assume the master joint is literally named "finger_joint" — that is
+  # an older robotiq_description convention. Derive it from what the mimics
+  # actually reference, then look up that joint's own declaration.
+  MASTER_JOINT=$(grep -rhoE '<mimic joint="[^"]+"' "$ROBOTIQ/urdf" 2>/dev/null \
+    | sed -E 's/.*joint="([^"]+)".*/\1/' | sort -u | head -1)
+
+  printf '\n-- master (actuated) joint limit block --\n'
+  if [[ -n "$MASTER_JOINT" ]]; then
+    printf '  master joint referenced by mimics: %s\n' "$MASTER_JOINT"
+    grep -rnA6 -F "name=\"${MASTER_JOINT}\"" "$ROBOTIQ/urdf" 2>/dev/null | sed 's|^|  |'
+  else
+    miss "no mimic joints found — cannot determine master joint"
+  fi
 else
   miss "robotiq_description NOT installed."
   note "Candidate sources, in order of preference:"
