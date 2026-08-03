@@ -9,6 +9,15 @@ moveit_simple_controller_manager:
 
   arm_controller:
     type: FollowJointTrajectory
+    # MSA's auto-add populated action_ns for gripper_controller (gripper_cmd)
+    # but omitted it here. Without it, moveit_simple_controller_manager drops
+    # this controller entirely at startup ("No action namespace specified...")
+    # and trajectory_execution_manager then has no controller claiming the arm
+    # joints at all — every plan succeeds, every execute() fails with
+    # CONTROL_FAILED. Confirmed the actual action name live via
+    # `ros2 action list` rather than assuming the conventional string:
+    # /arm_controller/follow_joint_trajectory.
+    action_ns: follow_joint_trajectory
     joints:
       - shoulder_pan_joint
       - shoulder_lift_joint
