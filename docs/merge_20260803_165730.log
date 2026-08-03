@@ -1,0 +1,18 @@
+merge validation: 2026-08-03T16:57:30+02:00
+xacro: ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro
+
+════════════════════════════════════════════════════════════
+§ 1. Expand the xacro
+
+════════════════════════════════════════════════════════════
+  [FAIL] xacro expansion failed
+      XML parsing error: not well-formed (invalid token): line 104, column 24
+      when processing file: ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro
+      
+      Check that:
+       - Your XML is well-formed
+       - You have the xacro xmlns declaration: xmlns:xacro="http://www.ros.org/wiki/xacro"
+  [note] common causes, in order of likelihood:
+  [note]   - coupler_output_link name wrong (see §3 below for the real link list)
+  [note]   - a ur_description config/<ur_type>/*.yaml path that does not exist
+  [note]   - macro param name mismatch

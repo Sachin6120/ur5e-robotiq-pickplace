@@ -209,9 +209,9 @@ bash scripts/00_recon.sh 2>&1 | tee docs/recon_$(date +%Y%m%d_%H%M%S).log
 Read-only: installs nothing, launches no simulation. Send back that log.
 
 It answers the five open questions in `docs/M-1_reference_report.md` §6 — UR
-macro signature, robotiq package source, flange frame and mount transform, real
-`finger_joint` limits, and the five mimic multipliers. The URDF merge gets
-written from those observed values, not from the donor repo's README.
+macro signature, robotiq package source, flange frame and mount transform, the
+real actuated gripper joint's limits, and the five mimic multipliers. The URDF
+merge gets written from those observed values, not from the donor repo's README.
 
 ---
 

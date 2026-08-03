@@ -1,0 +1,20 @@
+bootstrap run: 2026-08-03T14:20:27+02:00
+workspace: /home/user/ur5e_ws
+
+════════════════════════════════════════════════════════════
+§ 0. Host guard
+
+════════════════════════════════════════════════════════════
+  detected: Ubuntu 24.04.2 LTS (24.04)
+  [OK]   Ubuntu 24.04 Noble confirmed
+  [OK]   no Fortress/Classic packages present (clean starting point)
+
+════════════════════════════════════════════════════════════
+§ 1. Base system + universe repo
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt update
+sudo: 3 incorrect password attempts
+
+  $ sudo apt install -y software-properties-common curl gnupg lsb-release build-essential cmake git python3-pip

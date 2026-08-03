@@ -1,0 +1,139 @@
+mimic contact probe: 2026-08-03T17:34:09+02:00
+world=empty model=ur5e_robotiq box_width=0.040 m overclose=0.8 rad
+
+════════════════════════════════════════════════════════════
+§ 0. Preconditions
+
+════════════════════════════════════════════════════════════
+  [ok] topic /world/empty/model/ur5e_robotiq/joint_state
+  [ok] topic /world/empty/pose/info
+  [ok] service /world/empty/create
+  [ok] service /world/empty/remove
+
+════════════════════════════════════════════════════════════
+§ 1. Baseline — gripper open, no object
+
+════════════════════════════════════════════════════════════
+    shoulder_pan_joint 1.3037876104155498e-08 1.0780357726294931e-16
+    shoulder_lift_joint -1.5708532380236855 3.4566493005601384e-14
+    elbow_joint 1.5706821451077717 1.0921819004749977e-14
+    wrist_1_joint -1.5718105975962438 -1.3062467774105357e-14
+    wrist_2_joint -1.5706952201917295 -1.3989338658836059e-14
+    wrist_3_joint -8.9649043901603746e-07 5.8399533581394991e-17
+    robotiq_85_left_inner_knuckle_joint 1.5041458247297977e-05 -0.00080682135325528146
+    robotiq_85_left_knuckle_joint 1.3485445304812059e-05 -0.000749191256865869
+    robotiq_85_left_finger_tip_joint -1.5041458378320857e-05 0.00080682135334644856
+    robotiq_85_right_inner_knuckle_joint -1.5041458252294264e-05 0.00080682135325522942
+    robotiq_85_right_knuckle_joint -1.5041458183056405e-05 0.00080682135361037632
+    robotiq_85_right_finger_tip_joint 1.5041458378175598e-05 -0.00080682135323830156
+
+════════════════════════════════════════════════════════════
+§ 1b. Pre-close to a cradle aperture before placing the box
+
+════════════════════════════════════════════════════════════
+  pre-closing robotiq_85_left_knuckle_joint to 0.45 rad (heuristic cradle aperture, not measured)
+    
+    Goal accepted with ID: f64beedad406431da821df5a982a50ec
+    
+    Result:
+        position: 0.44002819480702876
+    effort: 50.0
+    stalled: false
+    reached_goal: true
+    
+    Goal finished with status: SUCCEEDED
+  [note] place the box at the (now pre-closed) fingertip midpoint. If your setup
+  [note] keeps the arm at its initial pose, read the fingertip link poses from
+  [note] /world/empty/pose/info and set BOX_XYZ accordingly. Set BOX_XYZ explicitly to skip
+  [note] auto-placement.
+
+  box placement (fingertip midpoint): 0.24607 0.06666 0.18346
+
+════════════════════════════════════════════════════════════
+§ 2. Spawn the test object
+
+════════════════════════════════════════════════════════════
+    data: true
+    box @ probe_box 0.24607 0.06666 0.02999960715177322
+
+════════════════════════════════════════════════════════════
+§ 3. Command closure PAST what the object permits
+
+════════════════════════════════════════════════════════════
+  commanding robotiq_85_left_knuckle_joint -> 0.8 rad (box is 0.040 m wide)
+    Waiting for an action server to become available...
+    Sending goal:
+         command:
+      position: 0.8
+      max_effort: 50.0
+    
+    Goal accepted with ID: 53de1b3626864fe5982b492e95773901
+    
+    Result:
+        position: 0.7900000000251857
+    effort: 50.0
+    stalled: false
+    reached_goal: true
+    
+    Goal finished with status: SUCCEEDED
+    shoulder_pan_joint 1.303787610410998e-08 -1.3552527156068805e-19
+    shoulder_lift_joint -1.5708532380236866 8.2784134907386286e-14
+    elbow_joint 1.5706821451077622 -1.0950268469755997e-13
+    wrist_1_joint -1.5718105975963061 -1.0776102232767926e-13
+    wrist_2_joint -1.57069522019173 2.037446275061916e-15
+    wrist_3_joint -8.9649043901574863e-07 -1.1011428314305904e-19
+    robotiq_85_left_inner_knuckle_joint 0.79999999999974636 1.7734620195997142e-14
+    robotiq_85_left_knuckle_joint 0.79999999999979787 4.9202395629999174e-14
+    robotiq_85_left_finger_tip_joint -0.80000000000060478 -1.140407213107153e-14
+    robotiq_85_right_inner_knuckle_joint -0.79999999999975324 -1.1015168811800979e-14
+    robotiq_85_right_knuckle_joint -0.79999999999977789 -5.2848350695633428e-15
+    robotiq_85_right_finger_tip_joint 0.80000000000060434 5.02922356537816e-14
+    box @ probe_box 0.24607 0.06666 0.02999960715177322
+
+════════════════════════════════════════════════════════════
+§ 4. Numbers  (interpret these; the script will not)
+
+════════════════════════════════════════════════════════════
+  commanded master angle : 0.8000 rad
+  achieved  master angle : 0.8000 rad
+  shortfall              : +0.0000 rad
+  master velocity at rest: 4.9202395629999174e-14
+
+  THE QUESTION THIS ANSWERS:
+    shortfall ~0        -> the linkage drove to command THROUGH the object.
+                           Contact is not opposing it. Kinematic override
+                           confirmed. Friction grasping cannot work as specified.
+    shortfall clearly >0 -> contact IS opposing the linkage. The override
+                           yields. Friction grasping may be viable; calibrate
+                           m0_verify.sh's threshold from this number.
+
+  followers (position, velocity):
+    robotiq_85_left_finger_tip_joint           -0.80000  (moved -0.79998)  vel=-1.140407213107153e-14
+    robotiq_85_left_inner_knuckle_joint        +0.80000  (moved +0.79998)  vel=1.7734620195997142e-14
+    robotiq_85_right_finger_tip_joint          +0.80000  (moved +0.79998)  vel=5.02922356537816e-14
+    robotiq_85_right_inner_knuckle_joint       -0.80000  (moved -0.79998)  vel=-1.101516881180098e-14
+    robotiq_85_right_knuckle_joint             -0.80000  (moved -0.79998)  vel=-5.284835069563343e-15
+
+  Also check the box pose printed in §3 against §2:
+    unchanged        -> held, or never contacted (check finger separation)
+    small shift      -> pushed by one finger before the other met it
+    large/rising     -> ejected. Solver resolving an impossible overlap.
+    inside the pads  -> interpenetration. Look at it in the GUI to be sure.
+
+════════════════════════════════════════════════════════════
+§ 5. Cleanup
+
+════════════════════════════════════════════════════════════
+    data: true
+    
+  [note] gripper reopened, box removed. Raw samples kept in /home/user/ur5e_pickplace/probe_out
+
+════════════════════════════════════════════════════════════
+  NEXT, once you have read the numbers:
+
+  1. Decide the stall threshold from the observed shortfall, not from intuition.
+  2. Rewrite m0_verify.sh §M0-C around it, replacing the free-space sweep.
+     Keep the sweep as a subordinate check — it still catches a broken merge —
+     but it must no longer be what M0-C passes on.
+  3. If the shortfall is ~0, do NOT start tuning friction. Go to §3.5
+     Consequence 2 and work the physics-engine decision instead.
