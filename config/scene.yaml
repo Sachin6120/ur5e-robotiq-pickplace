@@ -13,10 +13,25 @@
 # scripts/00_recon.sh run against the real merged URDF. Do not guess them.
 
 # ---------------------------------------------------------------------------
+robot:
+  arm_joints:
+    - shoulder_pan_joint
+    - shoulder_lift_joint
+    - elbow_joint
+    - wrist_1_joint
+    - wrist_2_joint
+    - wrist_3_joint
+  # Matches the URDF's ros2_control initial_value entries and the SRDF `home`
+  # pose, so MoveIt's idea of home and Gazebo's spawn pose agree.
+  home_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+
+# ---------------------------------------------------------------------------
 frames:
   world:  world
   base:   base_link
-  flange: tool0            # RECON — confirm UR5e flange frame name
+  flange: tool0            # confirmed via recon: wrist_3_link -(0,0,0 / 0,-pi/2,-pi/2)->
+                            # flange -(0,0,0 / pi/2,0,pi/2)-> tool0. Gripper mounts at
+                            # tool0 (ROS-Industrial all-zeros tool convention).
   tcp:    grasp_tcp        # frame published at the finger-pad contact midpoint
 
 # ---------------------------------------------------------------------------
@@ -84,9 +99,16 @@ grasp:
 
 # ---------------------------------------------------------------------------
 gripper:
-  actuated_joint: finger_joint
+  # CORRECTED by recon (2026-08-03): the donor repo's `finger_joint` name does
+  # NOT exist in ros-jazzy-robotiq-description 0.0.1-3. The real actuated joint
+  # in that package is robotiq_85_left_knuckle_joint (5 mimics hang off it).
+  # See M-1_reference_report.md §6.4. Apply tf_prefix the same as arm joints if
+  # the merge ever runs with a non-empty prefix.
+  actuated_joint: robotiq_85_left_knuckle_joint
 
-  # Donor repo reports 0.0 = open, 0.8 = closed. TREAT AS UNVERIFIED.
+  # Confirmed via recon: limit lower=0.0 upper=0.8 (radians) in
+  # robotiq_2f_85_macro.urdf.xacro. Direction (0=open) matches the donor's claim;
+  # only the joint name was wrong. Still resolved at runtime, not hardcoded here:
   # These are left null on purpose: the node reads them at runtime from
   #   RobotModel::getJointModel(actuated_joint)->getVariableBounds()
   # and logs what it found. Filling them in here would defeat that check.
@@ -98,6 +120,15 @@ gripper:
   # recon (URDF geometry or vendor curve), then used to solve for the joint
   # angle corresponding to object width.
   width_map: null                   # RECON — [[joint_rad, width_m], ...]
+
+  # Pre-shape aperture: close to roughly the object's width BEFORE approaching,
+  # then close the remaining distance gently. Closing from full-open ejects the
+  # object — measured, see report §3.5. The pick-place node must do this too;
+  # M3 will fail and look like a friction problem otherwise.
+  preclose_heuristic: 0.45   # rad. PLACEHOLDER until width_map exists.
+  # Once width_map is populated, preclose becomes:
+  #   joint_angle_for_width(object_width + clearance)
+  preclose_clearance: 0.005  # m of aperture margin over object width
 
   # How far PAST first contact to keep commanding closed. This is the grip-force
   # knob in a position-controlled sim.
@@ -130,4 +161,18 @@ grasp_mode:
   #   contact   -> "GRASP MODE: contact-triggered attach (fallback)"
   # Switching to `contact` REQUIRES explicit permission. Do not change this
   # value without it.
+  #
+  # UNVERIFIED PREMISE — see docs/M-1_reference_report.md §3.5.
+  # dartsim does not enforce mimic constraints; gz_ros2_control appears to write
+  # follower positions in software instead. Whether that yields under contact is
+  # untested. `friction` here is the INTENT, not a validated capability.
+  # scripts/04_mimic_contact_probe.sh is what settles it.
   mode: friction
+
+# ---------------------------------------------------------------------------
+milestones:
+  m1:
+    # The fixed joint goal M1 plans to, 20 times. Reachable, well away from the
+    # wrist singularity, and clearly distinct from home so a "plan" that didn't
+    # move can't pass. Lives here, not in the node.
+    goal_positions: [0.5, -1.2, 1.0, -1.4, -1.5708, 0.0]

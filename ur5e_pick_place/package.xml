@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>ur5e_pick_place</name>
+  <version>0.1.0</version>
+  <description>
+    Milestone nodes for the UR5e + Robotiq 2F-85 pick-and-place project.
+    All motion planning goes through MoveIt 2. No hand-written IK.
+  </description>
+  <maintainer email="sachinkpal612@gmail.com">sachin</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_core</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>control_msgs</depend>
+
+  <exec_depend>ur5e_robotiq_description</exec_depend>
+  <exec_depend>ur5e_robotiq_moveit_config</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
