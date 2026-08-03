@@ -1,0 +1,257 @@
+<?xml version="1.0"?>
+<!--
+  ur5e_robotiq.urdf.xacro — M-1 merged platform.
+
+  UR5e (ur_description) + Robotiq 2F-85 (robotiq_description), wired for
+  Gazebo Harmonic through gz_ros2_control.
+
+  DESIGN NOTES, so the choices here are auditable later:
+
+  1. The ARM'S KINEMATICS come from ur_description's `ur_robot` macro. They are
+     not hand-written — that is a hard requirement of the project spec.
+
+  2. The ARM'S ros2_control BLOCK is written out below rather than pulled from
+     ur_simulation_gz. Reason: control wiring is not kinematic description, it is
+     six joints with position command/state interfaces, and writing it here keeps
+     the merged model self-contained and readable instead of depending on the
+     internals of a package whose xacro API we would then also have to track.
+     If you would rather reuse ur_simulation_gz's wiring, that swap is localised
+     to the <ros2_control name="UR5eSystem"> block and nothing else changes.
+
+  3. The GRIPPER'S ros2_control block is NOT written here. The
+     `robotiq_gripper` macro emits it itself when include_ros2_control is true
+     (its default), and under sim_ignition:=true it emits
+     <plugin>ign_ros2_control/IgnitionSystem</plugin>, which resolves via the
+     backward-compat alias registered in gz_ros2_control's plugin XML.
+     Do not set use_fake_hardware here — mock hardware echoes commands back as
+     state with no physics and would grasp nothing while looking healthy.
+
+  4. MIMIC JOINTS. The 2F-85's five follower joints mimic
+     robotiq_85_left_knuckle_joint. Under sim_ignition they carry no command or
+     state interfaces at all; enforcement is delegated to gz-sim's constraint
+     solver by the package author's design. Nothing in this file proves that
+     solver works. M0-C is the only evidence. Do not treat a clean spawn as a
+     working linkage.
+
+  USAGE
+    xacro ur5e_robotiq.urdf.xacro > /tmp/merged.urdf
+    xacro ur5e_robotiq.urdf.xacro sim_ignition:=true gripper_rotation:=0.0
+
+  NAME IS HARDCODED ON THE ROOT TAG BELOW, NOT $(arg name).
+    $(arg name) on the root <robot> tag resolves before its own in-document
+    <xacro:arg name="name"> declaration is registered — xacro processes
+    substitutions top-down, and the tag's own attributes are the first thing
+    evaluated. This isn't a defect specific to this file: ur_simulation_gz's
+    own ur_gz.urdf.xacro has the identical pattern and fails the identical way
+    if invoked without name:= on the command line.
+    It has bitten four different callers in this project: the merge validator,
+    the sim launch file, and twice in MoveIt Setup Assistant — the "create new
+    config" flow threads a typed name:= through correctly, but the "load
+    existing config" flow does not, and silently produces a garbage/unparsed
+    URDF ("URDF/COLLADA file is not a valid robot model") instead of surfacing
+    the real xacro error.
+    Since `name` is never actually varied anywhere in this project — every
+    caller always passes ur5e_robotiq — hardcoding it here removes the
+    ordering dependency permanently instead of continually patching every new
+    caller that hits it. The <xacro:arg name="name"> declaration below is kept
+    so existing callers that still pass name:=ur5e_robotiq explicitly
+    (harmlessly unused now) don't need to change.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_robotiq">
+
+  <!-- ===================================================================== -->
+  <!-- Arguments                                                             -->
+  <!-- ===================================================================== -->
+  <xacro:arg name="name"      default="ur5e_robotiq"/>
+  <xacro:arg name="ur_type"   default="ur5e"/>
+  <xacro:arg name="tf_prefix" default=""/>
+
+  <!-- MUST be true for Gazebo. false silently gives you the USB driver path. -->
+  <xacro:arg name="sim_ignition" default="true"/>
+
+  <!-- Rotation of the gripper about the flange approach axis, radians.
+       This is the physical mounting clock position of the gripper, and it is
+       what grasp.gripper_roll in config/scene.yaml is measured relative to.
+       Changing it here changes where the fingers point in the world. -->
+  <xacro:arg name="gripper_rotation" default="0.0"/>
+
+  <!-- Where the arm base is bolted, in the world frame. Keep consistent with
+       the table pose in config/scene.yaml. -->
+  <xacro:arg name="base_xyz" default="0 0 0"/>
+  <xacro:arg name="base_rpy" default="0 0 0"/>
+
+  <!-- Controller parameter file handed to the gz_ros2_control system plugin. -->
+  <xacro:arg name="controllers_file"
+             default="$(find ur5e_robotiq_description)/config/controllers.yaml"/>
+
+  <!-- UR parameter files. Paths follow ur_description's config/<ur_type>/ layout.
+       If any of these fail to resolve, scripts/03_validate_merge.sh reports the
+       exact missing path rather than a generic xacro error. -->
+  <xacro:arg name="joint_limits_parameters_file"
+             default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_parameters_file"
+             default="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"/>
+  <xacro:arg name="physical_parameters_file"
+             default="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"/>
+  <xacro:arg name="visual_parameters_file"
+             default="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"/>
+
+  <xacro:property name="tf_prefix" value="$(arg tf_prefix)"/>
+
+  <!-- PROVISIONAL: the link the ur_to_robotiq adapter produces, which becomes
+       the gripper's parent. This is the single value in this file taken from
+       the adapter's conventional naming rather than read out of the file.
+       03_validate_merge.sh lists every link in the expanded URDF, so if this is
+       wrong you get the real name immediately rather than a confusing failure. -->
+  <xacro:property name="coupler_output_link" value="${tf_prefix}gripper_mount_link"/>
+
+  <!-- ===================================================================== -->
+  <!-- Includes                                                              -->
+  <!-- ===================================================================== -->
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+
+  <!-- ===================================================================== -->
+  <!-- World anchor                                                          -->
+  <!-- ===================================================================== -->
+  <link name="world"/>
+
+  <!-- ===================================================================== -->
+  <!-- Arm                                                                   -->
+  <!-- ===================================================================== -->
+  <!-- Frame chain confirmed by recon, all fixed joints with zero translation:
+         wrist_3_link, then rpy (0, -pi/2, -pi/2) to flange,
+         then rpy (pi/2, 0, pi/2) to tool0.
+       tool0 is therefore the correct mounting frame, and grasp.tcp_offset in
+       scene.yaml is measured from tool0 forward to the finger-pad midpoint.
+       (Do not draw those transitions as arrows: a literal double-hyphen is
+       illegal anywhere inside an XML comment body and breaks the xacro parse
+       with "not well-formed (invalid token)".) -->
+  <xacro:ur_robot
+    name="$(arg ur_type)"
+    tf_prefix="${tf_prefix}"
+    parent="world"
+    joint_limits_parameters_file="$(arg joint_limits_parameters_file)"
+    kinematics_parameters_file="$(arg kinematics_parameters_file)"
+    physical_parameters_file="$(arg physical_parameters_file)"
+    visual_parameters_file="$(arg visual_parameters_file)"
+    safety_limits="false"
+    safety_pos_margin="0.15"
+    safety_k_position="20">
+    <origin xyz="$(arg base_xyz)" rpy="$(arg base_rpy)"/>
+  </xacro:ur_robot>
+
+  <!-- ===================================================================== -->
+  <!-- Coupler plate: UR flange -> Robotiq mount                             -->
+  <!-- ===================================================================== -->
+  <!-- Supplied by robotiq_description rather than hand-derived. The physical
+       adapter has real thickness; mounting the gripper straight onto tool0
+       would place it at the flange face and put every grasp pose out by that
+       offset. -->
+  <xacro:ur_to_robotiq
+    prefix="${tf_prefix}"
+    connected_to="${tf_prefix}tool0"
+    rotation="$(arg gripper_rotation)"/>
+
+  <!-- ===================================================================== -->
+  <!-- Gripper                                                               -->
+  <!-- ===================================================================== -->
+  <!-- include_ros2_control defaults true, so the macro emits its own
+       <ros2_control> block. Do not also declare one for the gripper below. -->
+  <xacro:robotiq_gripper
+    name="RobotiqGripperHardware"
+    prefix="${tf_prefix}"
+    parent="${coupler_output_link}"
+    sim_ignition="$(arg sim_ignition)"
+    sim_isaac="false"
+    use_fake_hardware="false"
+    fake_sensor_commands="false"
+    include_ros2_control="true">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_gripper>
+
+  <!-- ===================================================================== -->
+  <!-- Arm ros2_control                                                      -->
+  <!-- ===================================================================== -->
+  <ros2_control name="UR5eSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <!-- Initial positions put the arm in a raised, non-singular posture.
+         Straight-up (all zeros) sits at the UR wrist singularity and makes
+         early planning look unreliable for reasons that have nothing to do
+         with the planner. -->
+    <xacro:macro name="ur_joint" params="jname init">
+      <joint name="${tf_prefix}${jname}">
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <state_interface name="position">
+          <param name="initial_value">${init}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:ur_joint jname="shoulder_pan_joint"  init="0.0"/>
+    <xacro:ur_joint jname="shoulder_lift_joint" init="-1.5708"/>
+    <xacro:ur_joint jname="elbow_joint"         init="1.5708"/>
+    <xacro:ur_joint jname="wrist_1_joint"       init="-1.5708"/>
+    <xacro:ur_joint jname="wrist_2_joint"       init="-1.5708"/>
+    <xacro:ur_joint jname="wrist_3_joint"       init="0.0"/>
+  </ros2_control>
+
+  <!-- ===================================================================== -->
+  <!-- Gazebo system plugin                                                  -->
+  <!-- ===================================================================== -->
+  <!-- One gz_ros2_control system plugin serves ALL <ros2_control> blocks in
+       the model — the arm's above and the gripper's emitted by the macro.
+       Both must appear in `ros2 control list_hardware_interfaces` after spawn.
+       If only the arm's does, that is the two-plugin-class seam flagged in
+       docs/M-1_reference_report.md §3. -->
+  <gazebo>
+    <plugin filename="gz_ros2_control-system"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg controllers_file)</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- Gazebo's OWN joint state output, independent of ros2_control.
+       This is not redundant with joint_state_broadcaster. It is the entire
+       basis of M0-C: the mimic-tracking check compares gz-sim's constraint
+       solver output against the URDF mimic spec, and it cannot use
+       /joint_states because /joint_states is what ros2_control believes, which
+       is precisely the thing under test. The donor repo's open readback defect
+       (joint effort off by up to ~15x) is the reason that distinction matters.
+
+       Publishes on:  /world/<world>/model/<model>/joint_state
+       scripts/m0_verify.sh defaults to WORLD=empty MODEL=ur5e_robotiq.
+       Keep the launch file's world name and spawned model name consistent with
+       those, or pass WORLD=/MODEL= to override.
+
+       VERIFY, do not assume: the plugin filename below is the Harmonic
+       (gz-sim 8) name. Confirm it loaded by checking that the topic appears in
+       `gz topic -l` after spawn. If it does not, M0-C has no ground truth and
+       cannot pass — that is a blocker, not a nice-to-have. -->
+  <gazebo>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+    </plugin>
+  </gazebo>
+
+  <!-- Grounding needs NOTHING here. It comes from <link name="world"/> plus
+       ur_robot(parent="world"), which creates a fixed joint to it.
+       An earlier revision put <static>true</static> in this block. That was
+       wrong twice over: <static> is a MODEL-level SDF property, not per-link,
+       and the grounding it claimed to provide was already handled. Had the SDF
+       converter honoured it at model scope it would have frozen every joint in
+       the robot — spawning fine, reporting healthy, never moving, with no error
+       to search for. Verified against ur_simulation_gz's own ur_gz.urdf.xacro,
+       which spawned successfully in the arm-only sanity run: its equivalent
+       block is empty. Keep it empty. -->
+  <gazebo reference="world">
+  </gazebo>
+
+</robot>
