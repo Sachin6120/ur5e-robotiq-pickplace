@@ -1,0 +1,14 @@
+merge validation: 2026-08-03T16:58:03+02:00
+xacro: ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro
+
+════════════════════════════════════════════════════════════
+§ 1. Expand the xacro
+
+════════════════════════════════════════════════════════════
+  [FAIL] xacro expansion failed
+      error: Undefined substitution argument name
+      when processing file: ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro
+  [note] common causes, in order of likelihood:
+  [note]   - coupler_output_link name wrong (see §3 below for the real link list)
+  [note]   - a ur_description config/<ur_type>/*.yaml path that does not exist
+  [note]   - macro param name mismatch

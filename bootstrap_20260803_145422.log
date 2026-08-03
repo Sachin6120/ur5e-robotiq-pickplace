@@ -1,0 +1,319 @@
+bootstrap run: 2026-08-03T14:54:22+02:00
+workspace: /home/sachin/ur5e_ws
+
+════════════════════════════════════════════════════════════
+§ 0. Host guard
+
+════════════════════════════════════════════════════════════
+  detected: Ubuntu 24.04.2 LTS (24.04)
+  [OK]   Ubuntu 24.04 Noble confirmed
+  [OK]   no Fortress/Classic packages present (clean starting point)
+
+════════════════════════════════════════════════════════════
+§ 1. Base system + universe repo
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt update
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:4 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:5 http://packages.ros.org/ros2/ubuntu noble InRelease
+Reading package lists...
+Building dependency tree...
+Reading state information...
+424 packages can be upgraded. Run 'apt list --upgradable' to see them.
+
+  $ sudo apt install -y software-properties-common curl gnupg lsb-release build-essential cmake git python3-pip
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+software-properties-common is already the newest version (0.99.49.4).
+curl is already the newest version (8.5.0-2ubuntu10.11).
+gnupg is already the newest version (2.4.4-2ubuntu17.4).
+lsb-release is already the newest version (12.0-2).
+build-essential is already the newest version (12.10ubuntu1).
+cmake is already the newest version (3.28.3-1build7).
+git is already the newest version (1:2.43.0-1ubuntu7.3).
+python3-pip is already the newest version (24.0+dfsg-1ubuntu1.3).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+
+  $ sudo add-apt-repository -y universe
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 http://packages.ros.org/ros2/ubuntu noble InRelease
+Reading package lists...
+Adding component(s) 'universe' to all repositories.
+
+  $ sudo apt update
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:4 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:5 http://packages.ros.org/ros2/ubuntu noble InRelease
+Reading package lists...
+Building dependency tree...
+Reading state information...
+424 packages can be upgraded. Run 'apt list --upgradable' to see them.
+  [OK]   base tooling installed
+
+════════════════════════════════════════════════════════════
+§ 2. ROS 2 apt source
+
+════════════════════════════════════════════════════════════
+  [OK]   ros2-apt-source already installed
+
+  $ sudo apt update
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 http://packages.ros.org/ros2/ubuntu noble InRelease
+Reading package lists...
+Building dependency tree...
+Reading state information...
+424 packages can be upgraded. Run 'apt list --upgradable' to see them.
+  ros-jazzy-* packages visible to apt: 3373
+  ros-jazzy-desktop candidate: 0.11.0-1noble.20260616.084553
+  [OK]   ROS 2 jazzy packages visible to apt
+
+════════════════════════════════════════════════════════════
+§ 3. ROS 2 Jazzy + dev tools
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt install -y ros-jazzy-desktop ros-dev-tools
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-desktop is already the newest version (0.11.0-1noble.20260616.084553).
+ros-dev-tools is already the newest version (1.0.1).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+  [OK]   ros-jazzy-desktop installed
+
+════════════════════════════════════════════════════════════
+§ 4. Gazebo Harmonic via the ROS 2 pairing
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt install -y ros-jazzy-ros-gz ros-jazzy-ros-gz-sim ros-jazzy-ros-gz-bridge ros-jazzy-gz-ros2-control
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-ros-gz is already the newest version (1.0.22-1noble.20260616.074726).
+ros-jazzy-ros-gz-sim is already the newest version (1.0.22-1noble.20260615.173223).
+ros-jazzy-ros-gz-bridge is already the newest version (1.0.22-1noble.20260615.142443).
+ros-jazzy-gz-ros2-control is already the newest version (1.2.19-1noble.20260615.171757).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+  [OK]   ros_gz + gz_ros2_control installed
+
+════════════════════════════════════════════════════════════
+§ 5. MoveIt 2, controllers, UR packages
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt install -y ros-jazzy-moveit ros-jazzy-moveit-setup-assistant ros-jazzy-moveit-planners-ompl ros-jazzy-moveit-ros-planning-interface ros-jazzy-ros2-control ros-jazzy-ros2-controllers ros-jazzy-controller-manager ros-jazzy-joint-trajectory-controller ros-jazzy-position-controllers ros-jazzy-joint-state-broadcaster ros-jazzy-ros2controlcli ros-jazzy-xacro ros-jazzy-tf2-ros ros-jazzy-tf2-geometry-msgs
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-moveit is already the newest version (2.12.4-1noble.20260617.161956).
+ros-jazzy-moveit-setup-assistant is already the newest version (2.12.4-1noble.20260617.161719).
+ros-jazzy-moveit-planners-ompl is already the newest version (2.12.4-1noble.20260617.150302).
+ros-jazzy-moveit-ros-planning-interface is already the newest version (2.12.4-1noble.20260617.151809).
+ros-jazzy-ros2-control is already the newest version (4.45.2-1noble.20260615.175135).
+ros-jazzy-ros2-controllers is already the newest version (4.40.1-1noble.20260616.074625).
+ros-jazzy-controller-manager is already the newest version (4.45.2-1noble.20260615.164916).
+ros-jazzy-joint-trajectory-controller is already the newest version (4.40.1-1noble.20260615.171409).
+ros-jazzy-position-controllers is already the newest version (4.40.1-1noble.20260615.172019).
+ros-jazzy-joint-state-broadcaster is already the newest version (4.40.1-1noble.20260615.171040).
+ros-jazzy-ros2controlcli is already the newest version (4.45.2-1noble.20260615.165650).
+ros-jazzy-xacro is already the newest version (2.1.1-1noble.20260519.011123).
+ros-jazzy-tf2-ros is already the newest version (0.36.21-1noble.20260615.145818).
+ros-jazzy-tf2-ros set to manually installed.
+ros-jazzy-tf2-geometry-msgs is already the newest version (0.36.21-1noble.20260615.151523).
+ros-jazzy-tf2-geometry-msgs set to manually installed.
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+  [OK]   MoveIt 2 + ros2_control stack installed
+
+  $ sudo apt install -y ros-jazzy-ur-description
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-ur-description is already the newest version (3.5.1-1noble.20260615.175716).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+
+  $ sudo apt install -y ros-jazzy-ur-simulation-gz
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-ur-simulation-gz is already the newest version (2.5.0-1noble.20260617.155357).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+
+  $ sudo apt install -y ros-jazzy-ur-moveit-config
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-ur-moveit-config is already the newest version (3.8.0-1noble.20260617.155215).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+
+  UR packages sourced from: binary
+
+════════════════════════════════════════════════════════════
+§ 6. Robotiq description  (the actual M-1 problem)
+
+════════════════════════════════════════════════════════════
+
+  $ sudo apt install -y ros-jazzy-robotiq-description
+
+WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ros-jazzy-robotiq-description is already the newest version (0.0.1-3noble.20260615.175624).
+The following package was automatically installed and is no longer required:
+  libglapi-mesa
+Use 'sudo apt autoremove' to remove it.
+0 upgraded, 0 newly installed, 0 to remove and 424 not upgraded.
+  [OK]   robotiq_description installed from apt
+
+  robotiq description sourced from: binary
+
+════════════════════════════════════════════════════════════
+§ 7. Resolve dependencies and build the workspace
+
+════════════════════════════════════════════════════════════
+
+  $ rosdep update
+reading in sources list data from /etc/ros/rosdep/sources.list.d
+Hit https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/osx-homebrew.yaml
+Hit https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/base.yaml
+Hit https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/python.yaml
+Hit https://raw.githubusercontent.com/ros/rosdistro/master/rosdep/ruby.yaml
+Hit https://raw.githubusercontent.com/ros/rosdistro/master/releases/fuerte.yaml
+Query rosdistro index https://raw.githubusercontent.com/ros/rosdistro/master/index-v4.yaml
+Skip end-of-life distro "ardent"
+Skip end-of-life distro "bouncy"
+Skip end-of-life distro "crystal"
+Skip end-of-life distro "dashing"
+Skip end-of-life distro "eloquent"
+Skip end-of-life distro "foxy"
+Skip end-of-life distro "galactic"
+Skip end-of-life distro "groovy"
+Add distro "humble"
+Skip end-of-life distro "hydro"
+Skip end-of-life distro "indigo"
+Skip end-of-life distro "iron"
+Skip end-of-life distro "jade"
+Add distro "jazzy"
+Add distro "kilted"
+Skip end-of-life distro "kinetic"
+Skip end-of-life distro "lunar"
+Add distro "lyrical"
+Skip end-of-life distro "melodic"
+Skip end-of-life distro "noetic"
+Add distro "rolling"
+updated cache in /home/sachin/.ros/rosdep/sources.cache
+  [note] src/ is empty (everything came from binaries) — nothing to build yet
+
+════════════════════════════════════════════════════════════
+§ 8. Verification  (pre-flight for M0-A)
+
+════════════════════════════════════════════════════════════
+  gz sim --versions -> 8.11.0
+  [OK]   gz-sim 8.x (Harmonic) — correct pairing for Jazzy
+  [OK]   no Fortress/Classic contamination
+  [OK]   ur_description resolvable
+  [OK]   gz_ros2_control resolvable
+  [OK]   moveit_ros_planning_interface resolvable
+  [OK]   controller_manager resolvable
+  [OK]   robotiq_description resolvable
+
+════════════════════════════════════════════════════════════
+§ 9. Shell setup
+
+════════════════════════════════════════════════════════════
+  [OK]   added ROS setup to ~/.bashrc
+  [note] workspace overlay is NOT auto-sourced on purpose — source it per-terminal:
+  [note]   source /home/sachin/ur5e_ws/install/setup.bash
+
+════════════════════════════════════════════════════════════
+§ SUMMARY
+
+════════════════════════════════════════════════════════════
+  UR packages ........... binary
+  robotiq description ... binary
+  workspace ............. /home/sachin/ur5e_ws
+
+  BOOTSTRAP OK.
+
+  Next, in a NEW terminal:
+
+    source /opt/ros/jazzy/setup.bash
+    source /home/sachin/ur5e_ws/install/setup.bash        # if src/ was non-empty
+    cd <this repo>
+    bash scripts/00_recon.sh 2>&1 | tee docs/recon_$(date +%Y%m%d_%H%M%S).log
+
+  Then send me that log. The URDF merge gets written from it, not from guesses.
+
+  Optional sanity check before recon — UR's own arm-only path should already
+  work, with no gripper involved:
+
+    ros2 launch ur_simulation_gz ur_sim_moveit.launch.py ur_type:=ur5e
+
+  If that does NOT come up, stop. The problem is upstream of anything we add,
+  and every later milestone would inherit it.

@@ -1,0 +1,171 @@
+M0 verification run: 2026-08-03T23:14:48+02:00
+world=empty model=ur5e_robotiq actuated_joint=robotiq_85_left_knuckle_joint
+
+════════════════════════════════════════════════════════════
+§ M0-A  Gazebo version binding
+
+════════════════════════════════════════════════════════════
+
+  $ gz sim --versions
+      8.11.0
+  [PASS] gz-sim major version = 8 (Harmonic)
+
+  $ dpkg -l | grep -Ei 'gz-sim|ignition|gazebo'
+      ros-jazzy-gz-cmake-vendor                    0.0.11-1noble.20260225.223100
+      ros-jazzy-gz-common-vendor                   0.0.9-1noble.20260422.124815
+      ros-jazzy-gz-fuel-tools-vendor               0.0.6-1noble.20260423.081524
+      ros-jazzy-gz-gui-vendor                      0.0.5-1noble.20260425.071107
+      ros-jazzy-gz-math-vendor                     0.0.9-1noble.20260422.120700
+      ros-jazzy-gz-msgs-vendor                     0.0.6-1noble.20260423.060450
+      ros-jazzy-gz-physics-vendor                  0.0.7-1noble.20260604.105412
+      ros-jazzy-gz-plugin-vendor                   0.0.5-1noble.20260226.000520
+      ros-jazzy-gz-rendering-vendor                0.0.7-1noble.20260425.063708
+      ros-jazzy-gz-ros2-control                    1.2.19-1noble.20260615.171757
+      ros-jazzy-gz-sensors-vendor                  0.0.6-1noble.20260604.105419
+      ros-jazzy-gz-sim-vendor                      0.0.10-1noble.20260604.111001
+      ros-jazzy-gz-tools-vendor                    0.0.7-1noble.20260225.231255
+      ros-jazzy-gz-transport-vendor                0.0.7-1noble.20260423.081526
+      ros-jazzy-gz-utils-vendor                    0.0.5-1noble.20260225.231257
+      ros-jazzy-ros-gz                             1.0.22-1noble.20260616.074726
+      ros-jazzy-ros-gz-bridge                      1.0.22-1noble.20260615.142443
+      ros-jazzy-ros-gz-image                       1.0.22-1noble.20260615.145009
+      ros-jazzy-ros-gz-interfaces                  1.0.22-1noble.20260615.112415
+      ros-jazzy-ros-gz-sim                         1.0.22-1noble.20260615.173223
+      ros-jazzy-ros-gz-sim-demos                   1.0.22-1noble.20260615.175319
+      ros-jazzy-ur-simulation-gz                   2.5.0-1noble.20260617.155357
+  [PASS] no Fortress or Classic packages in the resolved dependency list
+
+  $ gz topic -l  (is a Harmonic transport actually up?)
+      /clock
+      /gazebo/resource_paths
+      /stats
+      /world/empty/clock
+      /world/empty/dynamic_pose/info
+      /world/empty/model/ur5e_robotiq/joint_state
+      /world/empty/pose/info
+      /world/empty/scene/deletion
+      /world/empty/scene/info
+      /world/empty/state
+      /world/empty/stats
+      /world/empty/light_config
+      /world/empty/material_color
+
+  ==> M0-A: PASS
+
+════════════════════════════════════════════════════════════
+§ M0-B  Gripper controller path in simulation
+
+════════════════════════════════════════════════════════════
+  waiting up to 45s for controllers to spawn...
+
+  $ ros2 control list_controllers
+      gripper_controller      position_controllers/GripperActionController           active
+      arm_controller          joint_trajectory_controller/JointTrajectoryController  active
+      joint_state_broadcaster joint_state_broadcaster/JointStateBroadcaster          active
+  [PASS] arm_controller is active
+  [PASS] gripper_controller is active
+  [PASS] joint_state_broadcaster is active
+
+  gripper controller type: position_controllers/GripperActionController
+  [PASS] POSITION-controlled. scene.yaml gripper.squeeze applies, in RADIANS.
+  [note] max_effort in the GripperCommand action is a ceiling, not the knob.
+
+  $ cat /home/sachin/ur5e_ws/src/ur5e_robotiq_moveit_config/config/moveit_controllers.yaml
+      # MoveIt uses this configuration for controller management
+      
+      moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+      
+      moveit_simple_controller_manager:
+        controller_names:
+          - arm_controller
+          - gripper_controller
+      
+        arm_controller:
+          type: FollowJointTrajectory
+          joints:
+            - shoulder_pan_joint
+            - shoulder_lift_joint
+            - elbow_joint
+            - wrist_1_joint
+            - wrist_2_joint
+            - wrist_3_joint
+        gripper_controller:
+          type: GripperCommand
+          joints:
+            - robotiq_85_left_knuckle_joint
+          action_ns: gripper_cmd
+          default: true  [PASS] moveit_controllers.yaml references 'gripper_controller' — names match
+
+  $ ros2 action list | grep -i gripper
+      /gripper_controller/gripper_cmd
+
+  ==> M0-B: PASS
+
+════════════════════════════════════════════════════════════
+§ M0-C  Mimic linkage under contact load
+
+════════════════════════════════════════════════════════════
+
+  $ gz topic -l | grep joint_state
+      /world/empty/model/ur5e_robotiq/joint_state
+  [PASS] Gazebo ground-truth topic present
+
+  --- C1 (SUBORDINATE): free-space tracking ---
+  [note] merge sanity only. Per report §3.5 this passes even when the linkage is
+  [note] unforced, so it does NOT decide M0-C. A failure here means the merge is
+  [note] broken; a pass here means nothing about grasping.
+  mimic joints declared off robotiq_85_left_knuckle_joint: 5
+      robotiq_85_right_knuckle_joint -1 0.0
+      robotiq_85_left_inner_knuckle_joint 1.0 0.0
+      robotiq_85_right_inner_knuckle_joint -1 0.0
+      robotiq_85_left_finger_tip_joint -1 0.0
+      robotiq_85_right_finger_tip_joint 1.0 0.0
+  [PASS] 5 mimic joints declared (merge structurally intact)
+  [PASS] free-space open sample captured (evidence only, not a gate)
+
+  --- C2 (PASS CRITERION): does contact oppose the linkage? ---
+  pre-closing robotiq_85_left_knuckle_joint to 0.45 rad (heuristic cradle aperture, not measured)
+  box placement (fingertip midpoint): 0.49214 0.13332 0.36692
+      data: true
+  box before close: 0.4918716043300691 0.13343643808271594 0.36654925541169647
+  commanding robotiq_85_left_knuckle_joint -> 0.8 rad against a 0.040 m box
+  box after close : 0.48858135121759683 0.13476778667640621 0.3545186530212171
+  commanded  : 0.8000 rad
+  achieved   : 0.4561 rad
+  shortfall  : +0.3439 rad   (need > 0.1)
+  [PASS] linkage stalled 0.3439 rad short — contact opposes it
+  controller : stalled=true reached_goal=false
+  [PASS] controller independently reported stalled=true
+  box before : (0.492, 0.133, 0.367)
+  box after  : (0.489, 0.135, 0.355)
+  displacement: 0.0125 m   (need < 0.03)
+  [PASS] object retained, moved 12.5 mm
+  [PASS] object clear of the floor (z=0.355)
+  [WARN] object settled 12.0 mm downward during closure. M3's slip criterion is 5 mm.
+         Settling as the pads seat is not the same as slip under
+         transport load — but if the object is sliding BETWEEN the
+         pads, M3 has a problem that predates friction tuning.
+         Worth one GUI look before M3. See report §3.5.
+
+  followers vs multiplier x master (tolerance 0.05 rad):
+    robotiq_85_left_finger_tip_joint           got -0.45606  exp -0.45606  err 0.00000
+    robotiq_85_left_inner_knuckle_joint        got +0.45606  exp +0.45606  err 0.00000
+    robotiq_85_right_finger_tip_joint          got +0.45606  exp +0.45606  err 0.00000
+    robotiq_85_right_inner_knuckle_joint       got -0.45606  exp -0.45606  err 0.00000
+    robotiq_85_right_knuckle_joint             got -0.42798  exp -0.45606  err 0.02808
+  [PASS] all followers within 0.05 rad (worst 0.02808, robotiq_85_right_knuckle_joint)
+  [note] robotiq_85_right_knuckle_joint diverges 0.02808 rad under load. Report §3.5 records this as an open, low-priority watch item — it is the only follower declared revolute rather than continuous, and it tracked exactly in free space.
+
+  ==> M0-C: PASS
+
+════════════════════════════════════════════════════════════
+§ M0 SUMMARY
+
+════════════════════════════════════════════════════════════
+  M0-A  Gazebo version binding ............ PASS
+  M0-B  Gripper controller path ........... PASS
+  M0-C  Mimic joint tracking .............. PASS
+
+  evidence: /home/sachin/ur5e_pickplace/m0_evidence
+
+  M0 PASS — cleared to start M1.

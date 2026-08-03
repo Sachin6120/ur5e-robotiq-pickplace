@@ -76,6 +76,308 @@ These are the donor's **claims**. They narrow the search space. They are not evi
   enforces mimics at the physics level, the linkage tracks; if it only enforces them in
   the kinematic model, the fingers will look correct in TF and be wrong in contact.
 
+**Simulation hardware path — resolved at M-1, not deferred to M0-B.** Not a donor
+claim — verified directly against the installed `ros-jazzy-robotiq-description`
+0.0.1-3 package, ahead of the merge:
+
+`robotiq_description` exposes three mutually exclusive modes on the
+`robotiq_gripper` macro: bare USB driver, `use_fake_hardware` (mock), and
+`sim_ignition`. The merge uses `sim_ignition:="true"`.
+
+- Under `sim_ignition`, the macro emits `<plugin>ign_ros2_control/IgnitionSystem</plugin>`.
+  Verified this resolves: `/opt/ros/jazzy/share/gz_ros2_control/gz_hardware_plugins.xml`
+  registers it as `type="ign_ros2_control::IgnitionSystem"`, a backward-compat
+  alias for the same interface that drove the UR arm in the arm-only sanity run.
+  **We are depending on a compat alias for a Fortress-era plugin name.** The macro
+  hardcodes it, so it cannot be swapped without patching the package.
+- No hand-written `gz_ros2_control` block is needed. Geometry and `ros2_control`
+  both come from the single macro call (`robotiq_gripper`, params: `name`, `prefix`,
+  `parent`, `*origin`, `sim_ignition:=false`, `sim_isaac:=false`,
+  `use_fake_hardware:=false`, `fake_sensor_commands:=false`,
+  `include_ros2_control:=true`, `com_port:=/dev/ttyUSB0`).
+- `robotiq_2f_85_gripper.urdf.xacro` (the package's own demo) passes
+  `use_fake_hardware`, NOT `sim_ignition`. Do not copy it verbatim — mock
+  hardware echoes commands back as state with no physics, and would grasp nothing
+  while looking healthy on `/joint_states`.
+- Under `sim_ignition` the 5 follower joints receive only `<param name="mimic">`
+  and `<param name="multiplier">` — no command or state interfaces. Mimic
+  enforcement is delegated entirely to gz-sim's constraint solver, by the package
+  author's explicit design. **Nothing available at M-1 proves that solver works.**
+  M0-C remains the only evidence.
+- Consequence for the SRDF and controller config: the gripper planning group and
+  the gripper controller both claim exactly one joint,
+  `robotiq_85_left_knuckle_joint`. The five followers appear in neither.
+- **Open risk carried into the merge, not yet resolved:** the merged robot will
+  run two different hardware plugin classes under one `controller_manager` — arm
+  on `gz_ros2_control/GazeboSimSystem`, gripper on the `ign_ros2_control` alias.
+  Multiple hardware components under one `controller_manager` is normal, and both
+  aliases resolve to the same `GazeboSimSystemInterface`, so this should be a
+  non-event — but confirm it, don't assume it: after the merged spawn,
+  `ros2 control list_hardware_interfaces` must show **both** components active,
+  not just the arm's. There is also precedent for Jazzy's `ros2_control` rejecting
+  `<mimic>` joints that carry explicit interface declarations in the
+  `<ros2_control>` block; the package's `<xacro:unless>` stripping those
+  interfaces under `sim_ignition` is the right shape to avoid that, but if the
+  merged model errors at spawn referencing mimic joints, that is this known
+  failure mode, not a new mystery.
+
+## 3.5 Mimic constraints are not physics-enforced, but contact still opposes them
+
+**Status:** resolved enough to proceed. Not resolved enough to call friction
+grasping validated.
+
+*The earlier version of this section was written before a valid contact-load
+run existed. Its factual claims survive unchanged; its practical implication
+did not, and that is the part being replaced. This is a full replacement, not
+a patch — a reader finding both versions would reasonably not know which
+conclusion is live.*
+
+**PROVEN — direct evidence**
+
+`dartsim` does not create mimic constraints. Harmonic's default engine says so
+at spawn, once per follower:
+
+```
+[Err] [Physics.cc:1808] Attempting to create a mimic constraint for joint
+[robotiq_85_left_inner_knuckle_joint] but the chosen physics engine does not
+support mimic constraints, so no constraint will be created.
+```
+
+Corroborated by `gz-physics#432`, the open tracking issue for dartsim mimic
+support. Known engine limitation, not a model misconfiguration.
+
+Free-space tracking works. Measured against Gazebo ground truth
+(`/world/empty/model/ur5e_robotiq/joint_state`), not `/joint_states`.
+Commanding the master `0.7668 -> 0.1000` rad moved all five followers to
+within float noise of `multiplier × master`.
+
+**Contact DOES oppose the linkage.** This is the finding that reverses the
+earlier draft's conclusion. Probe: 40 mm rigid box at the fingertip midpoint,
+master commanded to 0.8 rad (full close), well past what a 40 mm object
+permits.
+
+| quantity | value |
+|---|---|
+| commanded master angle | 0.800 rad |
+| achieved master angle | 0.4586 rad |
+| shortfall | +0.342 rad |
+| controller `stalled` | `true` |
+| controller `reached_goal` | `false` |
+| box pose before | (0.492, 0.133, 0.367) |
+| box pose after | (0.488, 0.135, 0.354) |
+
+The linkage stopped 0.342 rad short of command and the controller reported
+the stall itself. The box was retained: a few mm laterally, ~13 mm down. Not
+ejected — the floor sits at z ≈ 0.03 and the box stayed at 0.354. Not driven
+through.
+
+Whatever the mimic mechanism is, contact reaction limits it. That was the
+open question, and it is answered for this geometry.
+
+**NEW OBSERVATION — one follower diverges, and only under load**
+
+Four followers tracked `multiplier × master` to five decimal places at the
+stalled pose. `robotiq_85_right_knuckle_joint` sat at `-0.431` where `-0.4586`
+was expected — a 0.027 rad divergence.
+
+The correlation worth noticing: in the earlier free-space run, all five
+tracked exactly, including this joint. The divergence appears only under
+contact load.
+
+Two hypotheses, neither ruled out:
+
+1. **Contact reaction bleeding through.** The override is soft enough that
+   physics can perturb it, and this joint is where the right finger's
+   reaction force shows up. If so, the coupling is partly physical rather
+   than purely kinematic — which would be good news, and would partly
+   explain why the stall happened at all.
+2. **Solver or type artifact.** Recon established `right_knuckle` is the only
+   follower declared `revolute`; the other four are `continuous`. Different
+   joint types may simply be handled differently under load.
+
+Cheap discriminating test, if it matters later: re-run the probe with no box
+and command full close. If the divergence persists in free space it is (2).
+The existing free-space data suggests it does not, but that run stopped at
+0.1 rad rather than driving to the 0.8 limit, so it is not a clean comparison.
+
+Not worth chasing now. Worth recording, because if grip stability later
+proves asymmetric between the two fingers, this is the first place to look.
+
+**Consequence 1 — the physics-engine decision is deferred, not taken**
+
+The earlier draft framed `bullet-featherstone` (`gz-physics#517`, real mimic
+constraints via `btMultiBodyGearConstraint`) as a likely necessity. It is not
+indicated. dartsim's behaviour under contact is adequate for the thing we
+needed it to do, and switching would trade a working `ros2_control`
+integration for one with open defects (`gz_ros2_control#440`, `gz-sim#2729`).
+
+**Stay on dartsim.** Revisit only if M3 slip testing fails in a way traceable
+to the linkage rather than to friction parameters.
+
+**Consequence 2 — M0-C can now be calibrated**
+
+Replace the free-space sweep as M0-C's pass criterion. Keep it as a
+subordinate check (it still catches a broken merge) but it must not be what
+M0-C passes on — it returns green while the linkage is unforced.
+
+Calibrated from the run above:
+
+- **shortfall > 0.10 rad** on a 40 mm box commanded to 0.8. Observed 0.342, so
+  this is a wide margin against "drove through" (~0) without being tuned to
+  the exact number.
+- **controller reports `stalled: true`**. It did so unprompted, and it is a
+  free corroborating signal from a different subsystem.
+- **box retained**: displacement < 30 mm, final z well clear of the floor.
+  Observed ~13 mm.
+- **followers within 0.05 rad** of `multiplier × master`, which admits the
+  `right_knuckle` divergence rather than failing on it.
+
+**What is NOT established**
+
+Enumerated so this section cannot be cited as more than it is:
+
+- **n = 1.** One box size, one approach geometry, one run.
+- No lift, no transport, no slip measurement. Contact opposing closure is not
+  the same as a grasp surviving acceleration and gravity. M3 remains
+  entirely open.
+- The ~13 mm downward box movement during closure is unexplained and worth
+  watching: M3's pass criterion is 5 mm of slip. Settling as the fingers make
+  contact is not the same thing as slip under transport load, but if that
+  13 mm is the object sliding between the pads rather than being seated by
+  them, M3 has a problem that predates any friction tuning.
+- No visual confirmation of non-interpenetration. Only numeric pose. Worth
+  one GUI look before M3.
+- The override mechanism is still inferred, not read from source. It matters
+  less now that its behaviour under contact is measured directly.
+
+**ADDENDUM — grasp success is closing-rate dependent**
+
+Found by accident, and it is the more actionable half of §3.5.
+
+An `m0_verify.sh` run that omitted the pre-close step commanded the gripper
+from full-open straight to 0.8 rad. It ejected the box. Restoring the
+pre-close reproduced the retained result. The two runs differ in nothing but
+the starting aperture.
+
+| metric | no pre-close | pre-closed (this run) | pre-closed (probe, earlier) |
+|---|---|---|---|
+| travel | 0.0 → 0.79 rad | 0.44 → 0.80 rad | 0.44 → 0.80 rad |
+| avg rate over window | ~0.263 rad/s | ~0.120 rad/s | ~0.120 rad/s |
+| shortfall | ~0.00 | 0.3365 rad | 0.342 rad |
+| controller `stalled` | `false` | `true` | `true` |
+| box displacement | 363 mm, dropped to floor | 12.8 mm | 13.7 mm |
+| right_knuckle divergence | — | 0.0316 rad | 0.0274 rad |
+
+The retained result reproduces across two independent code paths — the
+standalone probe and `m0_verify.sh` + `m0c_eval.py` — with every number in
+agreement to the second significant figure. This is a real, repeatable
+effect, not one run's noise.
+
+**2.19× the closing rate is the difference between a grasp and an ejection.**
+
+*Mechanism: partly resolved, partly a false dichotomy*
+
+Two candidate mechanisms were proposed for the rate dependence.
+
+**Hypothesis A — momentum.** The fingers arrive with enough kinetic energy to
+knock the box clear rather than arrest against it.
+
+**Hypothesis B — penetration depth per cycle.** A faster commanded rate means
+a larger position step per cycle, so on the cycle where a pad first overlaps
+the box the overlap is deeper, and the contact solver emits a correspondingly
+larger impulse.
+
+Test run: physics timestep halved, no-pre-close case repeated.
+`empty.sdf` copied with `max_step_size` `0.001` → `0.0005`. Verified in effect
+live, not assumed: `/world/empty/stats` reported `step_size: 500000 nsec`.
+
+| | default timestep (1 ms) | halved timestep (0.5 ms) |
+|---|---|---|
+| box displacement | 363 mm | 360.1 mm |
+| shortfall | 0.0000 rad | 0.0000 rad |
+| `reached_goal` | `true` | `true` |
+
+**Ejection is insensitive to the physics timestep. Halving it changed
+nothing.**
+
+**What this establishes**
+
+- The ejection is not an artifact of solver integration granularity.
+- Therefore **M3's 5 mm slip criterion is not timestep-confounded.** The slip
+  numbers M3 measures will be physical, not solver noise layered on top. No
+  reason to touch `max_step_size` for that measurement.
+
+Both are worth having, and both are load-bearing for M3.
+
+**What this does NOT establish**
+
+It does not confirm Hypothesis A, and the test as designed could not have.
+
+`gz_ros2_control` writes follower positions once per controller cycle
+(`update_rate: 500` in `controllers.yaml`, i.e. every 2 ms). Halving the
+physics timestep does not change the position delta per write — it only
+integrates more finely between writes that are themselves unchanged. The
+overlap depth created on the first contacting write is identical in both
+runs, so B's actual variable was never varied.
+
+Further: under kinematic override the followers report velocity ~0, so there
+is no momentum in the ordinary sense for A to appeal to. "Closing rate" in
+this system means position delta per controller write — which is B's
+variable. A and B are plausibly the same mechanism under two names, which
+would explain why a test targeting neither returned null.
+
+**Not being pursued further, deliberately**
+
+The genuine discriminator would be varying `update_rate` at fixed commanded
+travel. It is not being run, because the mitigation is identical under either
+hypothesis: limit the commanded closing rate. Resolving the mechanism would
+not change a single downstream decision.
+
+Recorded so that a later reader does not mistake this for an unexamined gap.
+
+*Consequence for M3, unchanged*
+
+If M3 ejects objects, suspect closing rate, not friction and not timestep. A
+rate-dependent ejection presents as intermittent grip failure with `mu`
+unchanged — some cycles hold, some do not. Against M3's criterion of 20
+consecutive cycles with at least 18 under 5 mm slip, that reads as marginal
+friction and invites tuning `mu` indefinitely against a variable that is not
+`mu`.
+
+*Other consequences, regardless of mechanism*
+
+- **The pre-close is part of the grasp procedure, not a test fixture.** The
+  pick-place node must pre-shape to roughly the object's width before
+  approaching, then close the remainder. `config/scene.yaml` now carries
+  `gripper.preclose_heuristic` and `preclose_clearance` as placeholders until
+  `gripper.width_map` exists.
+- **The 12–14 mm settle is now measured twice** and should be understood
+  before M3, since it already exceeds M3's 5 mm slip criterion on its own.
+  Most likely pad seating rather than sliding, but that is unverified — one
+  GUI look distinguishes them.
+
+**Method note**
+
+The earlier draft's conclusion — that friction grasping could not work — was
+drawn from the engine log line plus free-space data. It was wrong. The log
+line was accurate and the inference from it was not: "the engine declines to
+create the constraint" does not entail "nothing opposes the linkage," because
+the software override turned out to be perturbable by contact.
+
+This is the second time this project a correct observation produced a wrong
+downstream conclusion. The prior instance is in §3.
+`robotiq_2f_85_gripper.urdf.xacro` passes `use_fake_hardware` — a correct
+reading of the file — and the conclusion drawn from it, that the package
+offered only mock and USB paths and the merge would need a hand-written
+`gz_ros2_control` block, was false. `sim_ignition` was in the same file the
+whole time, and reading the `<hardware>` block rather than inferring from the
+demo's arguments is what found it.
+
+Both times the correcting evidence came from reading or running the artifact
+itself. Neither time did more careful reasoning about the available evidence
+help, because in both cases the available evidence was not wrong — it was
+incomplete, and no amount of reasoning reveals what has not been looked at.
+
 ## 4. Independent corroboration for the spec's `/joint_states` warning
 
 The spec instructs that M0-C be cross-checked against Gazebo's own state output, *not*
@@ -109,22 +411,74 @@ wrong in ways that looked plausible. Read, don't trust.
   not merely warn, it will fail. This is what M0-A checks.
 - ROS 2 Jazzy requires Ubuntu 24.04 Noble.
 
-## 6. Open questions, to be answered by recon on the target machine
+## 6. Open questions — answered by recon on the target machine
 
-Deliberately not guessed at. `scripts/00_recon.sh` collects the ground truth:
+Recon run: 2026-08-03, `ros-jazzy-ur-description` 3.5.1, `ros-jazzy-robotiq-description`
+0.0.1-3, both from apt (see §2 for full package inventory).
 
-1. Exact xacro macro signature of `ur_macro.xacro` in the installed `ur_description`
-   (Jazzy) — parameter names have changed across releases.
-2. Which Robotiq description package is actually available on Jazzy
-   (`robotiq_description` from PickNik vs. the donor's vendored copy).
-3. The real flange frame name on UR5e (`tool0` vs `flange` vs `wrist_3_link`) and the
-   mount transform to the gripper base.
-4. Actual `finger_joint` limits and the full mimic multiplier/offset set from the parsed
-   URDF — not from the donor's README table.
-5. The `tool0` → finger-pad-contact-midpoint offset, needed for `grasp.tcp_offset` in
-   `scene.yaml`.
+**1. `ur_macro.xacro` parameter names** — confirmed via
+`ros-jazzy-ur-description` 3.5.1. `ur_macro.xacro:55` macro `ur_robot`, and
+`ur.urdf.xacro` exposes `name`, `ur_type`, `tf_prefix`, `joint_limit_params`,
+`kinematics_params`, `physical_params`, `visual_params`, `transmission_hw_interface`,
+`safety_limits`, `safety_pos_margin`, `safety_k_position` as `xacro:arg`s. Unchanged
+from what the donor repo assumes.
 
-Nothing in the URDF merge gets written until items 1–5 come back with real values.
+**2. Robotiq description source** — **apt**, not source-fallback:
+`ros-jazzy-robotiq-description` 0.0.1-3noble.20260615.175624. `ros2_robotiq_gripper`
+(PickNik source fallback) was not needed on this machine.
+
+**3. Flange frame name + mount transform** — confirmed chain in
+`ur_macro.xacro:388-403`, all fixed joints, all zero-translation:
+
+```
+${tf_prefix}wrist_3_link
+  --(wrist_3-flange, xyz=0 0 0, rpy=0 -π/2 -π/2)-->  ${tf_prefix}flange
+  --(flange-tool0,   xyz=0 0 0, rpy=π/2 0 π/2)-->     ${tf_prefix}tool0
+```
+
+`flange` and `tool0` differ only in orientation (ROS-Industrial convention:
+`flange` carries the raw mechanical mounting axes, `tool0` re-expresses it in the
+"X+ left, Y+ up, Z+ front" all-zeros tool convention). `scene.yaml` mounts the
+gripper at `tool0`, consistent with the ROS-Industrial convention and the
+`ur_to_robotiq_adapter.urdf.xacro` design (its `connected_to` param is left open
+by the package precisely so the integrator picks the attach frame).
+
+**4. Actuated joint + mimic set — CORRECTION to §3 above, not a confirmation.**
+The donor's claim of `finger_joint` as the actuated joint **does not match** the
+joint actually present in `ros-jazzy-robotiq-description` 0.0.1-3. The real master
+joint, confirmed in `robotiq_2f_85_macro.urdf.xacro:232-238`:
+
+```
+joint: ${prefix}robotiq_85_left_knuckle_joint   type=revolute
+  axis:  0 -1 0
+  origin (from robotiq_85_base_link): xyz=0.03060114 0.0 0.05490452  rpy=0 0 0
+  limit: lower=0.0  upper=0.8  velocity=0.5  effort=50
+```
+
+5 mimic joints hang off it exactly as the donor predicted, but the multiplier/type
+set is:
+
+| mimic joint | type | multiplier | offset |
+|---|---|---|---|
+| `robotiq_85_right_knuckle_joint` | revolute | -1 | 0 (default) |
+| `robotiq_85_left_inner_knuckle_joint` | continuous | 1 (default) | 0 |
+| `robotiq_85_right_inner_knuckle_joint` | continuous | -1 | 0 |
+| `robotiq_85_left_finger_tip_joint` | continuous | -1 | 0 |
+| `robotiq_85_right_finger_tip_joint` | continuous | 1 (default) | 0 |
+
+**Every downstream reference to `finger_joint` is wrong for this package and must
+use `robotiq_85_left_knuckle_joint`** (with `tf_prefix`/`prefix` applied same as the
+arm). `config/scene.yaml` has been corrected — see below. The 0.0=open/0.8=closed
+range the donor reported does hold numerically (`limit lower=0.0 upper=0.8`), so
+that part of §3 stands; only the joint *name* was wrong.
+
+**5. `tool0` → finger-pad-contact-midpoint offset** — still open by design. Per the
+original plan this requires the merged URDF (arm + gripper in one tree) to measure;
+it cannot be read off either package in isolation. Remains `null` in `scene.yaml`
+until the merge xacro exists.
+
+All of 1–4 are now real, observed values. Item 5 is the one legitimate carry-over
+into the merge step.
 
 ---
 
