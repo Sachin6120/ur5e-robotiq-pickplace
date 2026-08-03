@@ -5,41 +5,60 @@
 default_velocity_scaling_factor: 0.1
 default_acceleration_scaling_factor: 0.1
 
+# CORRECTED from MSA's generated defaults (2026-08-03): every joint had
+# has_acceleration_limits: false. The stock UR5e URDF/description never
+# specifies acceleration limits (UR's own datasheet-derived ROS packages don't
+# either), so Setup Assistant defaulted all of them off. The default
+# time-parameterization response adapter (AddTimeOptimalParameterization)
+# requires an acceleration limit per joint to compute a timed trajectory —
+# with limits off, it fails deterministically on every single plan, which is
+# exactly what M1's first run hit: 20/20 "PLAN FAILURE", ~1.02s each, zero
+# variance. OMPL was finding a valid geometric path every time
+# (confirmed separately via /check_state_validity on the M1 goal: valid=True,
+# no contacts) — the failure was entirely in this post-processing step.
+#
+# Values below match each joint's own max_velocity numerically. That is a
+# common convention when the real per-joint acceleration spec isn't available
+# from the vendor description, not a measured UR5e figure. M1's own node
+# already applies acceleration_scaling: 0.1 on top of this via
+# setMaxAccelerationScalingFactor, so the effective planned acceleration is a
+# further 10x below whatever is written here.
+
 # Specific joint properties can be changed with the keys [max_position, min_position, max_velocity, max_acceleration]
 # Joint limits can be turned off with [has_velocity_limits, has_acceleration_limits]
 joint_limits:
   elbow_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
   robotiq_85_left_knuckle_joint:
     has_velocity_limits: true
     max_velocity: 0.5
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 0.5
   shoulder_lift_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
   shoulder_pan_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
   wrist_1_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
   wrist_2_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
   wrist_3_joint:
     has_velocity_limits: true
     max_velocity: 3.1415926535897931
-    has_acceleration_limits: false
-    max_acceleration: 0
+    has_acceleration_limits: true
+    max_acceleration: 3.1415926535897931
