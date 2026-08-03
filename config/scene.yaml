@@ -93,9 +93,53 @@ grasp:
   retreat:       0.120              # post-grasp lift distance along -approach [m]
   gripper_roll:  0.0                # rotation about the approach axis [rad]
 
-  # Distance from `frames.flange` to the finger-pad contact midpoint, along the
-  # gripper's approach axis. Defines where grasp_tcp is published.
-  tcp_offset: null                  # RECON — measure from merged URDF
+  # Distance from tool0 to the finger-pad contact midpoint, along tool0's
+  # local Z ("front", ROS-Industrial convention) — the last open item from
+  # M-1_reference_report.md §6. Measured live against Gazebo ground truth
+  # (gz pose/info for wrist_3_link + the two fingertip links, not TF —
+  # same reasoning as M0-C: this should be measured independent of what
+  # MoveIt/robot_state_publisher believes, not assumed to agree with it).
+  # tool0 itself never appears in the pose topic — it, flange,
+  # robotiq_85_base_link and ur_to_robotiq_link are all fixed-joint-lumped
+  # into wrist_3_link at the physics level (visible in the pose topic as
+  # "wrist_3_link_fixed_joint_lump__..." entries). Since every joint in that
+  # chain has zero translation (confirmed by recon), tool0's world POSITION
+  # equals wrist_3_link's; only its orientation differs, by the two known
+  # fixed rotations. Reconstructed tool0's orientation from wrist_3_link's
+  # plus those two rotations, then projected (fingertip_midpoint - tool0_pos)
+  # onto tool0's resulting local Z axis.
+  #
+  # CONFIRMED: lateral symmetry holds across the whole joint range — the
+  # fingertip midpoint sits on tool0's Z axis to within ~2e-7 m regardless of
+  # aperture, so tcp_offset is a clean single-axis distance, not an
+  # approximation of one.
+  #
+  # NOT CONFIRMED, and initially assumed rather than checked: that the
+  # four-bar linkage holds this distance constant as the gripper opens and
+  # closes. It does not. Measured across the full range:
+  #   master (rad)   tcp_offset (m)
+  #     0.000            0.1093   (fully open)
+  #     0.200            0.1158
+  #     0.400            0.1204
+  #     0.600            0.1227
+  #     0.767            0.1230   (near fully closed)
+  # 13.6 mm of variation, non-linear (fast rise, then saturating) — bigger
+  # than M3's own 5 mm slip criterion, so treating this as one fixed scalar
+  # is a real approximation, not a measured constant like the rest of this
+  # file's recon-derived values.
+  #
+  # Value below is the 0.4 rad sample: object.size[grasp_width_axis] here is
+  # 0.045 m, close to the 0.040 m box the M0-C contact probe found stalls
+  # around 0.44-0.46 rad, so 0.4 rad is the closest available sample to this
+  # object's actual expected grasp aperture. It is a placeholder tied to that
+  # similarity, not a computed value for this exact object.
+  #
+  # RE-DERIVE once gripper.width_map exists: at that point tcp_offset should
+  # be looked up at the aperture width_map actually computes for this
+  # object's width, not read off this table by eye. Until then, grasp_tcp's
+  # z-position could be off by several mm if the real contact aperture is
+  # not close to 0.4 rad.
+  tcp_offset: 0.1204
 
 # ---------------------------------------------------------------------------
 gripper:
