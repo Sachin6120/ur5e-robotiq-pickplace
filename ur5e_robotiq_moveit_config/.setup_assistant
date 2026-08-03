@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: ur5e_robotiq_description
+    relative_path: urdf/ur5e_robotiq.urdf.xacro
+    xacro_args: name:=ur5e_robotiq sim_ignition:=true
+  srdf:
+    relative_path: config/ur5e_robotiq.srdf
+  package_settings:
+    author_name: Sachin kumar pal
+    author_email: sachinkpal612@gmail.com
+    generated_timestamp: 1785791264
