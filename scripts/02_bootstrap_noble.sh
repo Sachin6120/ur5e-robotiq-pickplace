@@ -24,11 +24,25 @@
 #   - the MoveIt config         (Setup Assistant, after the merge)
 #   - anything MTC or MongoDB   (deferred by the project spec)
 
-set -uo pipefail
+# NOTE: deliberately NOT using `set -o pipefail`.
+#   `cmd | grep -q PAT` is unsafe under pipefail: grep -q exits the moment it
+#   matches, closing the pipe, which kills `cmd` with SIGPIPE (141). pipefail
+#   then reports the pipeline as FAILED precisely because the pattern MATCHED.
+#   That silently inverts every such test. Learned the hard way — it made this
+#   script claim apt couldn't see ros-jazzy-* on a machine where ros-jazzy-desktop
+#   was already installed.
+#   Pipelines below capture into a variable first and test the variable.
+set -u
 
 WS="${WS:-$HOME/ur5e_ws}"
 ROS_DISTRO_TARGET=jazzy
 FAILED=0
+
+# Build parallelism. Left unset = colcon decides (one worker per core), which is
+# what OOM-kills a MoveIt build inside WSL2's default memory cap. Auto-throttled
+# in §7 based on available RAM; override explicitly with:
+#   COLCON_WORKERS=2 bash scripts/02_bootstrap_noble.sh
+COLCON_WORKERS="${COLCON_WORKERS:-auto}"
 
 hr()   { printf '\n%s\n' "════════════════════════════════════════════════════════════"; }
 sec()  { hr; printf '§ %s\n' "$1"; hr; }
@@ -59,9 +73,12 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 # Catch a pre-existing contaminated system before we add to it.
-if dpkg -l 2>/dev/null | grep -qiE '^ii\s+(gazebo11|libgazebo11|ignition-gazebo|ignition-common)'; then
+# Capture first, then test — see the pipefail note at the top of this file.
+# Under pipefail this test would have reported "clean" on a DIRTY machine.
+CONTAM=$(dpkg -l 2>/dev/null | grep -iE '^ii[[:space:]]+(gazebo11|libgazebo11|ignition-gazebo|ignition-common)' || true)
+if [[ -n "$CONTAM" ]]; then
   warn "Fortress/Classic-era packages ALREADY present on this machine:"
-  dpkg -l | grep -iE '^ii\s+(gazebo11|libgazebo11|ignition-)' | awk '{print "         " $2}'
+  printf '%s\n' "$CONTAM" | awk '{print "         " $2}'
   warn "On a genuinely fresh install this list should be empty."
   warn "These will make M0-A fail. Remove them before continuing:"
   warn "  sudo apt remove --purge 'gazebo11*' 'libgazebo11*' 'ignition-*' && sudo apt autoremove"
@@ -117,11 +134,59 @@ else
 fi
 
 run sudo apt update
-if apt-cache policy ros-${ROS_DISTRO_TARGET}-desktop 2>/dev/null | grep -q 'Candidate:'; then
+
+# Don't just assert failure — show what apt actually sees, so the cause is
+# visible in the log rather than requiring a second round trip.
+NJAZZY=$(apt-cache search "^ros-${ROS_DISTRO_TARGET}-" 2>/dev/null | wc -l)
+CAND=$(apt-cache policy "ros-${ROS_DISTRO_TARGET}-desktop" 2>/dev/null \
+       | awk '/Candidate:/{print $2}')
+
+printf '  ros-%s-* packages visible to apt: %s\n' "$ROS_DISTRO_TARGET" "$NJAZZY"
+printf '  ros-%s-desktop candidate: %s\n' "$ROS_DISTRO_TARGET" "${CAND:-<package unknown to apt>}"
+
+if [[ "$NJAZZY" -gt 100 && -n "$CAND" && "$CAND" != "(none)" ]]; then
   ok "ROS 2 ${ROS_DISTRO_TARGET} packages visible to apt"
 else
-  bad "apt cannot see ros-${ROS_DISTRO_TARGET}-* packages — apt source is not working"
+  bad "apt cannot resolve ros-${ROS_DISTRO_TARGET}-desktop"
+
+  printf '\n  -- configured ROS apt sources --\n'
+  for f in /etc/apt/sources.list.d/ros2.sources /etc/apt/sources.list.d/ros2.list; do
+    [[ -f "$f" ]] && { printf '  %s:\n' "$f"; sed 's|^|      |' "$f"; }
+  done
+
+  printf '\n  -- ROS distros apt CAN see --\n'
+  apt-cache search '^ros-' 2>/dev/null \
+    | sed -n 's/^ros-\([a-z]\+\)-.*/\1/p' | sort | uniq -c | sort -rn \
+    | head -8 | sed 's|^|      |'
+
+  printf '\n  -- apt list state --\n'
+  ls -la /var/lib/apt/lists/ 2>/dev/null | grep -i 'packages.ros.org' \
+    | sed 's|^|      |' || printf '      (no packages.ros.org lists cached)\n'
+
+  note "if the distro histogram above shows kilted/rolling but not ${ROS_DISTRO_TARGET},"
+  note "this machine inherited an apt source from an earlier setup. Fix with:"
+  note "    sudo rm -f /etc/apt/sources.list.d/ros2.list /etc/apt/sources.list.d/ros2.sources"
+  note "    sudo apt purge -y ros2-apt-source"
+  note "  then re-run this script — it will reinstall the source cleanly."
   exit 1
+fi
+
+# On a re-run against a machine that already has some ros-jazzy-* packages
+# installed from a much older sync, `apt install` below only pulls in NEW
+# packages/deps at current versions while leaving already-installed ones
+# (e.g. libfastcdr) pinned to their old build. That version skew is an ABI
+# break waiting to happen: a freshly-installed package's typesupport lib
+# expects symbols from a current lib{fastcdr,fastrtps}, the stale one on
+# disk doesn't have them, and you get a runtime "undefined symbol" crash
+# from move_group/rviz2 with no compile-time warning. `apt upgrade` (not
+# full-upgrade — this never removes packages) closes that gap before we
+# install anything new on top of it.
+UPGRADABLE=$(apt list --upgradable 2>/dev/null | grep -c '^ros-')
+if [[ "$UPGRADABLE" -gt 0 ]]; then
+  warn "$UPGRADABLE ros-${ROS_DISTRO_TARGET}-* packages are stale — upgrading before installing more"
+  run sudo apt upgrade -y
+else
+  ok "all ros-${ROS_DISTRO_TARGET}-* packages already current"
 fi
 
 # ---------------------------------------------------------------------------
@@ -165,9 +230,20 @@ ok "MoveIt 2 + ros2_control stack installed"
 # UR packages: prefer binaries, fall back to source. Report which happened —
 # the M-1 report needs to record this.
 mkdir -p "$WS/src"
+# has_binary <pkgname> -> 0 if apt has a real (non-"(none)") candidate.
+# Capture-then-test; do not pipe into grep -q. See pipefail note at top.
+has_binary() {
+  local cand
+  cand=$(apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/{print $2; exit}')
+  [[ -n "$cand" && "$cand" != "(none)" ]]
+}
+
 UR_FROM=binary
-for p in ur-description ur-simulation-gz ur-moveit-config; do
-  if apt-cache policy "ros-${ROS_DISTRO_TARGET}-${p}" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+# ur_moveit_config's launch file hard-codes a node from ur_robot_driver even in
+# sim-only mode (config/launch/ur_moveit.launch.py), so it's a real runtime
+# dependency here, not just a real-hardware package.
+for p in ur-description ur-simulation-gz ur-moveit-config ur-robot-driver; do
+  if has_binary "ros-${ROS_DISTRO_TARGET}-${p}"; then
     run sudo apt install -y "ros-${ROS_DISTRO_TARGET}-${p}"
   else
     warn "no binary for ros-${ROS_DISTRO_TARGET}-${p}"
@@ -192,8 +268,7 @@ sec "6. Robotiq description  (the actual M-1 problem)"
 # UR ships no integrated gripper. This is the package the whole merge depends on
 # and the one most likely to be missing on Jazzy.
 ROBOTIQ_FROM=none
-if apt-cache policy "ros-${ROS_DISTRO_TARGET}-robotiq-description" 2>/dev/null \
-     | grep -q 'Candidate: [^(]'; then
+if has_binary "ros-${ROS_DISTRO_TARGET}-robotiq-description"; then
   run sudo apt install -y "ros-${ROS_DISTRO_TARGET}-robotiq-description"
   ROBOTIQ_FROM=binary
   ok "robotiq_description installed from apt"
@@ -217,18 +292,51 @@ if [[ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]]; then
 fi
 run rosdep update
 
+# ROS 2's setup.bash references its own internal variables (e.g.
+# AMENT_TRACE_SETUP_FILES) without guarding them, so it is not nounset-safe.
+# Suspend `set -u` for this one line only, then restore it immediately.
+set +u
 # shellcheck disable=SC1090
 source "/opt/ros/${ROS_DISTRO_TARGET}/setup.bash"
+set -u
 
 cd "$WS"
 if [[ -n "$(ls -A "$WS/src" 2>/dev/null)" ]]; then
   run rosdep install --from-paths src --ignore-src -r -y \
       --rosdistro "${ROS_DISTRO_TARGET}" || warn "rosdep reported unresolved keys — read them"
-  if run colcon build --symlink-install; then
+
+  # Decide parallelism BEFORE building. An OOM-kill here wastes 20 minutes and
+  # reports as a confusing compiler crash rather than "out of memory".
+  if [[ "$COLCON_WORKERS" == "auto" ]]; then
+    MEM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+    CORES=$(nproc)
+    printf '  detected: %s GB RAM, %s cores\n' "$MEM_GB" "$CORES"
+    # MoveIt/OMPL translation units want ~2 GB each at peak.
+    SAFE=$(( MEM_GB / 2 )); [[ $SAFE -lt 1 ]] && SAFE=1
+    if [[ $SAFE -lt $CORES ]]; then
+      COLCON_WORKERS=$SAFE
+      warn "throttling to $COLCON_WORKERS workers — ${MEM_GB}GB RAM is tight for $CORES-way parallel"
+      note "WSL2 caps memory by default. To raise it, create C:\\Users\\<you>\\.wslconfig:"
+      note "    [wsl2]"
+      note "    memory=12GB"
+      note "  then run 'wsl --shutdown' from PowerShell and reopen."
+    else
+      COLCON_WORKERS=""
+      ok "memory is comfortable for $CORES-way parallel build"
+    fi
+  fi
+
+  BUILD_ARGS=(--symlink-install)
+  [[ -n "$COLCON_WORKERS" ]] && BUILD_ARGS+=(--parallel-workers "$COLCON_WORKERS")
+
+  if run colcon build "${BUILD_ARGS[@]}"; then
     ok "workspace built"
   else
     bad "colcon build failed — this is M-1 information, record the error"
-    note "most likely cause: a source package targeting Humble, not Jazzy"
+    note "if the log shows a killed compiler / signal 9, that is an OOM kill,"
+    note "not a code error. Re-run with fewer workers:"
+    note "    COLCON_WORKERS=1 bash scripts/02_bootstrap_noble.sh"
+    note "otherwise the likely cause is a source package targeting Humble, not Jazzy"
   fi
 else
   note "src/ is empty (everything came from binaries) — nothing to build yet"
@@ -251,9 +359,10 @@ else
   bad "gz binary not on PATH after install"
 fi
 
-if dpkg -l 2>/dev/null | grep -qiE '^ii\s+(gazebo11|libgazebo11|ignition-gazebo)'; then
+CONTAM_POST=$(dpkg -l 2>/dev/null | grep -iE '^ii[[:space:]]+(gazebo11|libgazebo11|ignition-gazebo)' || true)
+if [[ -n "$CONTAM_POST" ]]; then
   bad "Fortress/Classic packages present after install — something pulled them in"
-  dpkg -l | grep -iE '^ii\s+(gazebo11|libgazebo11|ignition-)' | awk '{print "         " $2}'
+  printf '%s\n' "$CONTAM_POST" | awk '{print "         " $2}'
   note "trace with: apt-cache rdepends <pkgname>"
 else
   ok "no Fortress/Classic contamination"
