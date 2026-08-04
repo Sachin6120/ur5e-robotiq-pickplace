@@ -5,4 +5,5 @@ __pycache__/
 *.pyc
 recon_out/
 probe_out/
+grasp_table_out/
 m0_evidence/
