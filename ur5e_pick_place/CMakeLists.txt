@@ -17,6 +17,7 @@ find_package(rclcpp REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
@@ -34,8 +35,33 @@ ament_target_dependencies(m1_joint_goal
   moveit_core
 )
 
+# --- M2: static scene TF + Cartesian approach --------------------------------
+add_executable(static_scene_tf src/static_scene_tf.cpp)
+ament_target_dependencies(static_scene_tf
+  rclcpp
+  tf2
+  tf2_ros
+  geometry_msgs
+)
+
+add_executable(m2_cartesian_approach src/m2_cartesian_approach.cpp)
+target_include_directories(m2_cartesian_approach PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(m2_cartesian_approach
+  rclcpp
+  moveit_ros_planning_interface
+  moveit_core
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  geometry_msgs
+)
+
 install(TARGETS
   m1_joint_goal
+  static_scene_tf
+  m2_cartesian_approach
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

@@ -236,14 +236,47 @@ def launch_setup(context, *args, **kwargs):
     ]
 
 
+def _default_base_args():
+    # CORRECTED (M2): base_xyz/base_rpy used to default to "0 0 0"
+    # unconditionally, independent of scene.yaml. That was invisible right up
+    # until it mattered: a plain `ros2 launch ...` with no extra args span the
+    # robot ground-mounted even after scene.yaml's robot.base_pose was raised
+    # to table height, because nothing here ever read that field — the
+    # elevated base only took effect when base_xyz was passed explicitly by
+    # hand on the command line. Defaulting from scene.yaml via the same
+    # shared module move_group.launch.py and m2_cartesian_approach.launch.py
+    # use closes that gap: a bare invocation now matches what MoveIt and M2
+    # assume, rather than requiring every caller to remember to pass it.
+    #
+    # Falls back to "0 0 0" if scene.yaml or robot.base_pose isn't there —
+    # this file is also used standalone for M0-style structural checks that
+    # predate scene.yaml's base_pose field and don't need it.
+    scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
+    if not os.path.isfile(scene_file):
+        return {"base_xyz": "0 0 0", "base_rpy": "0 0 0"}
+    import importlib.util
+
+    import yaml
+    with open(scene_file, "r") as fh:
+        scene = yaml.safe_load(fh)
+    if "robot" not in scene or "base_pose" not in scene["robot"]:
+        return {"base_xyz": "0 0 0", "base_rpy": "0 0 0"}
+    args_module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    spec = importlib.util.spec_from_file_location("scene_xacro_args", args_module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.xacro_base_args(scene)
+
+
 def generate_launch_description():
+    default_base_args = _default_base_args()
     declared_arguments = [
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("tf_prefix", default_value=""),
         DeclareLaunchArgument("sim_ignition", default_value="true"),
         DeclareLaunchArgument("gripper_rotation", default_value="0.0"),
-        DeclareLaunchArgument("base_xyz", default_value="0 0 0"),
-        DeclareLaunchArgument("base_rpy", default_value="0 0 0"),
+        DeclareLaunchArgument("base_xyz", default_value=default_base_args["base_xyz"]),
+        DeclareLaunchArgument("base_rpy", default_value=default_base_args["base_rpy"]),
         DeclareLaunchArgument(
             "model_name",
             default_value="ur5e_robotiq",

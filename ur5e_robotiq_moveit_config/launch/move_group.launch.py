@@ -1,11 +1,49 @@
+import importlib.util
+import os
+
+import yaml
 from launch import LaunchDescription
 from launch_ros.actions import SetParameter
 from moveit_configs_utils import MoveItConfigsBuilder
 from moveit_configs_utils.launches import generate_move_group_launch
 
 
+def _load_scene_xacro_args_module():
+    # config/scene_xacro_args.py is the single source for turning
+    # scene.yaml's robot.base_pose into xacro mapping strings — shared by
+    # this file, ur5e_robotiq_sim_control.launch.py, and
+    # m2_cartesian_approach.launch.py. It's loaded by path (not a normal
+    # package import) because it lives next to scene.yaml, not inside any
+    # one ROS package that all three could import from.
+    path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    spec = importlib.util.spec_from_file_location("scene_xacro_args", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def generate_launch_description():
-    moveit_config = MoveItConfigsBuilder("ur5e_robotiq", package_name="ur5e_robotiq_moveit_config").to_moveit_configs()
+    # CORRECTED (M2): the .setup_assistant-recorded xacro_args are
+    # "name:=ur5e_robotiq sim_ignition:=true" — no base_xyz/base_rpy. Without
+    # passing them here too, MoveItConfigsBuilder regenerates robot_description
+    # from the xacro's own defaults ("0 0 0"), independent of whatever base
+    # pose the sim was actually spawned with. That mismatch is invisible until
+    # something tries to plan: move_group's own kinematic model silently
+    # disagrees with Gazebo's about where base_link is, so IK/reachability
+    # results are computed against a robot that isn't the one running. Found
+    # via compute_ik: elevating the sim's base to table height (scene.yaml
+    # robot.base_pose) changed nothing until this file also passed the same
+    # base_xyz/base_rpy into its own robot_description mapping.
+    scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
+    with open(scene_file, "r") as fh:
+        scene = yaml.safe_load(fh)
+    base_args = _load_scene_xacro_args_module().xacro_base_args(scene)
+
+    moveit_config = (
+        MoveItConfigsBuilder("ur5e_robotiq", package_name="ur5e_robotiq_moveit_config")
+        .robot_description(mappings=base_args)
+        .to_moveit_configs()
+    )
     move_group_ld = generate_move_group_launch(moveit_config)
 
     # CORRECTED (2026-08-04): generate_move_group_launch() does not set
