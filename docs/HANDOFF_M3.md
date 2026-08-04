@@ -1,10 +1,15 @@
-# Handoff — M3, Blockers 1 and 2 closed this session
+# Handoff — M3, Blockers 1/2 closed, new unresolved reliability finding
 
 Written 2026-08-04. M-1, M0, M1, M2 are closed and committed. Blocker 1 is
 fixed and validated live. Blocker 2 is closed — geometric seating, not
-friction — but closing it surfaced two new items that must land in M3's
-grasp procedure before cycle-count testing starts, one of them severe
-(unbounded hang, not just bad data).
+friction. Closing it surfaced two items that must land in M3's grasp
+procedure (see Blocker 2 section below), one of them severe. Then, building
+the grasp-table sweep this same session, a **third, more severe, and
+currently unresolved** finding turned up: the exact anchor configuration
+Blocker 2 validated 5/5 times stopped reproducing, on two different fresh
+sim instances, for reasons not yet understood. Read the new section
+immediately after Blocker 2 before trusting anything measurement-shaped
+from this environment.
 
 ## State
 
@@ -182,6 +187,140 @@ just hung, and they're what you'll keep running during M3 tuning.
 planned as Blocker 2's step 3. It was going to answer seating-vs-sliding,
 and that's now settled by measurement (Test B above), more precisely than
 eyeballing would have given.
+
+## NEW, SEVERE, UNRESOLVED: contact resolution stopped reproducing
+
+While building the next artifact (the grasp-table sweep below), the exact
+40mm/0.45rad configuration Blocker 2 validated 5/5 times — clean stall,
+consistent shortfall, reproducible drop — **stopped working, on two
+separate fresh sim instances, for a reason that is not yet understood.**
+This is a bigger deal than the sweep it interrupted: it calls into question
+whether ANY single measurement taken in this environment can be trusted
+without a reproduction check, which directly undercuts the credibility of
+running M3's 20-cycle test at all until it's understood.
+
+**What happened, in order:**
+
+1. Built `scripts/06_measure_grasp_table.sh` (see below) with a
+   width-dependent `PRECLOSE` formula based on an unverified spec constant
+   (`max_opening=0.085`, the 2F-85 spec figure, never checked against
+   measurement). First run (25-65mm): 4/5 widths timed out, and the one
+   "OK" result was later found to be a false positive — the object fell
+   through at spawn and was never caught; the settle check correctly saw
+   stillness but never checked *where* the object was resting. Added a
+   spawn-validity check (compares post-spawn box height to intended spawn
+   height, rejects if >10mm off) — a real, worthwhile fix, keep it.
+2. Recalibrated `PRECLOSE` by interpolating `05_measure_gripper_geometry.sh`'s
+   actual measured table instead of the spec constant, back-solved to
+   reproduce the validated 0.45rad at 40mm almost exactly (0.4523rad, i.e.
+   the fix was correct and well-targeted). Re-ran narrowed to 30-50mm: **all
+   5 widths timed out, including 40mm** — the exact width/angle pair
+   already proven to work.
+3. To isolate "my new script has a bug" from "something about the sim
+   changed," ran the **original, byte-for-byte unmodified**
+   `04_mimic_contact_probe.sh` with its own hardcoded `PRECLOSE=0.45` — no
+   formula, no width sweep, the literal script and config that produced
+   every Blocker 2 result. **It hung too.** Box placement coordinates
+   matched Test A's run essentially exactly. Ruled out my new script as the
+   cause.
+4. Checked whether this was long-running-session degradation: the `gz sim`
+   process had in fact been silently replaced at some point (started
+   12:36:48, after every earlier successful Blocker 2 run at 11:22-11:47 —
+   nothing in this session explicitly narrated that restart; the parent
+   process matched my own background-task launch signature, so it was one
+   of mine, just not consciously tracked as a restart at the time). Killed
+   it, launched a **completely fresh instance**, confirmed controllers
+   active and base at z=0.75 (not a gross misconfiguration), then re-ran
+   the unmodified `04_mimic_contact_probe.sh` a second time. **It hung
+   again**, on a sim instance that had existed for under two minutes and
+   had never run a single prior spawn/close cycle.
+
+**This rules out**: my new script's calibration (step 3 used the original
+script entirely), and long-session state accumulation (step 4 used a
+freshly-launched instance with zero prior history).
+
+**Does NOT rule out, not yet investigated**: what actually changed. One
+loose thread, not yet chased down — the second reproduction attempt's
+`§1 Baseline` (gripper open, no object, sampled before any command is
+issued) read `robotiq_85_left_knuckle_joint` at **0.7668 rad**, not ~0.
+Every probe script's stated precondition is "gripper OPEN" at start. If a
+fresh spawn is not reliably starting from the open position, that's a
+different and more basic problem than contact-resolution physics, and it
+may or may not be related to the hang (the subsequent pre-close command did
+successfully reach ~0.45 from wherever it started, so it isn't obviously
+the direct cause — but it's an anomaly that showed up in the same window as
+the reproducibility failure and hasn't been explained). Check spawn-time
+joint state explicitly before doing anything else with this environment.
+
+**What did NOT happen**: I did not keep iterating against a demonstrably
+unreliable sim. After the second unmodified-script hang, stopped, cleaned
+up (leftover box removed, gripper reopened — both completed normally,
+confirming the action server itself isn't broken, just this specific
+contact scenario), and wrote this up rather than trying a third instance or
+guessing at more fixes.
+
+**Consequence for the grasp-table sweep**: `scripts/06_measure_grasp_table.sh`
+exists, has two real fixes in it (spawn-validity check, measurement-derived
+PRECLOSE interpolation — see its header comment), and is worth keeping. But
+it has never produced a single valid row, and there is no point running it
+again until the reproducibility question is resolved — a table built on a
+sim that can silently stop reproducing its own validated anchor case is not
+a table anyone should trust.
+
+**Consequence for M3 more broadly**: this is the strongest data point yet
+for the reframing below. If contact resolution for this mimic-linkage
+scenario is only *sometimes* reliable — not "reliable but mistunable
+friction," but reliable-then-not for reasons still unknown — that is worse
+than a friction problem, and it is exactly the shape of failure that
+running 20 unattended cycles without diagnosing this first would surface as
+noise: some cycles clean, some hung, no visible pattern, and a very
+tempting wrong conclusion ("must be friction, it's inconsistent").
+
+**Recommended next step, not yet done**: before any further measurement,
+reproduce this in the GUI (not headless) specifically to watch what the
+contact/mimic linkage is doing during a hang — this is a different question
+than Blocker 2's seating-vs-sliding one, so "skip the GUI" from that section
+does not apply here. Also worth a clean before/after check of joint state
+immediately at spawn, across a few fresh launches, to resolve the 0.7668rad
+anomaly independently of whether it's the cause.
+
+## Reframing M3: the evidence doesn't point at friction
+
+The spec frames M3 as friction tuning — "treat getting stable friction-grasp
+physics working as its own milestone," tune mu and contact parameters,
+expect to re-derive because DART isn't ODE. Read cold, that's what someone
+would optimize first.
+
+Four distinct failure modes have turned up so far, from Blocker 2's work and
+the ejection findings before it. **None of them is friction:**
+
+1. Ejection from full-open closing — a **rate** problem (2.19x closing rate
+   is the difference between a grasp and a 363mm ejection).
+2. Object dropping ~12mm on closure — a **geometry** problem (seating: the
+   TCP frame is anchored at the fingertip link origin, ~12mm above the true
+   pad contact centre).
+3. Object not caught at all above +3mm of spawn/placement error — also
+   **geometry** (capture window has a sharp edge, not a graceful one).
+4. The unbounded hang near that edge — **control/plumbing** (an
+   already-specified timeout that was never wired up).
+5. Contact resolution silently failing to reproduce its own validated
+   anchor case, on two independent fresh sim instances, cause unknown —
+   **reliability/unknown**, and the most concerning of the five, because
+   the others were at least explicable once measured. This one isn't yet.
+   See the section immediately above.
+
+Friction may still matter for lift and transport slip — that's genuinely
+untested, nothing above touches it. But going into M3 with mu as the main
+knob is the same category of mistake as the earlier ones on this project: a
+plausible mechanism, adopted before measurement, in a spec that reads
+confidently enough to skip the check. The evidence says M3's early work is
+grasp-pose geometry and command discipline. Friction is a later, narrower
+question, scoped to lift/transport, not grasp closure.
+
+**Practical consequence:** don't let M3 open with a mu sweep because the
+spec says to. Open with the pad-centre-corrected grasp target and the
+bounded gripper-close call (see Blocker 2 above), run cycles, and see what's
+actually left to explain before assuming it's friction.
 
 ## Other M3 prerequisites (unchanged from prior session, still open)
 
