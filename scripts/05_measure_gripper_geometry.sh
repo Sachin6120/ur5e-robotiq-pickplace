@@ -52,6 +52,8 @@
 
 set -u
 
+source "$(dirname "$0")/lib/gz_settle.sh"
+
 GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 WORLD="${WORLD:-empty}"
 MODEL="${MODEL:-ur5e_robotiq}"
@@ -61,6 +63,16 @@ GZ_POSE_TOPIC="/world/${WORLD}/pose/info"
 # since the URDF's ros2_control initial_value never quite reaches 0.8) are
 # included as endpoints; the rest are even spacing across the range.
 SAMPLES="${SAMPLES:-0.0 0.2 0.4 0.6 0.767}"
+
+# Settle-before-sample thresholds. 0.3mm delta between consecutive polls,
+# two polls in a row, or the sample is refused — see lib/gz_settle.py. The
+# 0.2 rad sample once landed 6mm off truth (0.1218 vs 0.1158) on a fixed
+# `sleep 1.5`; this replaces the guess with an actual settle condition.
+SETTLE_EPS_M="${SETTLE_EPS_M:-0.0003}"
+SETTLE_TIMEOUT_S="${SETTLE_TIMEOUT_S:-5.0}"
+SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
+LEFT_TIP="robotiq_85_left_finger_tip_link"
+RIGHT_TIP="robotiq_85_right_finger_tip_link"
 
 hr()   { printf '\n%s\n' "════════════════════════════════════════════════════════════"; }
 sec()  { hr; printf '§ %s\n' "$1"; hr; }
@@ -85,7 +97,13 @@ for target in $SAMPLES; do
   ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
     control_msgs/action/GripperCommand \
     "{command: {position: ${target}, max_effort: 50.0}}" >/dev/null 2>&1
-  sleep 1.5
+
+  if ! gz_settle_pose "$GZ_POSE_TOPIC" "$SETTLE_EPS_M" "$SETTLE_TIMEOUT_S" "$SETTLE_POLL_S" \
+        "$LEFT_TIP" "$RIGHT_TIP"; then
+    printf '  [STOP] fingertips did not settle at target=%s rad — aborting sweep.\n' "$target"
+    printf '         A sample taken here would be noise mislabeled as geometry.\n'
+    exit 3
+  fi
 
   gz topic -e -t "$GZ_POSE_TOPIC" -n 1 2>/dev/null > "/tmp/geom_pose_${target}.txt"
 
