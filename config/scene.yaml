@@ -25,6 +25,37 @@ robot:
   # pose, so MoveIt's idea of home and Gazebo's spawn pose agree.
   home_positions: [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
 
+  # base_link's pose in `world`. Passed through to the sim spawn launch as
+  # base_xyz/base_rpy (ur5e_robotiq_sim_control.launch.py already exposes
+  # these as launch args; a ground-mounted default of 0,0,0 was used through
+  # M0/M1, which never needed to reach down to table height).
+  #
+  # RAISED to table height for M2. Found empirically via compute_ik sweeps
+  # (moveit_msgs/srv/GetPositionIK, group 'arm', link 'tool0'): with tool0
+  # pointed straight down (grasp.approach_axis's whole premise) and the base
+  # at z=0, reachable height tops out around z=0.85-0.90m at ANY horizontal
+  # offset tested (0.2m to 0.474m radius) — moving the object closer
+  # horizontally did not help, because the limit is a straight-down-specific
+  # wrist configuration constraint, not a radius/workspace-boundary one.
+  # The grasp target alone (object.pick_pose.z + grasp.tcp_offset, BEFORE any
+  # standoff) already needs tool0 at ~0.915m — past that ceiling. A
+  # ground-mounted base cannot do this approach at all, regardless of
+  # standoff or the object's horizontal position.
+  #
+  # x, y unchanged (0,0) so the horizontal geometry already measured/verified
+  # (tcp_offset, M0-C, M1) is untouched; only z changes, matching table.surface_z
+  # so the base effectively sits at table height. Re-verify reachability
+  # after any further change to object.pick_pose or grasp.standoff — this
+  # was tested for THIS specific object height and horizontal offset, not
+  # proven in general.
+  base_pose:
+    x: 0.0
+    y: 0.0
+    z: 0.75
+    roll:  0.0
+    pitch: 0.0
+    yaw:   0.0
+
 # ---------------------------------------------------------------------------
 frames:
   world:  world

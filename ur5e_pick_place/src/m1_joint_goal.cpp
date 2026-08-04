@@ -20,15 +20,6 @@
 //   parameters, which the launch file reads from config/scene.yaml. If you find
 //   yourself typing a joint value into this file, it belongs in scene.yaml.
 
-// MoveIt 2 moved its public headers from .h to .hpp partway through the 2.x
-// series. Jazzy sits near that boundary depending on the sync, so probe rather
-// than assume — guessing wrong here is a build error on someone else's machine.
-#if __has_include(<moveit/move_group_interface/move_group_interface.hpp>)
-#include <moveit/move_group_interface/move_group_interface.hpp>
-#else
-#include <moveit/move_group_interface/move_group_interface.h>
-#endif
-
 #include <rclcpp/rclcpp.hpp>
 
 #include <algorithm>
@@ -43,6 +34,7 @@
 #include <vector>
 
 #include "ur5e_pick_place/failure.hpp"
+#include "ur5e_pick_place/moveit_compat.hpp"
 
 using ur5e_pick_place::Result;
 using ur5e_pick_place::to_string;
@@ -50,35 +42,6 @@ using ur5e_pick_place::to_string;
 namespace
 {
 constexpr char kPlanningGroup[] = "arm";
-
-// MoveIt renamed MoveGroupInterface::Plan::trajectory_ to ::trajectory during
-// the 2.x series, and which side Jazzy lands on depends on the sync. Rather
-// than guess and hand over a build error, resolve it at compile time: the int/
-// long parameter makes the first overload preferred when it substitutes, and
-// SFINAE falls through to the second when it does not.
-// Verified against stub structs with both member names.
-namespace detail
-{
-template <typename P>
-auto traj_points(const P & p, int)
-  -> decltype(p.trajectory_.joint_trajectory.points.size())
-{
-  return p.trajectory_.joint_trajectory.points.size();
-}
-
-template <typename P>
-auto traj_points(const P & p, long)
-  -> decltype(p.trajectory.joint_trajectory.points.size())
-{
-  return p.trajectory.joint_trajectory.points.size();
-}
-}  // namespace detail
-
-template <typename P>
-std::size_t points_in(const P & p)
-{
-  return detail::traj_points(p, 0);
-}
 
 struct Trial
 {
@@ -207,7 +170,7 @@ int main(int argc, char ** argv)
       t.plan_ms =
         std::chrono::duration<double, std::milli>(t1 - t0).count();
       t.planned = success;
-      t.traj_points = success ? points_in(plan) : 0;
+      t.traj_points = success ? ur5e_pick_place::points_in(plan) : 0;
 
       if (success) {
         ++planned_ok;
