@@ -1,0 +1,46 @@
+gripper geometry sweep: 2026-08-04T11:20:36+02:00
+samples: 0.0 0.2 0.4 0.6 0.767
+
+════════════════════════════════════════════════════════════
+§ 0. Preconditions
+
+════════════════════════════════════════════════════════════
+  [ok] /world/empty/pose/info present
+
+════════════════════════════════════════════════════════════
+§ 1. Sweep
+
+════════════════════════════════════════════════════════════
+[settle] poses settled after 0.60s (max|delta|=0.000001 m)
+[settle] poses settled after 0.58s (max|delta|=0.000000 m)
+[settle] poses settled after 0.57s (max|delta|=0.000000 m)
+[settle] poses settled after 0.58s (max|delta|=0.000000 m)
+[settle] poses settled after 0.54s (max|delta|=0.000000 m)
+
+════════════════════════════════════════════════════════════
+§ 2. Results  (joint_rad, width_m, tcp_offset_m, perp_residual_m)
+
+════════════════════════════════════════════════════════════
+0.0    0.135513  0.109328  1.72e-07
+0.2    0.116784  0.115842  2.31e-07
+0.4    0.095834  0.120368  1.69e-07
+0.6    0.073503  0.122722  2.70e-07
+0.767  0.054442  0.122954  2.71e-07
+
+════════════════════════════════════════════════════════════
+§ 3. What to do with this
+
+════════════════════════════════════════════════════════════
+  This is raw measurement, not a judged pass/fail. To use it:
+
+  1. gripper.width_map in scene.yaml: pair each (joint_rad, width_m) here as
+     [[joint_rad, width_m], ...].
+  2. grasp.tcp_offset: for a SPECIFIC object.size[grasp_width_axis], solve
+     width_map for the joint angle that width corresponds to, then read
+     tcp_offset at that angle from this same table (interpolate between
+     samples if it falls between them) — not a value read off by eye for a
+     "close enough" object width.
+  3. If the perp_residual column grows beyond ~1e-5 m at any sample, the
+     lateral-symmetry assumption has broken too, not just constant-reach.
+     That would mean grasp_tcp needs an X/Y correction as well as the Z
+     (tcp_offset) one — worth flagging loudly, not averaging away.

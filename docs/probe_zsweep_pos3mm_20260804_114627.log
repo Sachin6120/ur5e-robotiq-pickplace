@@ -1,0 +1,65 @@
+mimic contact probe: 2026-08-04T11:46:27+02:00
+world=empty model=ur5e_robotiq box_width=0.040 m overclose=0.8 rad
+
+════════════════════════════════════════════════════════════
+§ 0. Preconditions
+
+════════════════════════════════════════════════════════════
+  [ok] topic /world/empty/model/ur5e_robotiq/joint_state
+  [ok] topic /world/empty/pose/info
+  [ok] service /world/empty/create
+  [ok] service /world/empty/remove
+
+════════════════════════════════════════════════════════════
+§ 1. Baseline — gripper open, no object
+
+════════════════════════════════════════════════════════════
+    shoulder_pan_joint 1.3037876103532065e-08 -4.2158523850741036e-17
+    shoulder_lift_joint -1.5708532380266693 1.2404682316058402e-14
+    elbow_joint 1.5706821450959625 1.1091821905395705e-14
+    wrist_1_joint -1.5718105976134675 -1.2566336859975991e-14
+    wrist_2_joint -1.5706952201917295 -1.8107992319146837e-14
+    wrist_3_joint -8.9649043900153171e-07 7.7176559956128321e-17
+    robotiq_85_left_inner_knuckle_joint 6.8221664192432864e-06 -0.00037211800395162619
+    robotiq_85_left_knuckle_joint 6.1275458127006122e-06 -0.00032250227013231117
+    robotiq_85_left_finger_tip_joint -6.8221665502617659e-06 0.00037211800391587311
+    robotiq_85_right_inner_knuckle_joint -6.8221664242395077e-06 0.00037211800395169211
+    robotiq_85_right_knuckle_joint -6.8221663546556825e-06 0.00037211800395032949
+    robotiq_85_right_finger_tip_joint 6.8221665500309265e-06 -0.00037211800396598493
+
+════════════════════════════════════════════════════════════
+§ 1b. Pre-close to a cradle aperture before placing the box
+
+════════════════════════════════════════════════════════════
+  pre-closing robotiq_85_left_knuckle_joint to 0.45 rad (heuristic cradle aperture, not measured)
+    
+    Goal accepted with ID: 4a85ed3bbdc743c0ba38bbc995cf2e23
+    
+    Result:
+        position: 0.4400042319713293
+    effort: 50.0
+    stalled: false
+    reached_goal: true
+    
+    Goal finished with status: SUCCEEDED
+[settle] poses settled after 0.54s (max|delta|=0.000000 m)
+  [note] place the box at the (now pre-closed) fingertip midpoint. If your setup
+  [note] keeps the arm at its initial pose, read the fingertip link poses from
+  [note] /world/empty/pose/info and set BOX_XYZ accordingly. Set BOX_XYZ explicitly to skip
+  [note] auto-placement.
+
+  box placement (fingertip midpoint): 0.49214 0.13332 1.11992
+
+════════════════════════════════════════════════════════════
+§ 2. Spawn the test object
+
+════════════════════════════════════════════════════════════
+    data: true
+[settle] poses settled after 0.56s (max|delta|=0.000055 m)
+    box @ probe_box 0.49207960325498989 0.13338071247597577 1.1197815129573805
+
+════════════════════════════════════════════════════════════
+§ 3. Command closure PAST what the object permits
+
+════════════════════════════════════════════════════════════
+  commanding robotiq_85_left_knuckle_joint -> 0.8 rad (box is 0.040 m wide)
