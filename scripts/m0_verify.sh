@@ -20,6 +20,8 @@
 
 set -uo pipefail
 
+source "$(dirname "$0")/lib/gz_settle.sh"
+
 WORLD="${WORLD:-empty}"                  # gz world name
 MODEL="${MODEL:-ur5e_robotiq}"           # gz model name of the merged robot
 ACTUATED="${ACTUATED:-robotiq_85_left_knuckle_joint}"  # was: finger_joint — that
@@ -246,6 +248,17 @@ MAX_BOX_DISP="${MAX_BOX_DISP:-0.030}"
 MAX_FOLLOWER_ERR="${MAX_FOLLOWER_ERR:-0.05}"
 FLOOR_Z="${FLOOR_Z:-0.05}"
 
+# Settle-before-sample thresholds — see lib/gz_settle.py. Fixed sleeps here
+# used to be the only thing standing between a sample and a still-moving
+# system; a single unlucky sample lands in this gate as false slip/false
+# stall with mu unchanged. C2 gates on these; C1 (subordinate, does not
+# decide M0-C) only warns.
+POSE_EPS_M="${POSE_EPS_M:-0.0005}"
+JOINT_EPS_RAD_S="${JOINT_EPS_RAD_S:-0.02}"
+SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
+LEFT_TIP="robotiq_85_left_finger_tip_link"
+RIGHT_TIP="robotiq_85_right_finger_tip_link"
+
 _gz_joints() {
   gz topic -e -t "$GZ_JS_TOPIC" -n 1 2>/dev/null > "$EVID_DIR/C_js_$1.txt"
   python3 - "$EVID_DIR/C_js_$1.txt" <<'PY'
@@ -335,7 +348,11 @@ PY
   ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
     control_msgs/action/GripperCommand \
     "{command: {position: 0.0, max_effort: 50.0}}" >/dev/null 2>&1
-  sleep 2
+  if ! gz_settle_joint "$GZ_JS_TOPIC" "$JOINT_EPS_RAD_S" 5.0 "$SETTLE_POLL_S" "$ACTUATED"; then
+    warn "master joint did not settle before the free-space sample — C1 is"
+    warn "subordinate/evidence-only, so this does not fail M0-C, but the"
+    warn "captured sample below may not be a true free-space rest state."
+  fi
   _gz_joints openfree > "$EVID_DIR/C_joints_openfree.txt"
   ok "free-space open sample captured (evidence only, not a gate)"
 
@@ -366,7 +383,10 @@ PY
   ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
     control_msgs/action/GripperCommand \
     "{command: {position: ${PRECLOSE}, max_effort: 50.0}}" >/dev/null 2>&1
-  sleep 1.0
+  if ! gz_settle_pose "$GZ_POSE_TOPIC" "$POSE_EPS_M" 5.0 "$SETTLE_POLL_S" "$LEFT_TIP" "$RIGHT_TIP"; then
+    bad "fingertips did not settle after pre-close — box placement below would target a moving pair of pads"
+    C_FAIL=1
+  fi
 
   # Place the box at the (now pre-closed) fingertip midpoint.
   if [[ -z "${BOX_XYZ:-}" ]]; then
@@ -415,7 +435,10 @@ PY
       --reptype gz.msgs.Boolean --timeout 5000 \
       --req "sdf: \"${SDF_FLAT//\"/\\\"}\", name: \"${BOX_NAME}\"" 2>&1)
     printf '%s\n' "$CREATE_OUT" | sed 's|^|      |'
-    sleep 1.5
+    if ! gz_settle_pose "$GZ_POSE_TOPIC" "$POSE_EPS_M" 5.0 "$SETTLE_POLL_S" "$BOX_NAME"; then
+      bad "box did not settle after spawn — it is still falling/bouncing, not resting against the pads"
+      C_FAIL=1
+    fi
 
     BOX_BEFORE=$(_gz_box before)
     printf '  box before close: %s\n' "${BOX_BEFORE:-<not found>}"
@@ -429,7 +452,19 @@ PY
         control_msgs/action/GripperCommand \
         "{command: {position: ${OVERCLOSE}, max_effort: 50.0}}" \
         > "$EVID_DIR/C_action_result.txt" 2>&1
-      sleep "$SETTLE"
+
+      # $SETTLE is now a timeout ceiling, not a blind wait. This is the
+      # sample the C2 pass/fail criteria are computed from, so an unsettled
+      # system here is a hard fail, not a warning — a mid-motion sample would
+      # be measurement noise reported as slip or as a stall.
+      if ! gz_settle_joint "$GZ_JS_TOPIC" "$JOINT_EPS_RAD_S" "$SETTLE" "$SETTLE_POLL_S" "$ACTUATED"; then
+        bad "master joint did not settle within ${SETTLE}s of the overclose command"
+        C_FAIL=1
+      fi
+      if ! gz_settle_pose "$GZ_POSE_TOPIC" "$POSE_EPS_M" "$SETTLE" "$SETTLE_POLL_S" "$BOX_NAME"; then
+        bad "box did not settle within ${SETTLE}s of the overclose command"
+        C_FAIL=1
+      fi
 
       _gz_joints closed > "$EVID_DIR/C_joints_closed.txt"
       BOX_AFTER=$(_gz_box after)

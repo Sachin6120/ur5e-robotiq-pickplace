@@ -31,6 +31,8 @@
 
 set -u
 
+source "$(dirname "$0")/lib/gz_settle.sh"
+
 WORLD="${WORLD:-empty}"
 MODEL="${MODEL:-ur5e_robotiq}"
 MASTER="${MASTER:-robotiq_85_left_knuckle_joint}"
@@ -51,6 +53,15 @@ SETTLE="${SETTLE:-3.0}"         # s to let contact resolve
 
 OUTDIR="${OUTDIR:-$(pwd)/probe_out}"
 mkdir -p "$OUTDIR"
+
+# Settle-before-sample thresholds — see lib/gz_settle.py. Every fixed sleep
+# below used to be a guess at "probably long enough"; these poll until motion
+# actually stops (or fail loudly) instead.
+POSE_EPS_M="${POSE_EPS_M:-0.0005}"
+JOINT_EPS_RAD_S="${JOINT_EPS_RAD_S:-0.02}"
+SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
+LEFT_TIP="robotiq_85_left_finger_tip_link"
+RIGHT_TIP="robotiq_85_right_finger_tip_link"
 
 hr()   { printf '\n%s\n' "════════════════════════════════════════════════════════════"; }
 sec()  { hr; printf '§ %s\n' "$1"; hr; }
@@ -148,7 +159,9 @@ ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
   control_msgs/action/GripperCommand \
   "{command: {position: ${PRECLOSE}, max_effort: 50.0}}" 2>&1 \
   | tail -10 | sed 's|^|    |'
-sleep 1.0
+if ! gz_settle_pose "$GZ_POSE" "$POSE_EPS_M" 5.0 "$SETTLE_POLL_S" "$LEFT_TIP" "$RIGHT_TIP"; then
+  die "fingertips did not settle after pre-close — box placement below would use a moving target"
+fi
 
 note "place the box at the (now pre-closed) fingertip midpoint. If your setup"
 note "keeps the arm at its initial pose, read the fingertip link poses from"
@@ -226,7 +239,9 @@ printf '%s\n' "$CREATE_OUT" | sed 's|^|    |'
 if printf '%s\n' "$CREATE_OUT" | grep -qi "error\|cannot cross line"; then
   die "box spawn request was rejected — see the error above. Nothing to test; fix before reading any result as real."
 fi
-sleep 1.5
+if ! gz_settle_pose "$GZ_POSE" "$POSE_EPS_M" 5.0 "$SETTLE_POLL_S" "$BOX_NAME"; then
+  die "box did not settle after spawn — it is still falling/bouncing, not resting against the pads"
+fi
 sample_box_pose spawned | sed 's|^|    box @ |'
 
 # ---------------------------------------------------------------------------
@@ -236,7 +251,18 @@ ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
   control_msgs/action/GripperCommand \
   "{command: {position: ${OVERCLOSE}, max_effort: 50.0}}" 2>&1 \
   | tail -20 | sed 's|^|    |'
-sleep "$SETTLE"
+
+# $SETTLE is now a timeout ceiling, not a blind wait: settle on the master
+# joint's velocity AND the box's pose, sequentially, each capped at $SETTLE.
+# A timeout on either is reported, not silently treated as "rest".
+if ! gz_settle_joint "$GZ_JS" "$JOINT_EPS_RAD_S" "$SETTLE" "$SETTLE_POLL_S" "$MASTER"; then
+  note "master joint did not settle within ${SETTLE}s — sampling anyway, but the"
+  note "shortfall number below may include residual motion, not just the stall."
+fi
+if ! gz_settle_pose "$GZ_POSE" "$POSE_EPS_M" "$SETTLE" "$SETTLE_POLL_S" "$BOX_NAME"; then
+  note "box did not settle within ${SETTLE}s — it may still be sliding/ejecting."
+  note "the displacement number below is a snapshot mid-motion, not a rest state."
+fi
 
 sample_joints closed | tee "$OUTDIR/joints_closed.txt" | sed 's|^|    |'
 sample_box_pose closed | sed 's|^|    box @ |'
