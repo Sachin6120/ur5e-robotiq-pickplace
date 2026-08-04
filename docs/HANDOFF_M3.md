@@ -1,8 +1,10 @@
-# Handoff — M3, Blocker 1 validation in progress
+# Handoff — M3, Blockers 1 and 2 closed this session
 
-Written 2026-08-04, end of session. M-1, M0, M1, M2 are closed and committed.
-Blocker 1's fix is written and committed but NOT yet validated against a live
-sim. Blocker 2 is open and its resolution now depends on Blocker 1's step 2.
+Written 2026-08-04. M-1, M0, M1, M2 are closed and committed. Blocker 1 is
+fixed and validated live. Blocker 2 is closed — geometric seating, not
+friction — but closing it surfaced two new items that must land in M3's
+grasp procedure before cycle-count testing starts, one of them severe
+(unbounded hang, not just bad data).
 
 ## State
 
@@ -12,132 +14,176 @@ sim. Blocker 2 is open and its resolution now depends on Blocker 1's step 2.
 | M0 | PASS A/B/C | docs/m0_*.log; M0-C reproduced 3x across 2 code paths |
 | M1 | PASS | 20/20 planning, executed; docs/evidence/m1_planning.csv |
 | M2 | PASS | cartesian_fraction=1.0000 tcp_error_m=0.0000 ground_truth=yes |
+| Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
+| Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
 files (`ur5e_robotiq_sim_control.launch.py`, `move_group.launch.py`,
-`m2_cartesian_approach.launch.py`) import. The M2 node has a runtime guard
-comparing Gazebo's actual base_link pose against scene.yaml and aborting with
-CONFIG_ERROR on mismatch.
+`m2_cartesian_approach.launch.py`) import. Verified live this session:
+`gz topic -e -t /world/empty/pose/info -n 1` showed `base_link` at
+`z: 0.75` on a bare `ros2 launch` with no extra args — the single-source
+wiring holds.
 
-Committed this session:
-- `1dd32bb` — M2: base elevation propagated through scene_xacro_args.py to
-  both the sim spawn launch and move_group's robot_description mapping
-  (previously only the spawn launch read base_xyz/base_rpy — move_group's
-  kinematic model silently disagreed with Gazebo's about base_link).
-  Adds m2_cartesian_approach, static_scene_tf, moveit_compat.hpp.
-- `0f2ac4f` — Blocker 1 fix: scripts/lib/gz_settle.{py,sh}, wired into
-  05_measure_gripper_geometry.sh, 04_mimic_contact_probe.sh, m0_verify.sh.
+Committed so far:
+- `1dd32bb` — M2: base elevation propagated through scene_xacro_args.py.
+- `0f2ac4f` — Blocker 1 fix: `scripts/lib/gz_settle.{py,sh}`.
+- `d64e857` — this doc, first version.
+- **Not yet committed**: everything below this line (Blocker 1/2 results,
+  the M3-prerequisite updates). Commit after reading this section.
 
-**No git remote is configured.** Eight commits of measured findings exist on
-exactly one machine. `git remote add origin <url> && git push -u origin main`
-is still outstanding — do it early, before generating anything expensive.
+**Remote is configured and pushed**: `origin` ->
+`https://github.com/Sachin6120/ur5e-robotiq-pickplace`, branch `main`
+(renamed from `master`). Keep pushing after each commit — that was the
+whole point of setting it up.
 
-## Where we are right now: Blocker 1 validation, step 1
+## Blocker 1 — closed, validated live
 
-Blocker 1 was: fixed sleeps before ground-truth samples produce race
-conditions. 05_measure_gripper_geometry.sh's sweep once sampled fingertip
-pose mid-settle and got 0.1218 at the 0.2 rad point against a true ~0.1158 —
-6mm of noise, caught only because it looked wrong and was hand-retested. M3
-runs 20 unattended cycles; nobody retests individual samples there.
+Protocol: three fixed runs of `scripts/05_measure_gripper_geometry.sh`, no
+retry on `[STOP]`, successes and timeouts reported separately.
 
-**Fix (committed, unvalidated):** `scripts/lib/gz_settle.py` polls Gazebo's
-own `joint_state`/`pose/info` topics (never `/joint_states`) until velocity
-or successive pose deltas stay under threshold for two consecutive polls,
-guarding against a sample landing on a velocity zero-crossing. Timeouts fail
-loudly — nonzero exit, `[STOP]` on stderr — instead of sampling a moving
-target. Wired in with severity matched to what each script is for:
-- `05_measure_gripper_geometry.sh` — aborts the sweep on timeout.
-- `04_mimic_contact_probe.sh` — warns loudly but keeps sampling on the
-  post-overclose settle (this script is deliberately no-judgment).
-- `m0_verify.sh` M0-C — the two settle points feeding the C2 pass/fail
-  criteria (pre-close placement, post-overclose) set `C_FAIL=1` on timeout;
-  the subordinate C1 free-space sample only warns.
+**Result: 0/3 timeouts. The 0.2 rad sample was bit-identical across all
+three runs** (`width_m=0.116784`, `tcp_offset_m=0.115842`, every run) —
+not just within tolerance, exactly reproduced. Before the fix: one in five
+samples off by 6mm (0.1218 vs 0.1158). Settle times: 0.54–0.60s across all
+15 settle calls (3 runs × 5 samples), well under the old fixed 1.5s sleep —
+meaning the old budget had margin; the race was in *when* the sample was
+taken relative to the goal-accepted callback and Gazebo's physics step, not
+in the budget being too tight. Logs: `docs/geom_run{1,2,3}_*.log`.
 
-**Validated so far:** syntax-checked, and the timeout/dead-topic path
-verified against the real `gz` binary (no sim needed for that — `gz topic -e`
-was found to block indefinitely against a topic with no publisher; bounded
-it, confirmed clean `[STOP]` + exit 1, no uncaught exception). **Not yet run
-against a live sim at all.**
+## Blocker 2 — closed as geometric seating, not friction
 
-### Step 1 (next action): regression test on the known failure
+Original question: 12–14mm of downward object movement during gripper
+closure (measured three times pre-session: 13.7, 12.8, 12.5mm), against
+M3's 5mm criterion. Two live-sim tests resolved it, decisively, without a
+GUI session.
 
-Three fixed runs of `scripts/05_measure_gripper_geometry.sh` against a live
-sim. Watch the 0.2 rad sample for variance collapse toward ~0.1158.
+**Test A — re-run `04_mimic_contact_probe.sh` with settle gating (was
+step 2 of the original plan).** Result: 12.42mm drop, settle times 0.31s
+(joint) / 0.54s (pose) — both far under the old 3.0s `SETTLE`. Confirms the
+drop is real, not a sampling-timing artifact like Blocker 1's 6mm error was:
+the system reaches genuine rest in under a second, and the old sleep was
+already sampling that rest state, not a mid-motion snapshot.
 
-**Protocol — decided and non-negotiable, do not relitigate mid-session:**
-no retry on `[STOP]`. Run exactly three attempts. Report successes and
-timeouts *separately*. Timeout rate is a headline result, not a nuisance to
-re-roll past.
+**Test B — the decisive one. Falsification test on the "geometric
+seating" hypothesis**: if the true pad contact surface sits below the
+fingertip link origin (which is where `tcp_offset` and the probe's
+auto-placement are both anchored), then the ~12mm drop is the box falling
+from the link-origin height down to the real pad centre — geometric, not
+sliding. This predicts drop should track spawn height 1:1. If instead it's
+friction/sliding, drop should be roughly constant regardless of spawn
+height. Ran `04_mimic_contact_probe.sh` with explicit `BOX_XYZ` at spawn
+heights offset from the auto-placement point (0.49214, 0.13332, 1.11692):
 
-**Why no auto-retry:** this run's whole purpose is measuring variance. If a
-timeout triggers a silent re-run, you're conditioning on success and
-discarding exactly the outcomes that would show the fix didn't work — the
-test becomes unfalsifiable. Worse, a timeout has two structurally different
-causes that need different responses, and auto-retry collapses them into
-"flaky, bump the timeout," silently defaulting to the first and hiding the
-second:
-1. **Budget too tight** — the gripper settles, just slower than allowed.
-   Tune the budget, knowingly, and note the old fixed sleeps were marginal.
-2. **It doesn't settle** — oscillation or a limit cycle, not convergence.
-   This is a physics finding: if the gripper never reaches steady state
-   after closing, every M3 slip number is sampled off a moving target and
-   the 5mm criterion is meaningless regardless of friction. §3.5 already
-   flags `right_knuckle` diverging ~0.027 rad from its mimic multiplier
-   under contact load only (tracks exactly in free space) — a
-   kinematic-override linkage hunting under load instead of settling is not
-   a hypothetical here.
+| Spawn offset | Drop (dz) | Stall angle | Outcome |
+|---|---|---|---|
+| −6mm | −5.87mm | 0.3505 rad | caught, stalled |
+| 0 (baseline) | −12.11mm | 0.3407 rad | caught, stalled |
+| −12.1mm (predicted ~0) | −2.66mm | 0.3508 rad | caught, stalled — missed prediction by 2.66mm |
+| +3mm (bracket) | did not resolve in 2min | n/a | **hung — see below** |
+| +6mm | box on floor | 0.0000 rad | full closure, no stall, total ejection |
 
-If any timeout appears in the three runs, that is the finding —
-investigate before touching the budget. This "record and report, never
-auto-retry past a failure" rule applies to any future settle/validation
-polling in this project, not just this one script.
+Predicted-vs-actual for the two clean points: low (−6mm) predicted
+12.11−6=6.11mm, measured 5.87mm (off by 0.24mm). That's a hit, not a fit —
+sliding/friction would not produce a linear 1:1 relationship between spawn
+height and settle distance; geometric seating does, and did.
 
-Bring the stack up first, in its own terminal:
+**PROVEN**: drop is spawn-height dependent, tracking 1:1 over the tested
+downward span (−6 to 0mm). Not friction-driven. Blocker 2 closed as
+geometric seating.
 
-```bash
-source /opt/ros/jazzy/setup.bash && source ~/ur5e_ws/install/setup.bash
-ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py
-```
+**MEASURED**: pad contact centre ≈12.1mm below the fingertip link origin
+— same frame `tcp_offset` and the probe's auto-placement both use — at
+0.45 rad pre-close / 40mm box / 0.8 rad overclose. One calibration point,
+same caveat as `tcp_offset`: not a constant across apertures, do not carry
+to a different box width or pre-close angle without re-measuring.
 
-No extra args — the base should land at z=0.75 on its own now, from
-scene.yaml through scene_xacro_args.py. If it spawns at z=0, STOP: the
-single-source wiring regressed and nothing downstream is trustworthy.
+**NOT ESTABLISHED — checked, did not confirm**: the −12.1mm point
+predicted ~0mm drop and measured 2.66mm, a bigger miss than the −6mm
+point's 0.24mm. Hypothesis floated: pads swing through an arc as the
+four-bar closes, so the true contact centre is aperture-dependent, not
+fixed relative to the link origin — the same phenomenon already known to
+make `tcp_offset` vary ~13.6mm across the aperture range, seen from the
+other side. This predicts residual should correlate with final stall
+angle. Checked against the three data points:
 
-### Step 2 (immediately after step 1, same session): Blocker 2 may dissolve
+| run | stall angle (rad) | residual vs. linear model |
+|---|---|---|
+| low | 0.3505 | −0.24mm |
+| neg12 | 0.3508 | +2.64mm |
 
-Blocker 2 was: 12–14mm of downward object movement during gripper closure,
-measured three times (13.7, 12.8, 12.5mm), against M3's 5mm criterion — with
-the closure-settle box-pose sample taken on the same class of fixed-sleep
-timing that just produced the 6mm error in step 1.
+Low and neg12 stalled at essentially the same angle (0.3505 vs 0.3508 rad,
+a 0.0003 rad difference — noise-level) but show very different residuals
+(−0.24mm vs +2.64mm). If the residual were driven by final stall angle
+alone, these two should match closely. They don't. **This data does not
+confirm the aperture-dependent-pad-centre hypothesis** — it's not ruled
+out either (3 points, ~2-3mm noise floor already established, and the
+hypothesis may need spawn-history/contact-approach-path as a second
+variable, not just final angle), but don't treat it as settled. Carry the
+pad-centre offset as ≈12.1mm ± ~3mm, not ±0.3mm.
 
-Re-run `scripts/04_mimic_contact_probe.sh` with settle gating now in place.
-If box displacement drops under 5mm, Blocker 2 is closed without a GUI
-session — which is why this step comes before step 3, not after.
+**NEW OPEN, severity upgraded**: the capture window's upper bound is
+between 0 and +3mm (narrowed from the initial 0–6mm bracket), and crossing
+it near the boundary does not fail cleanly. At +6mm the object missed
+entirely and fell fast — a bad but finite data point. At +3mm, the master
+joint reached full closure (0.8 rad, velocity ≈0) while the box was **still
+slowly sliding** — sampled twice, 3 seconds apart, still moving both times
+— and the `ros2 action send_goal` call for the overclose command never
+returned. It was killed by a 2-minute tool timeout on my end, not a
+timeout in the stack itself; nothing in the current probe script or (by
+extension) a real grasp procedure would have caught this and it would have
+hung indefinitely. Cleaned up manually afterward (removed the leftover
+`probe_box`, reopened the gripper — that reopen action completed normally
+in under a second, confirming the hang was specific to that near-boundary
+state, not a general action-server fault). Logs:
+`docs/probe_zsweep_pos3mm_*.log` (truncated by the timeout, has the hang
+in progress).
 
-### Step 3 (only if step 2 still shows >5mm)
+**Competing explanation for the hang, not yet distinguished — worth
+checking if this recurs, not worth reproducing deliberately**: my working
+theory during the session was that the controller never declared rest
+because the box's ongoing motion kept perturbing the mechanism. A second,
+equally plausible explanation: the controller's stall/rest decision is
+based on ros2_control's state readback, not Gazebo's ground truth, and
+this stack has a *documented* readback defect (§3.5 of the M-1 report, the
+donor repo's ~15x effort discrepancy). If ros2_control saw a different
+master position than Gazebo's actual 0.8 rad, that alone would explain no
+result ever being published, independent of whether the box was still
+moving. **Next time this hangs**: run
+`ros2 topic echo /joint_states --once` against `gz topic -e` ground truth
+before killing anything — that one comparison distinguishes the two
+explanations directly. Not done this time; the hang was resolved by
+cleanup before this alternative was considered.
 
-One GUI closure run with the camera on the fingertips, to distinguish the
-object being seated by the pads from it sliding between them. This was the
-original plan for Blocker 2 before step 1's regression test suggested part
-of the 12–14mm might be measurement timing rather than physics.
+**ACTION FOR M3 — the actual fix**: grasp composition must target the pad
+centre, not the link-origin midpoint that `tcp_offset` and this probe's
+auto-placement both currently use. Without it, nominal grasps sit within
+~6mm of a boundary whose failure mode is total loss, not degraded
+performance.
 
-### Also worth doing, cheap, while runs are in progress
+**ACTION FOR M3 — the containment, not a substitute for the fix above**:
+bound every gripper-close action call. The infrastructure for this
+already exists and has never been exercised — `Result::GRIPPER_GOAL_REJECTED`
+in `ur5e_pick_place/include/ur5e_pick_place/failure.hpp:26`
+("gripper action rejected, or not reached in time") and
+`gripper.command_timeout_s: 5.0` in `config/scene.yaml:214`. The M3 task is
+to wire the timeout that's already specified, not invent one. State this
+explicitly wherever it gets implemented: **bounding the call converts a
+hang into a failure, it does not make the grasp work.** A near-boundary
+grasp with a bounded call gives a clean `GRIPPER_GOAL_REJECTED` and a lost
+cycle — correct behaviour, still a lost cycle. The pad-centre correction
+is what prevents the lost cycle; the timeout is what stops one bad grasp
+from taking the whole 20-cycle run with it. Also fix the probe scripts
+themselves (`04_mimic_contact_probe.sh`, `m0_verify.sh`'s M0-C) — they
+currently call `ros2 action send_goal` with no cap, which is exactly what
+just hung, and they're what you'll keep running during M3 tuning.
 
-Log the observed settle time itself (already free — every successful
-`gz_settle_*` call prints `[settle] ... settled after Xs (...)` to stderr,
-which lands in whatever `2>&1 | tee docs/....log` the script is invoked
-with). After the runs: `grep '\[settle\]' docs/<run>.log` to compare
-observed settle durations against the old fixed sleeps (1.5s, 1.0s, 2.0s,
-3.0s this project used before today). If settling routinely took longer than
-those old sleeps, every historical measurement taken under them — the
-tcp_offset curve, the M0-C numbers, the 363mm ejection figure — carries the
-same race and may need a second look. Probably fine, since most of those
-reproduced across runs, but cheap to check. Skip building a summarizer for
-this — three runs × ~10 settle calls is ~30 lines, grep handles it. Revisit
-if tomorrow's data is messier than expected.
+**Skipped, correctly**: the GUI closure-with-camera session originally
+planned as Blocker 2's step 3. It was going to answer seating-vs-sliding,
+and that's now settled by measurement (Test B above), more precisely than
+eyeballing would have given.
 
-## Other M3 prerequisites (unchanged from prior session)
+## Other M3 prerequisites (unchanged from prior session, still open)
 
 **clearance_map vs grip_map.** scene.yaml's `gripper.width_map` is specified
 as one function but the code needs two different answers: clearance
@@ -149,7 +195,11 @@ inward per side (inferred, not yet measured; the fingertip links'
 `<collision>` origin would give it directly). Cheaper alternative:
 `04_mimic_contact_probe.sh` already measures (box width -> stall angle).
 Sweep 25/35/45/55/65mm and get the map empirically with pad geometry already
-baked in.
+baked in. **Now the same "one table, two outputs" argument applies to the
+pad-centre offset and tcp_offset too** — both are shaped by the same
+aperture-dependent pad geometry, per the hypothesis above (unconfirmed but
+plausible). Worth deriving all three (clearance, grip angle, pad-centre
+offset) from one aperture sweep rather than three separate scalars.
 
 **Pre-close belongs in the grasp procedure, not just the test harness.**
 Closing from full-open ejects the object — measured, 2.19x closing rate is
@@ -167,22 +217,35 @@ ODE-era Gazebo Classic tuning advice does not transfer.
 - 5 mimic followers; multipliers in M-1_reference_report.md §3.
 - dartsim does not enforce mimic constraints (engine says so at spawn).
   gz_ros2_control writes follower positions in software. But contact DOES
-  oppose it: shortfall 0.342 rad on a 40mm box, controller reports
-  `stalled: true`. See §3.5. Do NOT switch to bullet-featherstone on the
-  strength of the mimic feature alone — its ros2_control integration has
-  open defects (gz_ros2_control#440, gz-sim#2729).
+  oppose it: shortfall 0.34 rad range on a 40mm box (0.3338–0.3508 rad
+  across all probe runs this session), controller reports `stalled: true`
+  when caught, `stalled: false`/`reached_goal: true` when missed entirely
+  (the +6mm ejection). See §3.5. Do NOT switch to bullet-featherstone on
+  the strength of the mimic feature alone — its ros2_control integration
+  has open defects (gz_ros2_control#440, gz-sim#2729).
 - Ejection is not a physics-timestep artifact — halving max_step_size
   changed nothing (363 vs 360.1mm). So M3's slip measurement is not
   timestep-confounded. Rate limiting is the only lever.
-- `right_knuckle` diverges ~0.027 rad from its multiplier under load only;
-  tracks exactly in free space. Open, low-priority — first place to look if
-  grip stability is asymmetric between fingers, and also the concrete reason
-  Blocker 1's step 1 protocol refuses to auto-retry past a settle timeout.
+- `right_knuckle` diverges ~0.027–0.033 rad from its multiplier under load
+  only; tracks exactly in free space. Open, low-priority — first place to
+  look if grip stability is asymmetric between fingers, and also the
+  concrete reason Blocker 1's step 1 protocol refused to auto-retry past a
+  settle timeout (confirmed sound this session: 0 timeouts occurred, but
+  the caution was correct going in).
 - Vertical-tool0 reach ceiling for a ground-mounted UR5e is ~0.85-0.90m.
-  This is why the base is elevated (M2, closed).
+  This is why the base is elevated (M2, closed). Confirmed live this
+  session: base spawns at z=0.75 with no launch args.
 - `tcp_offset` varies ~13.6mm across the aperture range — it is NOT
   constant. Current value is a scalar measured at one aperture; changing
-  `object.size` invalidates it.
+  `object.size` invalidates it. **Now understood to be the same underlying
+  aperture-dependent-pad-geometry effect as the pad-centre offset above**
+  (hypothesis, not yet confirmed — see Blocker 2's NOT ESTABLISHED item).
+- Gripper-close action calls can hang indefinitely with no error when the
+  spawn/grasp geometry lands near the capture-window boundary (found this
+  session, +3mm offset case). Two explanations, undistinguished: contended
+  box motion prevents the controller from declaring rest, or the
+  ros2_control readback defect (§3.5) means the controller never saw the
+  true position. Bound every such call — see Blocker 2 ACTION FOR M3.
 
 ## Working methods that earned their keep
 
@@ -194,11 +257,24 @@ ODE-era Gazebo Classic tuning advice does not transfer.
   screen: SRDF end effector, joint limits, action_ns, use_sim_time.
 - A suspiciously perfect number gets a falsification test. `tcp_error_m
   =0.0000` was confirmed real by injecting a synthetic 10mm offset into only
-  the logged commanded pose and checking it reported 0.0100.
-- Claims get partitioned PROVEN / INFERRED / UNKNOWN. Twice a correct
-  observation produced a wrong downstream conclusion, and the partition is
-  what caught it.
+  the logged commanded pose and checking it reported 0.0100. Same method
+  closed Blocker 2 this session: a prediction sharp enough to come back
+  flat (drop should track spawn height 1:1) is worth more than a plausible
+  correlation — two points define a line by construction, a third point
+  tests it. Applies going forward: prefer a test whose failure mode would
+  have looked different from its success, over one more measurement of the
+  same kind.
+- Claims get partitioned PROVEN / INFERRED / UNKNOWN (or MEASURED / NOT
+  ESTABLISHED / NEW OPEN, per Blocker 2 above). Twice a correct observation
+  produced a wrong downstream conclusion, and the partition is what caught
+  it.
 - Never auto-retry a failed measurement/settle/validation step. Record the
   failure, report the failure rate as data alongside whatever variance is
   being measured, and investigate before touching any budget or threshold.
-  See Blocker 1 step 1 above for the concrete reasoning.
+  Validated this session (Blocker 1: 0/3 timeouts, reported as a headline
+  number either way, not just checked and discarded).
+- When a bounded call times out or hangs, check ground truth from more than
+  one source before concluding why. The +3mm hang had two live candidate
+  explanations (contended motion vs. ros2_control readback defect) and only
+  one was checked in the moment. Next occurrence, sample both
+  `/joint_states` and `gz topic -e` ground truth before cleanup, not after.
