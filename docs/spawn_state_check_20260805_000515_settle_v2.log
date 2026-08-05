@@ -1,0 +1,20 @@
+spawn-state bimodality check: 2026-08-05T00:05:16+02:00
+N=5 launches, master=robotiq_85_left_knuckle_joint, sample_mode=settle (open_tol=0.05 rad, timeout=20.0s)
+
+════════════════════════════════════════════════════════════
+§ 0. Ensuring clean slate
+
+════════════════════════════════════════════════════════════
+  [ok] no prior sim instance running
+
+════════════════════════════════════════════════════════════
+§ Launch 1 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 16.30s
+  robotiq_85_left_knuckle_joint = 4.5361649486775771e-05 rad (reached open within 20.0s)
+
+════════════════════════════════════════════════════════════
+§ Launch 2 / 5
+
+════════════════════════════════════════════════════════════

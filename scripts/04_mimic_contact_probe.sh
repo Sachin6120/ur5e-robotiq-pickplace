@@ -38,6 +38,14 @@ MODEL="${MODEL:-ur5e_robotiq}"
 MASTER="${MASTER:-robotiq_85_left_knuckle_joint}"
 GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 
+# Precondition tolerance: this script's own PRECONDITION comment says
+# "gripper OPEN" and nothing ever checked it -- false on every fresh sim
+# launch tested this session (5/5 spawned near-closed, ~0.767rad, not open;
+# see docs/HANDOFF_M3.md). Every probe run before this fix was measuring
+# contact behavior on top of an unverified, and often unmet, starting
+# aperture.
+OPEN_TOL_RAD="${OPEN_TOL_RAD:-0.05}"
+
 # Test object. Width is what matters: it sets the joint angle at which the
 # fingers SHOULD stop.
 BOX_NAME="${BOX_NAME:-probe_box}"
@@ -103,6 +111,10 @@ for s in "$GZ_CREATE" "$GZ_REMOVE"; do
     die "spawn/remove service name differs — set GZ_CREATE/GZ_REMOVE"
   fi
 done
+
+if ! gz_assert_joint "$GZ_JS" "$MASTER" 0.0 "$OPEN_TOL_RAD" "gripper open"; then
+  die "precondition failed -- see message above. Command the gripper open (position 0.0) and re-run."
+fi
 
 # ---------------------------------------------------------------------------
 # sample_joints <label> -> writes "<name> <position> <velocity>" lines

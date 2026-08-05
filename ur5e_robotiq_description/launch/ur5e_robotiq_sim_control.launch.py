@@ -46,12 +46,31 @@
 #    so gz-sim itself has to resolve them at load time. Without this, the
 #    gripper spawns as placeholder/missing geometry — it still "works"
 #    structurally, which makes the missing meshes easy to miss.
+#
+# 6. The gripper is commanded open once, right after gripper_controller_spawner
+#    exits (same OnProcessExit chaining as note 4). The xacro sets
+#    ros2_control initial_value for the six arm joints but not for
+#    robotiq_85_left_knuckle_joint — the gripper_controller can take 10-15s to
+#    activate, and until it does nothing holds that joint or its mimic
+#    followers (those are overridden in software BY THE CONTROLLER, which
+#    isn't running yet either), so gravity is free to close the linkage
+#    before anything takes hold. CONFIRMED empirically, not assumed: 5/5
+#    fresh launches tested spawned the gripper near-closed (~0.767rad, its
+#    gravity-rest position against the URDF's self-collision limits) rather
+#    than open (~0rad) — every prior script's "gripper OPEN" precondition
+#    comment was never true, on any fresh launch, all session. This command
+#    makes the starting state deterministic; it does not replace the
+#    precondition assertion each probe script now runs before proceeding
+#    (scripts/lib/gz_settle.py's assert-joint mode) — that assertion is what
+#    catches it if this command is ever issued too early or fails silently.
+#    See docs/HANDOFF_M3.md's spawn-state investigation for the full case.
 
 import os
 
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
@@ -182,6 +201,27 @@ def launch_setup(context, *args, **kwargs):
         )
     )
 
+    # Open the gripper once, deterministically, right after its controller
+    # activates — design note 6. `ros2 action send_goal` itself waits for the
+    # action server to become available, so this doesn't race the controller
+    # being slightly slower to expose the action interface than the spawner
+    # process exiting.
+    open_gripper_on_activation = ExecuteProcess(
+        cmd=[
+            "ros2", "action", "send_goal",
+            "/gripper_controller/gripper_cmd",
+            "control_msgs/action/GripperCommand",
+            "{command: {position: 0.0, max_effort: 50.0}}",
+        ],
+        output="screen",
+    )
+    delay_open_gripper_after_gripper_controller = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=gripper_controller_spawner,
+            on_exit=[open_gripper_on_activation],
+        )
+    )
+
     # --- Gazebo ---------------------------------------------------------------
     gz_spawn_entity = Node(
         package="ros_gz_sim",
@@ -230,6 +270,7 @@ def launch_setup(context, *args, **kwargs):
         joint_state_broadcaster_spawner,
         delay_arm_controller_after_joint_state_broadcaster,
         delay_gripper_controller_after_arm_controller,
+        delay_open_gripper_after_gripper_controller,
         gz_spawn_entity,
         gz_launch_description,
         gz_sim_bridge,

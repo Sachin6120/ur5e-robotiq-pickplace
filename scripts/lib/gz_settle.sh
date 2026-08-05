@@ -25,3 +25,17 @@ gz_settle_pose() {
   python3 "$GZ_SETTLE_PY" pose --topic "$topic" --eps "$eps" \
     --timeout "$timeout" --poll "$poll" "$@"
 }
+
+# gz_assert_joint <gz_joint_state_topic> <joint_name> <expected_rad> <tol_rad> [label]
+#
+# PRECONDITION assertion, not a settle wait: reads the joint's CURRENT
+# position once and fails loudly if it isn't where the caller assumed. Every
+# probe script in this project stated "gripper OPEN" as a precondition in a
+# comment and never checked it -- it was false on every fresh sim launch this
+# session (confirmed 5/5, ~0.767rad not ~0rad; see docs/HANDOFF_M3.md). Call
+# this before any script proceeds on an assumed starting joint position.
+gz_assert_joint() {
+  local topic="$1" name="$2" expected="$3" tol="$4" label="${5:-}"
+  python3 "$GZ_SETTLE_PY" assert-joint --topic "$topic" \
+    --expected "$expected" --tol "$tol" ${label:+--label "$label"} "$name"
+}
