@@ -350,15 +350,48 @@ confirm no prior sim instance, launch fresh, sample the master joint at a
 fixed delay after controllers report active, repeat N=5. Result — **0/5
 open**, clustering at exactly two near-closed values reproducing to 8+
 significant figures: `0.7668280971...` (×3) and `0.7928991779...` (×2),
-controller-activation wait 5.30–8.20s, uncorrelated with which value came
-up. Mechanism, confirmed not guessed: the xacro sets `ros2_control
-initial_value` for the six arm joints but not for
+controller-activation wait 5.30–8.20s. Mechanism, confirmed not guessed: the
+xacro sets `ros2_control initial_value` for the six arm joints but not for
 `robotiq_85_left_knuckle_joint`; nothing holds that joint (and its 5 mimic
 followers, software-overridden by a controller that isn't running yet
 either) until `gripper_controller` activates, so gravity closes the linkage
 in the 5–8s gap. This is a real, independent finding — decoupled from the
 11:22 log's residue bug, confirmed on sim instances that had never run a
 single prior script.
+
+**Contamination check on this specific result, done retroactively.** The
+orphaned-process finding below was discovered *after* this 0/5 run
+(`docs/spawn_state_check_20260804_140514.log`, 14:05), in the same overall
+session — raising the question of whether this result is a property of the
+robot or a property of an already-degraded system, the same shape of bug as
+the 11:22 log's unstated precondition above. Checked, not assumed:
+controller-activation wait for these 5 launches was 5.30–8.20s, which sits
+*inside* the 6.8–13.1s band later established as healthy (post-fix,
+orphan-free) and nowhere near the 40+s signature orphaned processes actually
+produced (see "orphaned processes" below — the two runs that did hit
+degraded/hung timing, 23:54 and 00:05 that session, show activation climbing
+to 14–17s before hanging outright). That's evidence against contamination
+at 14:05, not proof of a clean system — no process census was taken at the
+time, only inferred from a timing proxy established after the fact. Treat
+the 0/5 result as provisionally a property of the robot, on secondhand
+evidence, not a directly-verified one.
+
+One inference from this data was stated with more confidence than it earns,
+and it's unestablished for a logical reason, not a data-quality one — this
+matters because the two reasons call for different fixes. The claim: that
+the 5.30–8.20s spread in activation time producing a uniformly-closed
+outcome refutes a fine-grained timing race. It doesn't, independent of
+whether the batch was contaminated. 5/5 closed means gravity won every
+single time across that window — a race lost 100% of the time across a
+3-second spread is exactly what a race with its open/closed threshold
+sitting *outside* that window also looks like. "Fine-grained race, but the
+observed window never crossed the threshold" and "no fine-grained race at
+all" produce identical data here; nothing in this run distinguishes them.
+Re-running the same experiment clean would reproduce the same ambiguity,
+not resolve it — the fix is a different experiment (widen or shift the
+sampled activation-time window, e.g. by artificially delaying controller
+activation, to see whether outcome ever flips), not a cleaner run of this
+one. Treat the fine-grained-race question as open, not as refuted.
 
 **The two hangs from the previous section (`probe_reproducibility_check{,2}_*.log`,
 13:47/13:51) are NOT explained by either spawn-state finding.** Checked
@@ -461,6 +494,34 @@ match. **After this fix, controller-activation time dropped back to a
 consistent 6.8–13.1s** (vs. 40+ s observed with orphans present) across
 every subsequent launch this session — strong circumstantial evidence for
 the mechanism, not just a plausible story.
+
+**Moved to `scripts/lib/gz_settle.sh`, not left local to `07`**: `kill_sim`
+spawning-children-outlive-parent is a property of `ros2 launch` itself, not
+of this one script, so it now lives in the shared bash lib alongside
+`gz_settle_joint`/`gz_assert_joint` — any future script that comes to own
+sim lifecycle inherits the fix instead of growing its own teardown copy.
+Two more functions moved in alongside it, converting system health from
+something noticed after a 15-minute hang into something asserted before
+every launch:
+
+- `gz_assert_clean_slate` — counts stray `parameter_bridge` /
+  `robot_state_publisher` / `gz sim` / spawner processes and **aborts by
+  name** if any exist, rather than launching on top of them and calling the
+  result fresh. This is the check `07`'s old "`[ok]` no prior sim instance
+  running" line should have been doing — the old version only looked for
+  the launch.py parent and `gz sim`, exactly the blind spot that let 18
+  orphans accumulate unnoticed.
+- `gz_wait_controller_active_bounded` — polls for a named controller to
+  report active and **`[STOP]`s if it takes longer than `ACTIVATION_BOUND_S`**
+  (default 20s, comfortably above the 6.8–13.1s healthy band and well below
+  the 40+s degraded one). Controller-activation time is now a known-good
+  health signal for this stack, not just something to wait out — a slow
+  activation gets recorded as a failure and investigated, same as any other
+  measurement precondition, never silently retried or shrugged off as "sim
+  was just slow that time."
+
+`07_check_gripper_spawn_state.sh` now sources both from the shared lib
+instead of defining its own `kill_sim` and inline activation-poll loop.
 
 **Not confirmed, worth carrying forward**: whether this same leak explains
 the *original* Blocker 2/3 "contact resolution stopped reproducing on two
@@ -626,3 +687,17 @@ ODE-era Gazebo Classic tuning advice does not transfer.
   explanations (contended motion vs. ros2_control readback defect) and only
   one was checked in the moment. Next occurrence, sample both
   `/joint_states` and `gz topic -e` ground truth before cleanup, not after.
+- System health is an assertion, not a discovery made after a 15-minute
+  hang. Controller-activation time is now a known-good signal for this
+  stack (6.8–13.1s healthy, 40+s means contamination, not "just slow") —
+  `gz_assert_clean_slate` and `gz_wait_controller_active_bounded`
+  (`scripts/lib/gz_settle.sh`) turn that into a standard preamble every
+  sim-launching script runs, converting "unexplained 15-minute hang" into
+  "refusing to measure on a contaminated system." Same principle as the
+  settle-condition gating and precondition assertions above, applied one
+  level up: to the sim process tree itself, not just to individual joint
+  readings. A finding measured without this check (e.g. the 0/5-open result
+  above, taken before these existed) needs its timing retroactively checked
+  against the healthy/degraded bands before being trusted at face value —
+  don't assume a result is a property of the robot when it might be a
+  property of an uncontrolled system state.

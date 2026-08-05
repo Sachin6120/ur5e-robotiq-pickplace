@@ -76,6 +76,7 @@ MODEL="${MODEL:-ur5e_robotiq}"
 POST_ACTIVE_DELAY_S="${POST_ACTIVE_DELAY_S:-0.5}"
 SAMPLE_MODE="${SAMPLE_MODE:-settle}"   # settle (default) or fixed (the original diagnostic mode)
 OPEN_TOL_RAD="${OPEN_TOL_RAD:-0.05}"   # matches the tolerance every probe script's gz_assert_joint uses
+ACTIVATION_BOUND_S="${ACTIVATION_BOUND_S:-20}"  # 6.8-13.1s is healthy; 40+s means the system is suspect, not just slow
 SETTLE_TIMEOUT_S="${SETTLE_TIMEOUT_S:-20.0}"
 SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
 GZ_JS="/world/${WORLD}/model/${MODEL}/joint_state"
@@ -83,42 +84,14 @@ GZ_JS="/world/${WORLD}/model/${MODEL}/joint_state"
 hr()  { printf '\n%s\n' "════════════════════════════════════════════════════════════"; }
 sec() { hr; printf '§ %s\n' "$1"; hr; }
 
-# `ros2 launch` spawns robot_state_publisher, gz sim, every controller
-# spawner, and parameter_bridge as independent child processes (launch_ros
-# Node actions), not as children pkill -f "...launch.py" can reach by name --
-# killing the launch.py parent does not reliably cascade-kill them. First
-# version of this function only targeted the launch.py process and gz sim
-# itself and left every other child running. Confirmed the damage directly,
-# mid-session: 18 orphaned parameter_bridge processes (one per launch this
-# script had ever done) plus a leftover robot_state_publisher and gz sim,
-# every one of them still alive and still publishing (parameter_bridge keeps
-# bridging /clock from a gz sim that pkill "gz sim -s -r" didn't match either
-# -- exact-flag-string matching is fragile). A "fresh" launch on top of that
-# is not fresh: it's a new gz sim plus N stale processes still on the ROS
-# graph, competing for DDS discovery and, going by one launch that hung 15+
-# minutes on "controller_manager: Waiting for data on 'robot_description'
-# topic" right after this was discovered, plausibly able to break the new
-# robot_state_publisher -> controller_manager handshake outright. This is a
-# strong candidate explanation -- not confirmed, no earlier session's exact
-# kill commands were recorded to check -- for docs/HANDOFF_M3.md's original
-# "contact resolution stopped reproducing on fresh instances" finding too:
-# if that investigation's own manual cleanup between attempts left similar
-# orphans, "fresh sim instance" was never as fresh as it looked.
-kill_sim() {
-  pkill -9 -f "ur5e_robotiq_sim_control.launch.py" 2>/dev/null
-  pkill -9 -f "gz sim" 2>/dev/null
-  pkill -9 -f "robot_state_publisher" 2>/dev/null
-  pkill -9 -f "parameter_bridge" 2>/dev/null
-  pkill -9 -f "controller_manager/spawner" 2>/dev/null
-  sleep 2
-  local leftover
-  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner" | grep -v grep)
-  if [[ -n "$leftover" ]]; then
-    printf '  [WARN] kill_sim left processes running -- killing by PID directly:\n%s\n' "$leftover"
-    printf '%s\n' "$leftover" | awk '{print $1}' | xargs -r kill -9 2>/dev/null
-    sleep 1
-  fi
-}
+# kill_sim and the clean-slate/bounded-activation preamble now live in
+# scripts/lib/gz_settle.sh (kill_sim, gz_assert_clean_slate,
+# gz_wait_controller_active_bounded) -- `ros2 launch` spawning children that
+# outlive its parent is a property of `ros2 launch` itself, not of this
+# script, so every script that owns sim lifecycle inherits the same fix
+# rather than growing its own teardown. See that file's comments for the
+# 18-orphan/15-minute-hang history. This script no longer defines kill_sim
+# locally.
 
 sample_master_position() {
   python3 -c "
@@ -145,6 +118,7 @@ fi
 
 sec "0. Ensuring clean slate"
 kill_sim
+gz_assert_clean_slate || { echo "  [STOP] stray processes survived kill_sim -- aborting rather than launching on top of them"; exit 1; }
 echo "  [ok] no prior sim instance running"
 
 declare -a READINGS
@@ -155,22 +129,23 @@ for ((i=1; i<=N; i++)); do
   ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py \
     > "/tmp/spawn_check_launch_${i}.log" 2>&1 &
 
-  T0=$(date +%s.%N)
-  # Match m0_verify.sh's controller-active check exactly (word-boundary on
-  # both the controller name and "active"): a bare `grep -q "active"` also
-  # matches "inactive" as a substring, and doesn't check gripper_controller
-  # specifically -- it was satisfied as soon as joint_state_broadcaster came
-  # up, long before gripper_controller loaded. That bug made every prior
-  # run of this script (including the post-launch-fix validation run) sample
-  # the master joint before gripper_controller -- and the deterministic-open
-  # command chained off its spawner's exit -- had ever run.
-  until ros2 control list_controllers 2>/dev/null | grep -qE "^gripper_controller\b.*\bactive\b"; do
-    sleep 0.2
-  done
-  T1=$(date +%s.%N)
-  ELAPSED=$(python3 -c "print(f'{${T1} - ${T0}:.2f}')")
-  SPAWN_WAITS+=("$ELAPSED")
-  printf '  controllers active after %ss\n' "$ELAPSED"
+  # gz_wait_controller_active_bounded matches m0_verify.sh's controller-active
+  # check (word-boundary on both the controller name and "active" -- a bare
+  # `grep -q "active"` also matches "inactive" as a substring and doesn't
+  # check gripper_controller specifically; that bug made every prior run of
+  # this script sample the master joint before gripper_controller had ever
+  # loaded). It also enforces ACTIVATION_BOUND_S: activation time is a known
+  # health signal for this stack, not just a wait -- 40+s means orphaned
+  # processes or some other contamination, not "give it more time" (see
+  # docs/HANDOFF_M3.md, "orphaned processes"). A bound breach is recorded as
+  # a failure for this launch, same as TIMEOUT/MISSING below -- not retried.
+  if ! gz_wait_controller_active_bounded gripper_controller "$ACTIVATION_BOUND_S"; then
+    READINGS+=("ACTIVATION_TIMEOUT")
+    SPAWN_WAITS+=("$GZ_LAST_WAIT_S")
+    kill_sim
+    continue
+  fi
+  SPAWN_WAITS+=("$GZ_LAST_WAIT_S")
 
   if [[ "$SAMPLE_MODE" == "settle" ]]; then
     # NOT gz_settle_joint: velocity-settle can't tell "open command finished"
