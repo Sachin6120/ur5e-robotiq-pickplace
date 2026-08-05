@@ -31,6 +31,10 @@ GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 ARM_CTRL="${ARM_CTRL:-arm_controller}"
 MOVEIT_CTRL_YAML="${MOVEIT_CTRL_YAML:-config/moveit_controllers.yaml}"
 SPAWN_WAIT="${SPAWN_WAIT:-45}"           # donor reports 10-15s; be generous
+# Precondition tolerance for M0-C: gripper must be open (~0 rad) at start.
+# Never checked before this session; false on 5/5 fresh launches tested
+# (spawned ~0.767rad, not open) -- see docs/HANDOFF_M3.md.
+OPEN_TOL_RAD="${OPEN_TOL_RAD:-0.05}"
 
 PASS_A=UNKNOWN; PASS_B=UNKNOWN; PASS_C=UNKNOWN
 EVID_DIR="${EVID_DIR:-$(pwd)/m0_evidence}"
@@ -307,6 +311,14 @@ if ! printf '%s\n' "$GZ_TOPICS" | grep -qF "$GZ_JS_TOPIC"; then
   warn "Add the JointStatePublisher system plugin to the model's <gazebo> tags."
   warn "Without it M0-C has no independent source and CANNOT pass."
   warn "Do not substitute /joint_states. That defeats the entire check."
+  PASS_C=FAIL
+elif ! gz_assert_joint "$GZ_JS_TOPIC" "$ACTUATED" 0.0 "${OPEN_TOL_RAD:-0.05}" "gripper open"; then
+  bad "precondition failed: $ACTUATED not open at M0-C start -- see message above"
+  warn "Every M0-C run before this check assumed the gripper spawned open and"
+  warn "never verified it; on this project's own fresh-launch testing that was"
+  warn "false 5/5 times (see docs/HANDOFF_M3.md). Command the gripper open"
+  warn "(position 0.0) before running m0_verify.sh, or fix the bringup launch"
+  warn "to do so automatically."
   PASS_C=FAIL
 else
   ok "Gazebo ground-truth topic present"

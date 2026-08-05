@@ -82,6 +82,15 @@ MODEL="${MODEL:-ur5e_robotiq}"
 MASTER="${MASTER:-robotiq_85_left_knuckle_joint}"
 GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 
+# Precondition tolerance: this is very likely the actual root cause of the
+# reproducibility failure documented in docs/HANDOFF_M3.md. The gripper
+# spawns near-closed (~0.767rad) on every fresh launch tested this session
+# (5/5), not open (~0rad) as every probe script in this project assumed
+# without checking. PRECLOSE angles computed here (and everywhere else) were
+# computed as if starting from open; the actual starting aperture was never
+# what any of these scripts believed it was.
+OPEN_TOL_RAD="${OPEN_TOL_RAD:-0.05}"
+
 # Object widths to sweep. Narrowed around the one validated anchor point
 # (40mm box, 0.45 rad preclose, from Blocker 2's height-sweep tests) rather
 # than the originally-proposed 25-65mm spread: a first live run at that wider
@@ -142,6 +151,10 @@ for t in "$GZ_JS" "$GZ_POSE"; do
   printf '%s\n' "$TOPICS" | grep -qF "$t" && printf '  [ok] topic %s\n' "$t" \
     || die "missing topic $t — fix WORLD=/MODEL= to match, then re-run"
 done
+
+if ! gz_assert_joint "$GZ_JS" "$MASTER" 0.0 "$OPEN_TOL_RAD" "gripper open"; then
+  die "precondition failed -- see message above. Command the gripper open (position 0.0) and re-run."
+fi
 
 # gripper.command_timeout_s from scene.yaml — the timeout this script binds
 # to. Falls back to 5.0s if the field or file is missing, matching

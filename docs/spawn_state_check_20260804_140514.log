@@ -1,0 +1,80 @@
+spawn-state bimodality check: 2026-08-04T14:05:15+02:00
+N=5 launches, master=robotiq_85_left_knuckle_joint, post-active delay=0.5s
+
+════════════════════════════════════════════════════════════
+§ 0. Ensuring clean slate
+
+════════════════════════════════════════════════════════════
+  [ok] no prior sim instance running
+
+════════════════════════════════════════════════════════════
+§ Launch 1 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 5.82s
+  robotiq_85_left_knuckle_joint = 0.7668280971481759 rad (fixed delay=0.5s after active)
+
+════════════════════════════════════════════════════════════
+§ Launch 2 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 8.20s
+  robotiq_85_left_knuckle_joint = 0.76682809714680888 rad (fixed delay=0.5s after active)
+
+════════════════════════════════════════════════════════════
+§ Launch 3 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 5.30s
+  robotiq_85_left_knuckle_joint = 0.7928991779289366 rad (fixed delay=0.5s after active)
+
+════════════════════════════════════════════════════════════
+§ Launch 4 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 8.17s
+  robotiq_85_left_knuckle_joint = 0.76682809714710509 rad (fixed delay=0.5s after active)
+
+════════════════════════════════════════════════════════════
+§ Launch 5 / 5
+
+════════════════════════════════════════════════════════════
+  controllers active after 7.16s
+  robotiq_85_left_knuckle_joint = 0.7928991779289366 rad (fixed delay=0.5s after active)
+
+════════════════════════════════════════════════════════════
+§ Results (raw, not averaged -- this is a bimodality check)
+
+════════════════════════════════════════════════════════════
+launch   controller_wait_s  master_pos_rad
+1        5.82               0.7668280971481759
+2        8.20               0.76682809714680888
+3        5.30               0.7928991779289366
+4        8.17               0.76682809714710509
+5        7.16               0.7928991779289366
+
+════════════════════════════════════════════════════════════
+§ Interpretation -- read the raw values above, this section will not judge
+
+════════════════════════════════════════════════════════════
+  A mix of ~0 (open) and ~0.77 (near-closed) readings across launches is
+  the bimodality signature: the gripper controller's activation is racing
+  gravity, and which one wins varies launch to launch. This explains
+  reproducibility failures directly -- any script that assumes "gripper
+  OPEN at start" without checking is measuring from an undefined initial
+  condition on some fraction of launches.
+
+  All readings clustered near ~0.77 (or all near ~0): the initial state is
+  deterministic. Something else explains the reproducibility failure --
+  do not conclude the race hypothesis from this data alone in that case.
+
+  Next steps if bimodal, per docs/HANDOFF_M3.md:
+  1. Deterministic startup: command the gripper open once, after
+     controllers activate, in the bringup launch -- OR set ros2_control
+     initial_value for robotiq_85_left_knuckle_joint (means patching the
+     package that owns the macro, more invasive).
+  2. Precondition assertion: every measurement script should verify the
+     starting aperture (open, settle, check within tolerance) rather than
+     assume it, and abort with a named error otherwise -- same discipline
+     already applied to base_link pose (M2's CONFIG_ERROR guard) and mimic
+     joint count (M0-C's C1 check).

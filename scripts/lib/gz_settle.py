@@ -32,6 +32,20 @@
 #   Both require every named quantity to be under its threshold for two
 #   consecutive polls (guards against a single lucky near-zero-crossing
 #   sample) before returning 0. Link/joint names must match the `name:`
+#
+#   PRECONDITION THIS DOES NOT AND CANNOT CHECK: the target must already be
+#   in motion, or have already finished moving, when polling starts -- "not
+#   moving" and "hasn't started moving yet" are indistinguishable from here,
+#   and a target that hasn't started yet settles falsely, immediately (two
+#   near-zero polls in, ~2*poll_dt seconds). Every current caller in this
+#   project is safe because it only calls settle right after a SYNCHRONOUS,
+#   already-returned `ros2 action send_goal` (which blocks until the goal
+#   finishes) -- by the time settle starts polling, the command is known
+#   complete. Do NOT call this right after firing an async/backgrounded
+#   command with no other synchronization; confirmed to false-positive that
+#   way while validating scripts/07_check_gripper_spawn_state.sh (an
+#   ExecuteProcess launched from a launch file, polled from an unrelated
+#   process with nothing to wait on) -- see docs/HANDOFF_M3.md.
 #   field in the topic exactly — 04_mimic_contact_probe.sh already learned
 #   the hard way that substring matching pulls in sub-frames like
 #   "..._visual" and silently corrupts the result.
@@ -73,6 +87,16 @@ def _parse_joint_velocities(txt):
         v = re.search(r'velocity:\s*(-?[\d.eE+-]+)', blk)
         if n and v:
             joints[n.group(1)] = float(v.group(1))
+    return joints
+
+
+def _parse_joint_positions(txt):
+    joints = {}
+    for blk in re.findall(r'joint\s*\{(.*?)\n\}', txt, re.S):
+        n = re.search(r'name:\s*"([^"]+)"', blk)
+        p = re.search(r'position:\s*(-?[\d.eE+-]+)', blk)
+        if n and p:
+            joints[n.group(1)] = float(p.group(1))
     return joints
 
 
@@ -165,6 +189,32 @@ def settle_poses(topic, names, eps, timeout, poll_dt, need_streak=2):
     return 1
 
 
+def assert_joint_position(topic, name, expected, tol, label=None):
+    # PRECONDITION ASSERTION, not a settle check. Every measurement script
+    # this project has written assumed "gripper OPEN at start" in a comment,
+    # never checked it, and it was false on every single fresh launch this
+    # session (confirmed: 5/5 fresh launches spawned near-closed, ~0.767rad,
+    # not open ~0rad — see docs/HANDOFF_M3.md's spawn-state investigation).
+    # That precondition failure was invisible for a full session specifically
+    # because nothing ever read the actual state and compared it. Read it,
+    # compare it, name the joint and the values in the failure — do not let
+    # a script proceed on an assumed starting condition again.
+    label = label or name
+    pos = _parse_joint_positions(_gz_echo(topic)).get(name)
+    if pos is None:
+        print(f"[STOP] PRECONDITION_UNREADABLE: {label} ({name}) not found on {topic}",
+              file=sys.stderr)
+        return 1
+    if abs(pos - expected) > tol:
+        print(f"[STOP] PRECONDITION_FAILED: {label} ({name}) = {pos:.4f} rad, "
+              f"expected {expected:.4f} +/- {tol} rad — refusing to proceed on "
+              "an unmet starting condition", file=sys.stderr)
+        return 1
+    print(f"[ok] {label} ({name}) = {pos:.4f} rad, within {expected:.4f} +/- {tol}",
+          file=sys.stderr)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -183,11 +233,20 @@ def main():
     pp.add_argument("--poll", type=float, default=0.15)
     pp.add_argument("names", nargs="+")
 
+    ap_ = sub.add_parser("assert-joint")
+    ap_.add_argument("--topic", required=True)
+    ap_.add_argument("--expected", type=float, required=True)
+    ap_.add_argument("--tol", type=float, required=True)
+    ap_.add_argument("--label", default=None)
+    ap_.add_argument("name")
+
     args = ap.parse_args()
     if args.mode == "joint":
         rc = settle_joints(args.topic, args.names, args.eps, args.timeout, args.poll)
-    else:
+    elif args.mode == "pose":
         rc = settle_poses(args.topic, args.names, args.eps, args.timeout, args.poll)
+    else:
+        rc = assert_joint_position(args.topic, args.name, args.expected, args.tol, args.label)
     sys.exit(rc)
 
 

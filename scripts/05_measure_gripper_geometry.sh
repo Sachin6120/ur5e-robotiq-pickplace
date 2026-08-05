@@ -57,7 +57,16 @@ source "$(dirname "$0")/lib/gz_settle.sh"
 GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 WORLD="${WORLD:-empty}"
 MODEL="${MODEL:-ur5e_robotiq}"
+MASTER="${MASTER:-robotiq_85_left_knuckle_joint}"
 GZ_POSE_TOPIC="/world/${WORLD}/pose/info"
+GZ_JS_TOPIC="/world/${WORLD}/model/${MODEL}/joint_state"
+
+# Precondition tolerance: gripper must actually be open (~0 rad) before this
+# sweep starts. NEVER verified before this session -- and it was false on
+# every fresh sim launch tested (5/5 spawned near-closed, ~0.767rad, not
+# open; see docs/HANDOFF_M3.md). A sweep that starts from an unknown
+# aperture invalidates every joint_rad->width_m pairing in its own table.
+OPEN_TOL_RAD="${OPEN_TOL_RAD:-0.05}"
 
 # Sweep points. 0.0 and near the mechanical limit (0.767, not the nominal 0.8,
 # since the URDF's ros2_control initial_value never quite reaches 0.8) are
@@ -88,6 +97,13 @@ if ! printf '%s\n' "$TOPICS" | grep -qF "$GZ_POSE_TOPIC"; then
   exit 2
 fi
 printf '  [ok] %s present\n' "$GZ_POSE_TOPIC"
+
+if ! gz_assert_joint "$GZ_JS_TOPIC" "$MASTER" 0.0 "$OPEN_TOL_RAD" "gripper open"; then
+  printf '  [STOP] precondition failed -- see message above. Command the gripper\n'
+  printf '         open (position 0.0) and re-run; do not sweep from an unknown\n'
+  printf '         starting aperture.\n'
+  exit 2
+fi
 
 sec "1. Sweep"
 RESULTS_FILE="${RESULTS_FILE:-/tmp/gripper_geometry_samples.txt}"

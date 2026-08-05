@@ -1,15 +1,20 @@
-# Handoff — M3, Blockers 1/2 closed, new unresolved reliability finding
+# Handoff — M3, Blockers 1/2 closed, spawn-state/reliability findings resolved
 
-Written 2026-08-04. M-1, M0, M1, M2 are closed and committed. Blocker 1 is
-fixed and validated live. Blocker 2 is closed — geometric seating, not
-friction. Closing it surfaced two items that must land in M3's grasp
-procedure (see Blocker 2 section below), one of them severe. Then, building
-the grasp-table sweep this same session, a **third, more severe, and
-currently unresolved** finding turned up: the exact anchor configuration
-Blocker 2 validated 5/5 times stopped reproducing, on two different fresh
-sim instances, for reasons not yet understood. Read the new section
-immediately after Blocker 2 before trusting anything measurement-shaped
-from this environment.
+Written 2026-08-04, updated 2026-08-05. M-1, M0, M1, M2 are closed and
+committed. Blocker 1 is fixed and validated live. Blocker 2 is closed —
+geometric seating, not friction. Closing it surfaced two items that must
+land in M3's grasp procedure (see Blocker 2 section below), one of them
+severe. Building the grasp-table sweep the same session, a **severe
+reliability finding** turned up: the exact anchor configuration Blocker 2
+validated stopped reproducing on two fresh sim instances, cause unknown at
+the time. A follow-up session ran that down: two separate, now-fixed bugs
+(a script-precondition bug and a genuine spawn-time race), plus, while
+validating the fixes, a third and probably more consequential bug (a
+repo/workspace desync that silently no-opped code edits) and a fourth
+(orphaned processes accumulating across repeated launches, a strong
+candidate for the *original* reproducibility failure). See "Spawn-state
+investigation, closed" below, immediately after Blocker 2, before trusting
+anything measurement-shaped from this environment.
 
 ## State
 
@@ -21,6 +26,7 @@ from this environment.
 | M2 | PASS | cartesian_fraction=1.0000 tcp_error_m=0.0000 ground_truth=yes |
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
+| Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -34,8 +40,14 @@ Committed so far:
 - `1dd32bb` — M2: base elevation propagated through scene_xacro_args.py.
 - `0f2ac4f` — Blocker 1 fix: `scripts/lib/gz_settle.{py,sh}`.
 - `d64e857` — this doc, first version.
-- **Not yet committed**: everything below this line (Blocker 1/2 results,
-  the M3-prerequisite updates). Commit after reading this section.
+- `39632b3`, `c33a07c` — Blocker 1/2 results, grasp-table sweep script,
+  reframing, the original severe-unresolved writeup.
+- **Not yet committed**: the spawn-state investigation above — precondition
+  assertions (`04`/`05`/`06`/`m0_verify.sh`), the deterministic-open launch
+  fix, `scripts/07_check_gripper_spawn_state.sh`, the repo/workspace symlink
+  restructuring (`~/ur5e_ws/src/*` — not part of this repo, not committed by
+  git, but recorded here since it's necessary for the launch fix to have any
+  effect), and this section. Commit after reading it.
 
 **Remote is configured and pushed**: `origin` ->
 `https://github.com/Sachin6120/ur5e-robotiq-pickplace`, branch `main`
@@ -283,6 +295,203 @@ than Blocker 2's seating-vs-sliding one, so "skip the GUI" from that section
 does not apply here. Also worth a clean before/after check of joint state
 immediately at spawn, across a few fresh launches, to resolve the 0.7668rad
 anomaly independently of whether it's the cause.
+
+## Spawn-state investigation, closed: two separate bugs, not one
+
+Follow-up session. Answers the question the previous section left open —
+"is the gripper open at spawn?" — and along the way found two more
+infrastructure bugs that were quietly able to invalidate future measurements
+regardless of the answer. All four are now fixed. Read this before trusting
+any new measurement from this environment; the earlier sections' *numbers*
+still hold (see "Blocker 2's numbers: unaffected" below), but the
+*confidence* behind "fresh sim instance" needs updating.
+
+**Was the 11:22 log actually freshly launched?** No. Checked directly:
+`docs/geom_run{1,2,3}_*.log` (Blocker 1's `05_measure_gripper_geometry.sh`
+sweep, 11:20:18–11:21) ends its last sample at `0.767` rad and has **no
+reset/reopen step at all** — the script just stops after its last sweep
+sample. Two minutes later, `04_mimic_contact_probe.sh`'s
+`probe_settled_20260804_112245.log` — the log this whole investigation
+started from — opens with:
+
+```
+§ 1. Baseline — gripper open, no object
+    robotiq_85_left_knuckle_joint 0.7669999999999888 ...
+```
+
+That number is not a fresh spawn state or a controller-activation race. It
+is `05`'s last sweep sample, read back almost bit-for-bit, because both
+scripts ran back-to-back against the same long-lived sim and nothing ever
+reset the gripper between them. The section heading asserted the
+precondition it was supposed to verify. That is the whole bug: not bad
+physics, a script that printed "gripper open" over a reading of 0.767 rad
+without ever comparing the two.
+
+**Blocker 2's numbers: unaffected, checked not assumed.** Two things saved
+the actual measurements from this: (1) `04`'s pre-close command is absolute
+(`position: ${PRECLOSE}`), not relative to wherever the joint started, so it
+reached 0.45 rad correctly regardless of starting from 0.767 or 0.0 — that's
+a property of the script's design, not something anyone verified in advance.
+(2) Checked all four subsequent z-sweep logs
+(`probe_zsweep_{low,mid,high,neg12mm}_*.log`, 11:28–11:46) directly: every
+one of them opens with a genuinely clean `~1e-5` rad baseline, because each
+inherited a correct reopen from the *previous* run's own `§5 Cleanup` step —
+`04` does reopen at the end, unlike `05`. So exactly one run in the whole
+Blocker 2 sequence had a dirty precondition, it happened not to matter for
+that run's result, and everything downstream of it was clean by inheritance.
+Blocker 2's drop measurements stand. The claim "this reproduces because the
+precondition holds" was never actually checked before now — it happened to
+be true for reasons nobody had designed.
+
+**Separately, and more fundamentally: a genuinely fresh launch does not
+spawn open either.** Built `scripts/07_check_gripper_spawn_state.sh` to
+settle this independent of any script-residue question: kill everything,
+confirm no prior sim instance, launch fresh, sample the master joint at a
+fixed delay after controllers report active, repeat N=5. Result — **0/5
+open**, clustering at exactly two near-closed values reproducing to 8+
+significant figures: `0.7668280971...` (×3) and `0.7928991779...` (×2),
+controller-activation wait 5.30–8.20s, uncorrelated with which value came
+up. Mechanism, confirmed not guessed: the xacro sets `ros2_control
+initial_value` for the six arm joints but not for
+`robotiq_85_left_knuckle_joint`; nothing holds that joint (and its 5 mimic
+followers, software-overridden by a controller that isn't running yet
+either) until `gripper_controller` activates, so gravity closes the linkage
+in the 5–8s gap. This is a real, independent finding — decoupled from the
+11:22 log's residue bug, confirmed on sim instances that had never run a
+single prior script.
+
+**The two hangs from the previous section (`probe_reproducibility_check{,2}_*.log`,
+13:47/13:51) are NOT explained by either spawn-state finding.** Checked
+both baselines directly: check_1 (13:47) opens genuinely clean (~8e-6 rad);
+check_2 (13:51) opens dirty (0.76682809714630407 rad — matching the
+gravity-race value above, on a sim `kill`ed and relaunched fresh per that
+session's own narrative). **Both hung identically at §3 closure regardless
+of which baseline they had.** Spawn-state cleanliness is not a variable that
+distinguishes hang from no-hang. Whatever causes that hang is still open —
+see "orphaned processes" below for a newly-found candidate mechanism, not
+yet connected to those specific two hangs.
+
+**Fixes implemented and validated:**
+
+1. **Precondition assertion** (`scripts/lib/gz_settle.py`'s `assert-joint`
+   mode / `gz_settle.sh`'s `gz_assert_joint` wrapper): every measurement
+   script (`04`, `05`, `06`, `m0_verify.sh`'s M0-C) now reads the master
+   joint once, inside its own `§0. Preconditions` block — strictly before
+   any `§1` output — and aborts by name if it isn't within `0.05` rad of
+   open. This is what actually closes the 11:22 bug: it turns a silently
+   wrong section heading into a named, fail-loud `[STOP]`.
+2. **Deterministic startup**
+   (`ur5e_robotiq_description/launch/ur5e_robotiq_sim_control.launch.py`,
+   design note 6): the gripper is commanded open once, chained via
+   `OnProcessExit` off `gripper_controller_spawner`, same pattern as the
+   existing sequential-spawner chaining (design note 4).
+
+**Validating fix 2 surfaced three more bugs, each independently capable of
+making "the fix doesn't work" look true when it wasn't:**
+
+- **Repo/workspace desync (the one that matters beyond this session).**
+  `~/ur5e_ws/src/ur5e_robotiq_description` (and `ur5e_pick_place`,
+  `ur5e_robotiq_moveit_config`) were plain `cp -r` copies of this repo's
+  packages, not symlinks. Editing the repo's launch file had **zero effect**
+  on `ros2 launch` until manually `diff`'d and copied over — confirmed by
+  grepping the launch log for the new `ExecuteProcess`'s tag and finding it
+  never started. Checked how long this had been silently possible: every
+  file in all three `ws/src` copies matched its repo counterpart exactly
+  (`diff -rq`, both directions) right up until this session's single
+  uncommitted launch-file edit, and no logs exist for the ~9.5h window that
+  edit sat unsynced — so no prior "trusted" measurement in this project was
+  ever taken against a stale copy. But the mechanism was live and would have
+  bitten silently the next time it mattered. **Fixed structurally, not just
+  for this file**: `rm -rf` each `ws/src` copy and replaced it with a
+  symlink to the corresponding repo package
+  (`ur5e_pick_place`, `ur5e_robotiq_description`, `ur5e_robotiq_moveit_config`
+  — verified byte-identical in both directions before removing anything).
+  `colcon build --symlink-install` re-resolved cleanly; the install space's
+  launch file now resolves straight through to the repo file with zero
+  intermediate copies (`readlink -f` confirmed). This class of bug cannot
+  recur for these three packages. If a fourth package is ever added to the
+  workspace, symlink it in the same way rather than copying.
+- **The validation script's own controller-readiness gate was wrong.**
+  `07`'s first version used `ros2 control list_controllers | grep -q
+  "active"` — matches the substring inside "**in**active", and doesn't
+  check `gripper_controller` specifically. It was satisfied as soon as
+  `joint_state_broadcaster` came up, long before `gripper_controller` even
+  loaded, so every sample was taken before the deterministic-open command
+  had any chance to run. Fixed to match `m0_verify.sh:122`'s existing
+  word-boundary pattern: `grep -qE "^gripper_controller\b.*\bactive\b"`.
+- **Velocity-based settle cannot distinguish "command finished" from
+  "command never started"** — both read as zero joint velocity. Confirmed
+  directly: two launches "settled" (via `gz_settle_joint`) in under 0.5s at
+  the joint's untouched gravity-rest position, while their open-command
+  process was still printing `Waiting for an action server to become
+  available` in the launch log — it hadn't even sent the goal yet. This is
+  a property of `gz_settle.py` itself, not just the validator: documented
+  the precondition explicitly in its header (a caller must have already
+  *synchronously* confirmed the command completed — e.g. via a blocking
+  `ros2 action send_goal` that already returned — before calling settle).
+  **Checked, not assumed, that this doesn't bite the existing measurement
+  scripts**: grepped every `gz_settle_joint`/`gz_settle_pose` call site in
+  `04`/`05`/`06`/`m0_verify.sh` — every one is immediately preceded by a
+  foreground, blocking `ros2 action send_goal` (none backgrounded with
+  `&`), so the command is always known-complete before settle starts
+  polling in current usage. `07`'s own validator was rewritten to poll for
+  actual position convergence to open (±0.05 rad) instead of using
+  velocity-settle at all.
+
+**A fourth, unplanned finding, potentially the most consequential of the
+four: orphaned child processes accumulating across repeated launches.**
+While debugging why a validation run hung for 15+ minutes on
+`controller_manager: Waiting for data on 'robot_description' topic to
+finish initialization` (not resource exhaustion — 5GB RAM free, load
+average 0.65 at the time), found **18 orphaned `parameter_bridge`
+processes** (one from nearly every `ros2 launch` this session had ever
+run, each still bridging `/clock`), plus a leftover `robot_state_publisher`
+and `gz sim`. Root cause: `07`'s `kill_sim()` only targeted the `ros2
+launch` parent process and `gz sim` by `pkill -f`. `ros2 launch` spawns
+`robot_state_publisher`, every controller spawner, and `parameter_bridge`
+as independent child processes (`launch_ros` `Node` actions) that do not
+reliably die when the parent is `pkill`'d from outside the launch
+framework's own shutdown path. Every "fresh" launch after the first was
+sharing a ROS graph with every prior launch's leftover `/clock` publisher.
+Fixed: `kill_sim()` now explicitly targets `robot_state_publisher`,
+`parameter_bridge`, and `controller_manager/spawner` by name in addition to
+the launch process and `gz sim`, then verifies zero survivors and
+force-kills any leftover PID directly rather than trusting the pattern
+match. **After this fix, controller-activation time dropped back to a
+consistent 6.8–13.1s** (vs. 40+ s observed with orphans present) across
+every subsequent launch this session — strong circumstantial evidence for
+the mechanism, not just a plausible story.
+
+**Not confirmed, worth carrying forward**: whether this same leak explains
+the *original* Blocker 2/3 "contact resolution stopped reproducing on two
+fresh sim instances" finding above. That investigation's own "kill it,
+launch a completely fresh instance" step was done by hand, and no record
+exists of exactly what kill command was used — so it can't be checked
+retroactively. But the shape matches: a "fresh" `gz sim` process launched
+on top of an unnoticed leftover `robot_state_publisher`/`parameter_bridge`
+from an earlier run in the same session is not actually fresh at the ROS
+graph level, even though `gz sim` itself is a new process. **If contact
+resolution hangs again**: check `ps -eo pid,cmd | grep -E "gz sim|
+robot_state_publisher|parameter_bridge|spawner"` for survivors from a
+prior run *before* concluding it's a physics/mimic-linkage problem.
+
+**Final validation, post-fix**: `07` re-run in `SAMPLE_MODE=settle` (polls
+for actual convergence to open, not velocity-settle) after the orphan
+cleanup and the repo/workspace symlink fix — **4/4 fresh launches settled
+open** (0.041, 0.021, 0.025, 0.037 rad, all within the 0.05 rad tolerance;
+controller-activation 6.8–13.1s each). Deterministic startup is now
+confirmed working, not just implemented.
+
+**Net effect on M3**: the spawn-state question that opened this section is
+closed — root cause understood on both halves (script-residue precondition
+bug; independent gravity-vs-controller-activation race), both fixed, both
+validated live. The contact-resolution hang from the previous section is
+still open, but now has a concrete, checkable candidate mechanism
+(orphaned processes) it didn't have before. `scripts/06_measure_grasp_table.sh`
+is worth retrying now that the two most likely confounds (unverified
+starting aperture; unnoticed cross-launch process pollution) are both
+fixed — still not done this session, flagged as the natural next step
+rather than assumed safe.
 
 ## Reframing M3: the evidence doesn't point at friction
 
