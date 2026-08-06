@@ -27,7 +27,7 @@ anything measurement-shaped from this environment.
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
-| Grasp-table sweep (06) | 0 OK rows so far; ejection bug fixed; anchor re-checked and reproduces (units error, not drift) — clear to run full sweep | docs/grasp_table_20260806_210710.log, docs/grasp_stall_diagnostic_20260806.log — see "06 retried" and "Single-width validation" below |
+| Grasp-table sweep (06) | 0 OK rows; ejection fixed, anchor confirmed; blocked on stall_velocity_threshold (measured too tight, fix not yet applied) | docs/grasp_table_20260806_215515.log, docs/gripper_stall_velocity_noise_20260806.log — see "Full width sweep, next session" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -749,6 +749,63 @@ but the session is at its limit and a real anchor question deserves room
 to work, per the same reasoning that justified pausing in the first place.
 Next session: `06` is clear to run the full width sweep — the anchor point
 checks out.
+
+## Full width sweep, next session: root cause found and quantified, not yet fixed
+
+Written 2026-08-06, later the same day. Ran `06`'s full default sweep
+(30-50mm) against a freshly relaunched, health-checked sim (`docs/grasp_table_20260806_215515.log`):
+**5/5 `TIMEOUT_OVERCLOSE` again, zero OK rows** — but no ejections (the
+hold fix held). New signal: every held position sat within 0.003 rad of
+its own pre-close value, i.e. essentially no measured progress toward the
+object in the full 5.0s bound, at every width, not just the 40mm anchor.
+
+**Uncapped diagnostic (40mm anchor, ~90s bound) to see what "no progress
+in 5s" actually looks like:** physical position (Gazebo ground truth)
+plateaus by t≈5s and stays flat (0.455-0.463 rad, noise-level movement
+only) for the rest of the minute. The ROS action itself did not return
+`stalled: true` until somewhere between t=60s and t=90s. So the earlier
+"contact settling takes longer than 5s" framing was imprecise: **the
+physical settle is fast (~5s); it's the controller's own stalled-goal
+declaration that is slow (60-90s)** — an order-of-magnitude gap between
+what's physically true and what the action reports.
+
+**Root cause, measured not guessed**: `gripper_controller`'s
+`stall_velocity_threshold: 0.001` (`controllers.yaml`) requires velocity to
+stay under that value continuously for `stall_timeout: 1.0`s. Sampled the
+master joint's velocity readback directly (dedicated rclpy subscriber, not
+`ros2 topic echo` text parsing, to keep up with the confirmed 500Hz publish
+rate) for 30s at a genuine contact-loaded stall (same 40mm anchor). Full
+data in `docs/gripper_stall_velocity_noise_20260806.log`. Headline: **75%
+of samples exceed 0.001 rad/s even at physical rest**; still 41.68% exceed
+0.01 rad/s. Distribution has a "normal jitter" body (median 0.008, p95
+0.025) and a rarer spike population (p99 0.245, max 0.264) — roughly 1% of
+samples. `stall_velocity_threshold` is set below this sim's actual noise
+floor, not just tuned conservatively — the 1.0s continuous window can only
+complete by chance, which is exactly what a 60-90s wait looks like.
+
+**Decided, not yet done**: the fix is to raise `stall_velocity_threshold`
+from measurement (this data), not to work around it by lengthening
+`gripper.command_timeout_s` or by having measurement scripts bypass the
+ROS action's result entirely in favor of Gazebo-ground-truth settle-polling.
+The latter would fix `06`'s measurements but ship a known-slow completion
+signal into the eventual M3 pick-place node unchanged — `stall_velocity_threshold`
+only gates when the action *reports* a stall, it does not change the
+commanded position or contact physics, so it is a measurement/control-loop
+parameter, not a physics-tuning one, and safer to change than it might look.
+
+**Not done, deliberately, flagged for next session**:
+  - Pick an actual threshold value and validate it live (candidate order
+    0.05 rad/s clears the noise body with margin; needs checking against
+    genuine active-motion velocity too, not just at-rest noise — not yet
+    measured, see the noise log's own "NOT DONE" list).
+  - Re-measure the noise floor with a faithful 500Hz capture — this
+    session's sampler only captured 4374 of ~15000 expected messages over
+    30s (caveat documented in the log; the 75%-exceeds-threshold finding is
+    stark enough to not be an artifact of that gap, but the exact
+    percentiles shouldn't be treated as final).
+  - Re-run `06`'s full sweep once the threshold is changed and validated —
+    ejection is already fixed, the anchor value is already confirmed; this
+    is the last known blocker before `06` can produce real OK rows.
 
 ## Reframing M3: the evidence doesn't point at friction
 

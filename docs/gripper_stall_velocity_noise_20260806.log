@@ -1,0 +1,88 @@
+gripper stall_velocity_threshold noise-floor measurement — 2026-08-06
+Purpose: controllers.yaml's gripper_controller.stall_velocity_threshold is
+0.001 rad/s. Diagnosed earlier this session that the ROS action's own
+stalled:true declaration takes 60-90s to arrive even though the physical
+joint position settles within ~5s (docs/HANDOFF_M3.md, "06 retried post
+spawn-state fixes" and the full-sweep follow-up). Hypothesis: 0.001 sits
+below this sim's actual velocity readback noise floor at a contact-loaded
+stall, so the required continuous 1.0s under-threshold window
+(stall_timeout) rarely completes by chance. This log is the direct
+measurement to check that, not a guess.
+
+Setup: fresh sim (relaunched and health-checked earlier this session),
+PRECLOSE=0.4523, 40mm box at the standard anchor spawn point
+(0.49214 0.13332 1.11692), overclose commanded to 0.8 (backgrounded,
+generous 100s bound so the action's own slow declaration doesn't interrupt
+the measurement window). Waited 15s for physical settle (confirmed via gz
+ground truth: 0.4589 rad at t=15s, consistent with the plateau already
+established). Then sampled /joint_states directly via a dedicated rclpy
+subscriber (scratchpad/sample_velocity_noise.py) for 30 wall-clock seconds
+— not `ros2 topic echo` text parsing, to keep up with the 500Hz publish
+rate (confirmed via `ros2 param get /controller_manager update_rate` = 500,
+and `ros2 topic hz /joint_states` ~499Hz measured independently).
+
+CAVEAT, stated not buried: the sampler captured 4374 of an expected ~15000
+messages (29%) over the 30s window — under-sampled relative to the true
+500Hz stream, likely rclpy executor/callback overhead in the polling loop,
+not investigated further given session time. No evidence of directional
+bias in which messages were dropped; treat the shape of the distribution as
+indicative, not as a fully faithful 500Hz capture. Re-measuring with a
+tighter/multi-threaded executor would be worth doing before finalizing a
+threshold, not just before this log is trusted at face value.
+
+RESULTS (robotiq_85_left_knuckle_joint, at a contact-loaded stall, 40mm box):
+
+  samples: 4374
+  position: min=0.456663 max=0.470407 rad, spread=0.013745 rad over 30s
+            (small genuine physical drift/microvibration, not perfectly
+            static even at "rest")
+  velocity (rad/s): min=-0.127928 max=0.264404
+  |velocity|: mean=0.014077 median=0.008250 stdev=0.037450 max=0.264404
+    p50  0.008269
+    p90  0.014186
+    p95  0.025310
+    p99  0.245261   <- sharp jump from p95, suggests occasional large
+    p99.9 0.257012      single-tick spikes, not a smoothly-tailed distribution
+
+  fraction of samples exceeding threshold:
+    > 0.001 rad/s : 75.01%
+    > 0.005 rad/s : 62.60%
+    > 0.01  rad/s : 41.68%
+    > 0.02  rad/s : 5.83%
+    > 0.05  rad/s : 2.67%
+
+READING: current stall_velocity_threshold (0.001) is exceeded by 75% of
+individual samples even at a genuine, physically-settled contact stall.
+This confirms the hypothesis directly, not just by inference from the slow
+declaration observed earlier: the threshold cannot realistically be
+satisfied for a full continuous stall_timeout (1.0s) window except by rare
+chance, which is consistent with the 60-90s wait observed for the action's
+own stalled:true result at this identical configuration.
+
+The distribution has a clear "normal jitter" population (median 0.008,
+p95 0.025) and a separate, much rarer "spike" population (p99 0.245, max
+0.264) — roughly 1% of samples. A threshold picked to clear the p95 body
+with margin (order 0.05 rad/s) would still occasionally be crossed by a
+spike, but since stall_timeout only requires a CONTINUOUS 1.0s run below
+threshold (not that every sample across all time stays below it), rare
+single-tick spikes should just restart a short count rather than block
+convergence for 60-90s the way the current threshold does — this is a
+reasoning claim, not something this measurement directly confirms; the
+actual convergence time under a candidate new threshold would need to be
+checked against a real re-run once controllers.yaml is changed.
+
+NOT DONE, deliberately, this session:
+  - Did not change controllers.yaml. Setting stall_velocity_threshold is a
+    real design decision (what margin, whether stall_timeout should also
+    change, whether the "spike" population needs its own explanation before
+    trusting a margin computed against it) that belongs to a session with
+    room to validate the change live, not the tail of this one.
+  - Did not re-measure with a faithful 500Hz capture to resolve the
+    under-sampling caveat above.
+  - Did not measure the noise floor during genuine ACTIVE motion (gripper
+    still closing, before contact) for comparison — needed to confirm a
+    candidate threshold sits safely BELOW real closing velocities too, not
+    just above the at-rest noise floor. Without this comparison a threshold
+    picked purely from the at-rest distribution could still be too low
+    (false stalls during real motion) or, less likely given the margin
+    involved, still not tight enough.
