@@ -27,7 +27,7 @@ anything measurement-shaped from this environment.
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
-| Grasp-table sweep (06) | 0 OK rows so far; TIMEOUT root cause found; post-stall ejection found AND fixed (hold-position) | docs/grasp_table_20260806_210710.log, docs/grasp_stall_diagnostic_20260806.log — see "06 retried" below |
+| Grasp-table sweep (06) | 0 OK rows so far; ejection bug fixed; anchor re-checked and reproduces (units error, not drift) — clear to run full sweep | docs/grasp_table_20260806_210710.log, docs/grasp_stall_diagnostic_20260806.log — see "06 retried" and "Single-width validation" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -93,13 +93,21 @@ friction/sliding, drop should be roughly constant regardless of spawn
 height. Ran `04_mimic_contact_probe.sh` with explicit `BOX_XYZ` at spawn
 heights offset from the auto-placement point (0.49214, 0.13332, 1.11692):
 
-| Spawn offset | Drop (dz) | Stall angle | Outcome |
+| Spawn offset | Drop (dz) | Shortfall (rad) | Outcome |
 |---|---|---|---|
 | −6mm | −5.87mm | 0.3505 rad | caught, stalled |
 | 0 (baseline) | −12.11mm | 0.3407 rad | caught, stalled |
 | −12.1mm (predicted ~0) | −2.66mm | 0.3508 rad | caught, stalled — missed prediction by 2.66mm |
 | +3mm (bracket) | did not resolve in 2min | n/a | **hung — see below** |
 | +6mm | box on floor | 0.0000 rad | full closure, no stall, total ejection |
+
+Column is `commanded (0.8) − achieved`, i.e. shortfall, not the achieved
+angle itself — labeled "Stall angle" in an earlier version of this doc,
+which cost a false-alarm investigation later (see "Single-width
+validation" below); relabeled here after tracing it back to the raw logs.
+Achieved master angle at each of the three clean points, straight from
+`docs/probe_zsweep_{low,mid,neg12mm}_*.log`: low 0.4495, baseline 0.4593,
+neg12 0.4492 rad.
 
 Predicted-vs-actual for the two clean points: low (−6mm) predicted
 12.11−6=6.11mm, measured 5.87mm (off by 0.24mm). That's a hit, not a fit —
@@ -125,7 +133,7 @@ make `tcp_offset` vary ~13.6mm across the aperture range, seen from the
 other side. This predicts residual should correlate with final stall
 angle. Checked against the three data points:
 
-| run | stall angle (rad) | residual vs. linear model |
+| run | shortfall (rad) | residual vs. linear model |
 |---|---|---|
 | low | 0.3505 | −0.24mm |
 | neg12 | 0.3508 | +2.64mm |
@@ -624,9 +632,12 @@ duration problem, not contamination or corruption.
 **What eventually happened (UNTIMED — several minutes elapsed uninstrumented
 while reading controller source; no latency number to report, flagged as a
 gap in this diagnostic, not glossed over)**: the action did return —
-`stalled: true, reached_goal: false, position: 0.43581`. Note this stall
-angle differs measurably from Blocker 2's recorded baseline at the identical
-configuration (0.3407 rad) — an unexplained discrepancy, stated not buried.
+`stalled: true, reached_goal: false, position: 0.43581`. (Originally flagged
+here as differing from Blocker 2's "0.3407 rad" baseline — that comparison
+was a units error on this session's part, not a real discrepancy: 0.3407 is
+Blocker 2's *shortfall*, not its achieved angle. The corrected comparison,
+achieved-vs-achieved, is 0.4358 vs. 0.4593 — within the noise already on
+record for this measurement. See "Single-width validation" below.)
 
 **NEW, SEVERE: "stalled: true" is not a stable end state in this stack.**
 Re-querying Gazebo ground truth minutes after that SUCCEEDED result (no
@@ -686,10 +697,58 @@ reproduction case would just be a second copy of the same setup.
 **Not done**: `06`'s TIMEOUT_OVERCLOSE outcome is still recorded as a skip
 (no silent retry, no reclassification as a valid sample) — the fix stops
 the gripper from continuing to squeeze after a call is done, it does not
-by itself decide whether a late/timed-out close should count as data. `06`
-has not been re-run end-to-end since this fix landed; do that next, and
-separately reconsider whether 5.0s is long enough now that real settle
-duration (not contamination) is the explanation for exceeding it.
+by itself decide whether a late/timed-out close should count as data.
+
+## Single-width validation (40mm) before trusting a full re-sweep: false alarm, units error
+
+Written 2026-08-06, same session as the fix above. Before running `06`'s
+full width sweep post-fix, ran the anchor width (40mm) alone and checked
+whether it reproduces Blocker 2's known numbers, on the reasoning that the
+hold fix changes what an overclose call now measures (holds at stall
+instead of driving to full closure) and that prediction should be checked
+before trusting five more rows built on it.
+
+**First pass wrongly concluded it didn't reproduce**, comparing three
+achieved angles from this session (M0-C 0.4517, `06` 40mm-alone 0.4528,
+manual diagnostic 0.4358) against "Blocker 2's documented anchor: 0.3407
+rad" — a ~0.09–0.12 rad gap, reported here as an unexplained discrepancy
+and used as the reason to park the sweep.
+
+**That comparison was a units error, not a physics finding.** 0.3407 rad
+is Blocker 2's *shortfall* (`commanded − achieved` = `0.8 − 0.4593`), not
+its achieved angle — mislabeled "Stall angle" in the table above at the
+time, now relabeled "Shortfall (rad)". Confirmed against the raw logs
+(`docs/probe_zsweep_mid_20260804_112928.log`, not the summary table):
+`achieved master angle : 0.4593 rad`, `shortfall : +0.3407 rad`, printed
+as two separate lines. The correct comparison is achieved-vs-achieved:
+
+| source | achieved angle |
+|---|---|
+| M0-C re-run (this session) | 0.4517 rad |
+| `06`, 40mm alone (this session) | 0.4528 rad |
+| Manual diagnostic, unbounded (this session) | 0.4358 rad |
+| Blocker 2 baseline, `probe_zsweep_mid` | 0.4593 rad |
+| Blocker 2 low/neg12, `probe_zsweep_{low,neg12mm}` | 0.4495 / 0.4492 rad |
+
+All five cluster within 0.4358–0.4593, a 0.024 rad spread — the same order
+as Blocker 2's own low-vs-neg12 spread (0.4495 vs 0.4492, and separately
+the noise floor Blocker 2 itself established at ~2–3mm-equivalent). **This
+anchor reproduces.** There is no discrepancy to investigate.
+
+**Consequence**: the earlier framing of this as "NEW, SEVERE, UNRESOLVED...
+manifests as a held result at a measurably different angle" (in the section
+above) does not hold — struck through in place there rather than deleted,
+so the reasoning trail stays visible. `06`'s original reproducibility
+finding (widths timing out at the 5.0s bound, root-caused to genuine
+multi-second settling in "06 retried" above) is untouched by this
+correction — that part was never about the achieved angle's value.
+
+**Not done, deliberately**: did not resume the full width sweep this
+session — the units-error correction clears the reason `06` was paused,
+but the session is at its limit and a real anchor question deserves room
+to work, per the same reasoning that justified pausing in the first place.
+Next session: `06` is clear to run the full width sweep — the anchor point
+checks out.
 
 ## Reframing M3: the evidence doesn't point at friction
 

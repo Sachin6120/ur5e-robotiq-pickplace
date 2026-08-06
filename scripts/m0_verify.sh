@@ -29,7 +29,7 @@ ACTUATED="${ACTUATED:-robotiq_85_left_knuckle_joint}"  # was: finger_joint — t
                                                         # ros-jazzy-robotiq-description
 GRIPPER_CTRL="${GRIPPER_CTRL:-gripper_controller}"
 ARM_CTRL="${ARM_CTRL:-arm_controller}"
-MOVEIT_CTRL_YAML="${MOVEIT_CTRL_YAML:-config/moveit_controllers.yaml}"
+MOVEIT_CTRL_YAML="${MOVEIT_CTRL_YAML:-ur5e_robotiq_moveit_config/config/moveit_controllers.yaml}"
 SPAWN_WAIT="${SPAWN_WAIT:-45}"           # donor reports 10-15s; be generous
 # Precondition tolerance for M0-C: gripper must be open (~0 rad) at start.
 # Never checked before this session; false on 5/5 fresh launches tested
