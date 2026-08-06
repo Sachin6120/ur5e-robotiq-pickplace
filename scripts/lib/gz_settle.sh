@@ -128,3 +128,107 @@ gz_wait_controller_active_bounded() {
   printf '  controllers active after %ss\n' "$GZ_LAST_WAIT_S"
   return 0
 }
+
+# gripper_close_and_hold <gripper_ctrl> <master_joint> <target_pos> <max_effort> <cmd_timeout_s> <gz_joint_state_topic> <outfile>
+#
+# Sends a gripper_cmd goal toward <target_pos>, bounded by <cmd_timeout_s>,
+# then IMMEDIATELY re-commands the gripper to hold at wherever it actually
+# ended up, instead of leaving <target_pos> as the still-active background
+# command. Exists because `GripperActionController::check_for_success`
+# (ros2_controllers, gripper_action_controller_impl.hpp) calls
+# `setSucceeded()` on both its reached-goal and stalled branches but never
+# calls `set_hold_position()` on either — the position command interface
+# keeps being written the ORIGINAL target every control cycle after the
+# action reports done. For a stalled grasp (achieved position != target)
+# that means sustained force continues toward full closure after "success",
+# and confirmed live 2026-08-06 (docs/HANDOFF_M3.md, "06 retried post
+# spawn-state fixes") this eventually ejects the object the action just
+# reported successfully grasping — minutes later, no intervening commands.
+#
+# Also handles the case where the CLIENT itself is killed by the
+# <cmd_timeout_s> bound before any Result arrives: `timeout` kills the
+# `ros2 action send_goal` process, it does NOT cancel the goal on the
+# action server, so the gripper may still be actively driving toward
+# <target_pos> at that moment too. Falls back to a live ground-truth sample
+# in that case rather than trusting nothing.
+#
+# Sets on return:
+#   GRIPPER_HOLD_RESULT   — one of:
+#     REACHED_GOAL      goal completed at (or within tolerance of) target
+#     STALLED           goal completed short of target (stalled: true)
+#     TIMED_OUT_HELD     no Result arrived within <cmd_timeout_s>; held at a
+#                        live-sampled ground-truth position instead
+#     UNKNOWN_NO_SAMPLE  no Result AND ground truth could not be sampled —
+#                        caller must treat this as a hard stop, not a value
+#   GRIPPER_HOLD_POSITION — the position now being held (radians, as text;
+#                           empty on UNKNOWN_NO_SAMPLE)
+#
+# Returns 0 except on UNKNOWN_NO_SAMPLE, where it returns 1 and does NOT
+# send a hold command (nothing known to hold at).
+#
+# This does not fix the underlying report-vs-reality gap (that lives in
+# ros2_controllers, not this repo) and it does not decide whether a
+# TIMEOUT/STALL counts as a valid measurement — callers keep making that
+# call themselves, per this project's no-auto-retry rule. It only stops the
+# gripper from continuing to squeeze after the call is done deciding.
+gripper_close_and_hold() {
+  local gripper_ctrl="$1" master="$2" target="$3" max_effort="$4" \
+        cmd_timeout="$5" gz_js_topic="$6" outfile="$7"
+
+  timeout "$cmd_timeout" ros2 action send_goal \
+    "/${gripper_ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
+    "{command: {position: ${target}, max_effort: ${max_effort}}}" \
+    > "$outfile" 2>&1
+
+  local parsed achieved="" stalled=""
+  parsed=$(python3 - "$outfile" <<'PY'
+import sys, re
+txt = open(sys.argv[1]).read()
+# Anchored to the literal Result: ... Goal finished markers ros2 action
+# send_goal prints -- NOT a bare "position:" grep, which would also match
+# the echoed "Sending goal: command: position: <target>" line above it.
+m = re.search(r'Result:\s*\n(.*?)\n\s*\nGoal finished', txt, re.S)
+if m:
+    block = m.group(1)
+    pos = re.search(r'position:\s*(-?[\d.eE+-]+)', block)
+    stalled = re.search(r'stalled:\s*(\w+)', block)
+    print(f"{pos.group(1) if pos else ''}\t{stalled.group(1) if stalled else ''}")
+PY
+)
+  if [[ -n "$parsed" ]]; then
+    IFS=$'\t' read -r achieved stalled <<<"$parsed"
+  fi
+
+  if [[ -z "$achieved" ]]; then
+    achieved=$(python3 - "$gz_js_topic" "$master" <<'PY'
+import sys, subprocess, re
+topic, master = sys.argv[1], sys.argv[2]
+txt = subprocess.run(["gz", "topic", "-e", "-t", topic, "-n", "1"],
+                      capture_output=True, text=True, timeout=5).stdout
+for blk in re.findall(r'joint\s*\{(.*?)\n\}', txt, re.S):
+    n = re.search(r'name:\s*"([^"]+)"', blk)
+    p = re.search(r'position:\s*(-?[\d.eE+-]+)', blk)
+    if n and n.group(1) == master and p:
+        print(p.group(1))
+        break
+PY
+)
+    if [[ -z "$achieved" ]]; then
+      GRIPPER_HOLD_RESULT="UNKNOWN_NO_SAMPLE"
+      GRIPPER_HOLD_POSITION=""
+      return 1
+    fi
+    GRIPPER_HOLD_RESULT="TIMED_OUT_HELD"
+  elif [[ "${stalled,,}" == "true" ]]; then
+    GRIPPER_HOLD_RESULT="STALLED"
+  else
+    GRIPPER_HOLD_RESULT="REACHED_GOAL"
+  fi
+  GRIPPER_HOLD_POSITION="$achieved"
+
+  timeout "$cmd_timeout" ros2 action send_goal \
+    "/${gripper_ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
+    "{command: {position: ${achieved}, max_effort: ${max_effort}}}" \
+    >> "$outfile" 2>&1
+  return 0
+}

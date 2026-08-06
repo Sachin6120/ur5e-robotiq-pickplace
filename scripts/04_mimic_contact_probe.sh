@@ -116,6 +116,22 @@ if ! gz_assert_joint "$GZ_JS" "$MASTER" 0.0 "$OPEN_TOL_RAD" "gripper open"; then
   die "precondition failed -- see message above. Command the gripper open (position 0.0) and re-run."
 fi
 
+# gripper.command_timeout_s from scene.yaml — this script's own §3 close call
+# used to be unbounded (see docs/HANDOFF_M3.md, Blocker 2's ACTION FOR M3:
+# "Also fix the probe scripts themselves... they currently call ros2 action
+# send_goal with no cap, which is exactly what just hung"). Falls back to
+# 5.0s if the field or file is missing, matching config/scene.yaml's own
+# current value.
+CMD_TIMEOUT_S=$(python3 -c "
+import yaml
+try:
+    scene = yaml.safe_load(open('config/scene.yaml'))
+    print(scene.get('gripper', {}).get('command_timeout_s', 5.0))
+except Exception:
+    print(5.0)
+")
+printf '  [ok] gripper.command_timeout_s = %ss (from config/scene.yaml)\n' "$CMD_TIMEOUT_S"
+
 # ---------------------------------------------------------------------------
 # sample_joints <label> -> writes "<name> <position> <velocity>" lines
 sample_joints() {
@@ -258,11 +274,16 @@ sample_box_pose spawned | sed 's|^|    box @ |'
 
 # ---------------------------------------------------------------------------
 sec "3. Command closure PAST what the object permits"
-printf '  commanding %s -> %s rad (box is %s m wide)\n' "$MASTER" "$OVERCLOSE" "$BOX_W"
-ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
-  control_msgs/action/GripperCommand \
-  "{command: {position: ${OVERCLOSE}, max_effort: 50.0}}" 2>&1 \
-  | tail -20 | sed 's|^|    |'
+printf '  commanding %s -> %s rad (box is %s m wide, bounded at %ss)\n' \
+       "$MASTER" "$OVERCLOSE" "$BOX_W" "$CMD_TIMEOUT_S"
+gripper_close_and_hold "$GRIPPER_CTRL" "$MASTER" "$OVERCLOSE" 50.0 \
+  "$CMD_TIMEOUT_S" "$GZ_JS" "$OUTDIR/action_close.txt"
+printf '  gripper_close_and_hold: %s, now holding %s rad (not left driving toward %s)\n' \
+       "$GRIPPER_HOLD_RESULT" "$GRIPPER_HOLD_POSITION" "$OVERCLOSE"
+tail -20 "$OUTDIR/action_close.txt" | sed 's|^|    |'
+if [[ "$GRIPPER_HOLD_RESULT" == "UNKNOWN_NO_SAMPLE" ]]; then
+  die "overclose call produced no result AND ground truth could not be sampled -- cannot proceed"
+fi
 
 # $SETTLE is now a timeout ceiling, not a blind wait: settle on the master
 # joint's velocity AND the box's pose, sequentially, each capped at $SETTLE.

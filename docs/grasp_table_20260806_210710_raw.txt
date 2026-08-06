@@ -1,0 +1,6 @@
+# box_width_m  grip_angle_rad  width_at_grip_m  tcp_offset_at_grip_m  pad_centre_offset_m  outcome
+0.030				TIMEOUT_OVERCLOSE
+0.035				TIMEOUT_OVERCLOSE
+0.040				TIMEOUT_OVERCLOSE
+0.045				TIMEOUT_OVERCLOSE
+0.050				TIMEOUT_OVERCLOSE
