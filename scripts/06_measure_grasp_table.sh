@@ -417,14 +417,13 @@ if len(tips) >= 2:
 
   printf '  commanding %s -> %s rad against a %s m box (bounded at %ss)\n' \
          "$MASTER" "$OVERCLOSE" "$W" "$CMD_TIMEOUT_S"
-  timeout "$CMD_TIMEOUT_S" ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
-    control_msgs/action/GripperCommand \
-    "{command: {position: ${OVERCLOSE}, max_effort: 50.0}}" \
-    > "$OUTDIR/action_${W}.txt" 2>&1
-  ACTION_RC=$?
+  gripper_close_and_hold "$GRIPPER_CTRL" "$MASTER" "$OVERCLOSE" 50.0 \
+    "$CMD_TIMEOUT_S" "$GZ_JS" "$OUTDIR/action_${W}.txt"
+  printf '  gripper_close_and_hold: %s, now holding %s rad (not left driving toward %s)\n' \
+         "$GRIPPER_HOLD_RESULT" "$GRIPPER_HOLD_POSITION" "$OVERCLOSE"
 
-  if [[ $ACTION_RC -eq 124 ]]; then
-    printf '  [STOP] overclose action did not return within %ss at width=%s — TIMEOUT, not retrying\n' \
+  if [[ "$GRIPPER_HOLD_RESULT" == "TIMED_OUT_HELD" || "$GRIPPER_HOLD_RESULT" == "UNKNOWN_NO_SAMPLE" ]]; then
+    printf '  [STOP] overclose action produced no result within %ss at width=%s — TIMEOUT, not retrying\n' \
            "$CMD_TIMEOUT_S" "$W"
     printf '%s\t\t\t\tTIMEOUT_OVERCLOSE\n' "$W" >> "$RESULTS_FILE"
     cleanup_width "$BOX_NAME"

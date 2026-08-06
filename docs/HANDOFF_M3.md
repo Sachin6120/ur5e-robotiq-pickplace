@@ -27,6 +27,7 @@ anything measurement-shaped from this environment.
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
+| Grasp-table sweep (06) | 0 OK rows so far; TIMEOUT root cause found; post-stall ejection found AND fixed (hold-position) | docs/grasp_table_20260806_210710.log, docs/grasp_stall_diagnostic_20260806.log — see "06 retried" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -554,6 +555,142 @@ starting aperture; unnoticed cross-launch process pollution) are both
 fixed — still not done this session, flagged as the natural next step
 rather than assumed safe.
 
+## 06 retried post spawn-state fixes: hang reproduces, root cause found, new severe finding
+
+Written 2026-08-06. Direct follow-up to "Spawn-state investigation, closed"
+above, which flagged `06_measure_grasp_table.sh` as "worth retrying... not
+yet done." Retried it. Confounds checked clean before running: no orphan
+processes (`ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|
+parameter_bridge|spawner"` empty before launch), workspace symlinks intact
+(`readlink -f` on all three `ws/src` packages resolves into this repo,
+verified live), controller-activation 6.58s (healthy band), deterministic
+gripper-open confirmed exact (`0.0000` rad via `gz_assert_joint`). All three
+previously-fixed confounds ruled out as an explanation for whatever happens
+next — this run started from a genuinely clean, verified state.
+
+**Result: 5/5 widths (30–50mm) `TIMEOUT_OVERCLOSE` at the 5.0s bound,
+including 40mm** (PRECLOSE=0.4523, the interpolated near-exact reproduction
+of the previously-validated 0.45 anchor). Same failure as the earlier
+unresolved section, but now with contamination and spawn-state both
+positively excluded rather than merely unchecked.
+
+**Live diagnostic, not a retry of the sweep** (per this project's no-retry
+rule — investigated the mechanism instead of re-running the same failing
+measurement). Manually reproduced the exact Blocker 2 anchor point
+(PRECLOSE=0.45 exactly, 40mm box, spawn coords `0.49214 0.13332 1.11692` —
+bit-identical to Blocker 2's own baseline row), sent the overclose action
+backgrounded with no timeout wrapper, and polled both Gazebo ground truth
+and the `/joint_states` ros2_control readback concurrently every 2s — the
+comparison the original unresolved section recommended and never did.
+
+| t (s) | gz ground truth (master, rad) | diag_box z (m) |
+|---|---|---|
+| 2 | 0.4448 | 1.10752 |
+| 4 | 0.4414 | 1.10651 |
+| 6 | 0.4336 | 1.10534 |
+| 8 | 0.4323 | 1.10278 |
+| 10 | 0.4322 | 1.10264 |
+| 12 | 0.4351 | 1.10249 |
+
+The master joint plateaus by t≈6s, but **the box was still measurably
+sinking through the entire 12s window** — genuine multi-second contact
+settling, not an instantaneous stall. `/joint_states` at t≈2s read
+`position: 0.4442` (matches gz), `velocity: -2.9e-5` rad/s (essentially
+zero by ros2_control's own account), `effort: .nan`.
+
+**Effort NaN — checked, ruled out as the hang's cause.** Traced to the
+donor package itself, not this repo: `robotiq_gripper.ros2_control.xacro`
+(`/opt/ros/jazzy/share/robotiq_description/urdf/`, lines 40–46) declares
+only `position` command/state interfaces and a `velocity` state interface
+for the master joint — no `effort` state interface exists to read, so NaN
+is structural, not a corrupted readback. Confirmed by reading
+`GripperActionController::check_for_success` directly
+(`/opt/ros/jazzy/include/gripper_action_controller/gripper_controllers/gripper_action_controller_impl.hpp`):
+the stall decision is velocity-only (`stall_velocity_threshold`,
+`stall_timeout`); `effort` in the result message is populated from
+`computed_command_` post-hoc, never read from hardware. So the NaN is a
+real, separate gap — anything that ever tries to read gripper effort from
+this stack gets garbage — but it is not what causes the 5s timeout.
+
+**INFERRED, not directly instrumented at controller rate**: `controllers.yaml`
+sets `stall_velocity_threshold: 0.001`, `stall_timeout: 1.0`. The box's
+continued multi-second settling plausibly perturbs velocity readback above
+0.001 rad/s intermittently, repeatedly resetting the controller's internal
+`last_movement_time_` before a full continuous 1.0s under-threshold window
+accumulates — well past `06`'s and `04`'s 5.0s bound
+(`gripper.command_timeout_s`). This is a real, physically-grounded contact
+duration problem, not contamination or corruption.
+
+**What eventually happened (UNTIMED — several minutes elapsed uninstrumented
+while reading controller source; no latency number to report, flagged as a
+gap in this diagnostic, not glossed over)**: the action did return —
+`stalled: true, reached_goal: false, position: 0.43581`. Note this stall
+angle differs measurably from Blocker 2's recorded baseline at the identical
+configuration (0.3407 rad) — an unexplained discrepancy, stated not buried.
+
+**NEW, SEVERE: "stalled: true" is not a stable end state in this stack.**
+Re-querying Gazebo ground truth minutes after that SUCCEEDED result (no
+further commands issued in between) found the master joint at **exactly
+0.8 rad** (full commanded closure) and the box **ejected** — resting on the
+floor at `(0.295, 0.231, 0.020)`, tipped on its side, ~1.1m of net
+displacement from its spawn point. Mechanism, checked against controller
+source, not guessed: `check_for_success`'s stalled branch calls
+`active_goal->setSucceeded()` but never calls `set_hold_position()` or
+otherwise changes `command_struct_.position_` — the position command
+interface keeps being written the ORIGINAL target (0.8) every control cycle
+regardless of action status. Sustained physical force continues toward full
+closure after the action has already reported success, and given enough
+dwell time it ejects the object it just successfully grasped. This directly
+contradicts `ur5e_robotiq_description/config/controllers.yaml`'s own comment
+("Stalling is the NORMAL end state of a successful grasp," lines 64–66):
+true of the ROS action's status, **false of the physical system** if
+nothing intervenes after the action returns.
+
+**Consequence for M3**: any grasp procedure that treats `stalled: true` as
+"done, safe to move on" is building on a false assumption. This is more
+actionable than the earlier "reliability/unknown" framing (see reframing
+item 5 below) — it now has a specific code-level cause and a specific fix
+shape: re-command hold-position at the stalled joint value immediately after
+a stalled result, before doing anything else, in both the probe scripts
+(`04`/`06`) and the eventual grasp procedure.
+
+**Fixed and validated live, same session.** `gripper_close_and_hold()` added
+to `scripts/lib/gz_settle.sh`: bounds the close call at
+`gripper.command_timeout_s`, then unconditionally re-commands a hold goal at
+wherever the joint actually ended up — parsed from the action's own `Result:`
+block when one arrives (`stalled`/`reached_goal`/`position`), or from a live
+Gazebo ground-truth sample when the CLI itself is killed by the bound (which
+does NOT cancel the goal server-side — confirmed, not assumed: `timeout`
+only SIGTERMs the `ros2 action send_goal` client process). Wired into all
+three call sites the handoff had flagged: `06`'s sweep overclose,
+`04`'s §3 closure (which also gained the `CMD_TIMEOUT_S` bound it never had),
+and `m0_verify.sh`'s M0-C overclose (its `STALLED`/`REACHED` parsing was
+switched from re-grepping the action-result file — which would otherwise
+pick up the *hold* call's always-`reached_goal:true` result instead of the
+actual grasp attempt — to reading `GRIPPER_HOLD_RESULT` directly).
+
+**Validation**: reproduced the exact anchor scenario live (PRECLOSE=0.45,
+40mm box, spawn coords `0.49214 0.13332 1.11692`) through the new function.
+The close call hit the 5.0s bound as before (`TIMED_OUT_HELD`), but this
+time immediately sampled ground truth (0.4576 rad) and issued a hold goal
+there, which returned `SUCCEEDED, reached_goal: true` in well under a
+second. Watched ground truth for **120s afterward** (vs. the few minutes
+that produced full ejection pre-fix): master joint stayed at 0.44–0.45 rad
+throughout (no drift toward 0.8), box position stayed at
+`(0.485, 0.135, ~1.102)` (z converging, not falling to the floor). No
+ejection. Full transcript and readings in this session's tool output; not
+re-saved as a separate log file since `grasp_stall_diagnostic_20260806.log`
+already documents the failure this fixes and re-running the pre-fix
+reproduction case would just be a second copy of the same setup.
+
+**Not done**: `06`'s TIMEOUT_OVERCLOSE outcome is still recorded as a skip
+(no silent retry, no reclassification as a valid sample) — the fix stops
+the gripper from continuing to squeeze after a call is done, it does not
+by itself decide whether a late/timed-out close should count as data. `06`
+has not been re-run end-to-end since this fix landed; do that next, and
+separately reconsider whether 5.0s is long enough now that real settle
+duration (not contamination) is the explanation for exceeding it.
+
 ## Reframing M3: the evidence doesn't point at friction
 
 The spec frames M3 as friction tuning — "treat getting stable friction-grasp
@@ -573,11 +710,14 @@ the ejection findings before it. **None of them is friction:**
    **geometry** (capture window has a sharp edge, not a graceful one).
 4. The unbounded hang near that edge — **control/plumbing** (an
    already-specified timeout that was never wired up).
-5. Contact resolution silently failing to reproduce its own validated
-   anchor case, on two independent fresh sim instances, cause unknown —
-   **reliability/unknown**, and the most concerning of the five, because
-   the others were at least explicable once measured. This one isn't yet.
-   See the section immediately above.
+5. Contact resolution timing out past the 5s bound even on a verified-clean
+   system — **contact settling genuinely takes longer than 5s in this
+   scenario**, not contamination (see "06 retried" above). Related but
+   distinct and more actionable: once a grasp *does* resolve to
+   `stalled: true`, the controller does not hold that position — the raw
+   position command keeps driving toward full closure and can eject the
+   object minutes later. **control/plumbing**, same category as #4, with a
+   known fix shape (hold-position after stall).
 
 Friction may still matter for lift and transport slip — that's genuinely
 untested, nothing above touches it. But going into M3 with mu as the main

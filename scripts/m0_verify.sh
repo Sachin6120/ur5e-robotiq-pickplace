@@ -246,6 +246,21 @@ BOX_MASS="${BOX_MASS:-0.15}"
 OVERCLOSE="${OVERCLOSE:-0.8}"
 SETTLE="${SETTLE:-3.0}"
 
+# gripper.command_timeout_s from scene.yaml — this section's overclose call
+# used to be unbounded (see docs/HANDOFF_M3.md, Blocker 2's ACTION FOR M3:
+# "Also fix the probe scripts themselves (04_mimic_contact_probe.sh,
+# m0_verify.sh's M0-C)... they currently call ros2 action send_goal with no
+# cap, which is exactly what just hung"). Falls back to 5.0s if the field or
+# file is missing, matching config/scene.yaml's own current value.
+CMD_TIMEOUT_S=$(python3 -c "
+import yaml
+try:
+    scene = yaml.safe_load(open('config/scene.yaml'))
+    print(scene.get('gripper', {}).get('command_timeout_s', 5.0))
+except Exception:
+    print(5.0)
+")
+
 # Calibrated thresholds — see header.
 MIN_SHORTFALL="${MIN_SHORTFALL:-0.10}"
 MAX_BOX_DISP="${MAX_BOX_DISP:-0.030}"
@@ -458,12 +473,16 @@ PY
       bad "test box did not spawn — cannot run the contact test"
       C_FAIL=1
     else
-      printf '  commanding %s -> %s rad against a %s m box\n' \
-             "$ACTUATED" "$OVERCLOSE" "$BOX_W"
-      ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \
-        control_msgs/action/GripperCommand \
-        "{command: {position: ${OVERCLOSE}, max_effort: 50.0}}" \
-        > "$EVID_DIR/C_action_result.txt" 2>&1
+      printf '  commanding %s -> %s rad against a %s m box (bounded at %ss)\n' \
+             "$ACTUATED" "$OVERCLOSE" "$BOX_W" "$CMD_TIMEOUT_S"
+      gripper_close_and_hold "$GRIPPER_CTRL" "$ACTUATED" "$OVERCLOSE" 50.0 \
+        "$CMD_TIMEOUT_S" "$GZ_JS_TOPIC" "$EVID_DIR/C_action_result.txt"
+      printf '  gripper_close_and_hold: %s, now holding %s rad (not left driving toward %s)\n' \
+             "$GRIPPER_HOLD_RESULT" "$GRIPPER_HOLD_POSITION" "$OVERCLOSE"
+      if [[ "$GRIPPER_HOLD_RESULT" == "UNKNOWN_NO_SAMPLE" ]]; then
+        bad "overclose call produced no result AND ground truth could not be sampled"
+        C_FAIL=1
+      fi
 
       # $SETTLE is now a timeout ceiling, not a blind wait. This is the
       # sample the C2 pass/fail criteria are computed from, so an unsettled
@@ -482,10 +501,16 @@ PY
       BOX_AFTER=$(_gz_box after)
       printf '  box after close : %s\n' "${BOX_AFTER:-<not found>}"
 
-      STALLED=$(grep -oE 'stalled:\s*(true|false)' "$EVID_DIR/C_action_result.txt" \
-                | tail -1 | awk '{print $2}')
-      REACHED=$(grep -oE 'reached_goal:\s*(true|false)' "$EVID_DIR/C_action_result.txt" \
-                | tail -1 | awk '{print $2}')
+      # Read from GRIPPER_HOLD_RESULT, not by re-grepping C_action_result.txt:
+      # that file now also contains the hold-position call's own SUCCEEDED
+      # result appended after the original close's, and a bare tail-1 grep
+      # for stalled:/reached_goal: would pick up the (near-instant, always
+      # reached_goal:true) hold call instead of the actual grasp attempt.
+      case "$GRIPPER_HOLD_RESULT" in
+        STALLED)       STALLED=true;  REACHED=false ;;
+        REACHED_GOAL)  STALLED=false; REACHED=true  ;;
+        *)             STALLED="";    REACHED=""    ;;
+      esac
 
       python3 "$(dirname "$0")/m0c_eval.py" \
                "$EVID_DIR/C_joints_closed.txt" "$EVID_DIR/C_mimic_spec.txt" \
