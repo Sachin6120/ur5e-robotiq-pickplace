@@ -21,7 +21,7 @@ anything measurement-shaped from this environment.
 | Milestone | Status | Evidence |
 |---|---|---|
 | M-1 | closed | merged platform validated + spawns; docs/M-1_reference_report.md |
-| M0 | PASS A/B/C | docs/m0_*.log; M0-C reproduced 3x across 2 code paths |
+| M0 | PASS A/B/C — C2 displacement 13.4mm vertical / 15.8mm 3D, under `gz_settle_pose_windowed` (post 2026-08-08 fix; see "settle-mechanism history" below for why this number isn't comparable to some earlier ones without naming the mechanism) | docs/m0_20260808_143404.log |
 | M1 | PASS | 20/20 planning, executed; docs/evidence/m1_planning.csv |
 | M2 | PASS | cartesian_fraction=1.0000 tcp_error_m=0.0000 ground_truth=yes |
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
@@ -1128,6 +1128,42 @@ no-cross-tool-call-gap value) in the same commit as this section.
 
 None of this affects `MAX_BOX_DISP` itself, which was never changed and
 remains correctly calibrated throughout.
+
+**Settle-mechanism history for M0-C's C2 displacement — record the
+mechanism alongside the number, not just the number.** Same gate, same
+`MAX_BOX_DISP=0.030` threshold, three genuinely different measurement
+regimes across this project's history:
+
+| when | value | settle mechanism | comparable to today? |
+|---|---|---|---|
+| pre-session (Blocker 2 era) | 12.5-13.7mm | unbounded `ros2 action send_goal`, no `gripper_close_and_hold`, no explicit settle-poll — the wait was 60-90s of the OLD `stall_velocity_threshold` bug's action-call latency itself, which happened to fully settle the box as a side effect | yes — converged, confirmed by today's re-run |
+| 2026-08-06 | 2.0mm (`docs/m0_20260806_214228.log`) | `gripper_close_and_hold` (5s bound, `TIMED_OUT_HELD`) + plain `gz_settle_pose` (consecutive-poll, ~0.5s) — the false-quiescence bug, sampled the box mid-settle | **no** — this number was never a real measurement of the physical quantity, only of how fast the broken check declared done |
+| 2026-08-08 | 13.4mm (`docs/m0_20260808_143404.log`) | `gripper_close_and_hold` (fast `STALLED`, ~2s) + `gz_settle_pose_windowed` (10s window, 150s timeout, converged at 51.41s) | yes — this is the current, trusted mechanism going forward |
+
+A future session comparing a new M0-C number against history should check
+which of these it's landing near, and treat a bare number without the
+settle mechanism attached as unverifiable.
+
+**The baseline-artifact hazard is a category of mistake, not a one-off,
+and deserves naming on its own — not folded into "the value was wrong."**
+The failure: a before/after pair was sampled across two separate tool
+calls (spawn the box + declare "settled" in one call, read the "before"
+value in the next), and the ordinary latency between turns — not a script
+sleep, not simulated time, just the real-world gap in an interactive
+session — let the box drift ~2.9mm further before the baseline was
+actually captured. Nothing in the number itself flags this; `1.114003`
+looks exactly as precise and trustworthy as `1.116769` until you know one
+of them was read a full round-trip later than intended. This is a
+structurally different hazard from the false-quiescence bug above (that
+was a broken *algorithm*; this is a broken *protocol* — correct settle
+logic, sampled across a gap the logic was never asked to cover) and will
+recur any time a measurement's before/after pair is split across turns
+instead of captured inside one script run. **This is exactly why M0-C's
+value is the one to trust**: it is a single script's execution, spawn to
+sample, with no interactive gap anywhere in the middle. Any future
+before/after comparison should be captured the same way — one script run,
+not stitched together from separate interactive steps — even when the
+individual steps look identical to a single-script equivalent.
 
 ## Pad-centre correction and grasp-success verification: design, not yet implemented
 
