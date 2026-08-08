@@ -1082,11 +1082,52 @@ Three sites shared the exact same bug shape; all three now use
 or an object under gravity alone (no sustained contact force driving a slow
 compliance creep) — no evidence or mechanism for the same failure there.
 
-**Not done**: `m0_verify.sh`'s M0-C has not been re-run with the fix to
-confirm it now reproduces something closer to 12.5-13.7mm (or to understand
-why it might not, e.g. box width/PRECLOSE differences between the C2 setup
-and Blocker 2's original runs). Flagged as the natural verification step,
-not yet executed this session.
+**Re-run, same session, prediction written down first.** Two candidate
+outcomes were laid out before running: land near 12-13mm (historical figures
+were converged, this session's ~10.2mm anchor value differed by
+configuration) or land near ~10.2mm (60-90s was never fully converged
+either, historical figures were themselves a slight undercount). A third
+possibility was also raised at the time — that `gripper_close_and_hold`'s
+early hold (engaging in ~2s) versus the old protocol's sustained driving
+force for the full 60-90s changes the actual physical amount of seating, not
+just the sampling delay — predicting ~10mm specifically for that reason.
+
+**Result: displacement 15.8mm (3D), 13.4mm vertical** (`box before close`
+1.116769, `box after close` 1.103336) — landing in the historical
+12.5-13.7mm range, not near the ~10.2mm anchor value from earlier this
+session. The sustained-force-duration hypothesis is not supported by this
+result.
+
+**Chased down why, rather than accepting the miss.** Compared M0-C's
+`box before close` baseline (1.116769, sampled at the fingertip-midpoint
+spawn height) against this session's own earlier anchor diagnostic's
+baseline (`Z_BEFORE_OVERCLOSE=1.114003`, nominally the same point) — a
+2.9mm gap between two readings that should have matched. Root cause: the
+anchor diagnostic's "before" sample was read in a SEPARATE tool call, one
+full round-trip after a `gz_settle_pose` "settled" declaration for the
+spawn — a real-world gap (ordinary interactive latency, not a script
+sleep) during which the box apparently drifted further before the baseline
+was actually captured. That pre-overclose gravity-settle call was never
+covered by this session's `gz_settle_pose_windowed` fix (only the
+POST-overclose, contact-loaded calls were judged to need it) — reasonably
+so for a script's fixed, tight command sequence, but an ad-hoc multi-turn
+interactive diagnostic doesn't have that guarantee. Computed from the SAME
+true baseline M0-C uses (spawn height 1.11689, not the drifted
+`Z_BEFORE_OVERCLOSE`), the anchor diagnostic's own data gives **13.075mm**
+— consistent with M0-C's 13.4mm and the original ~12.1-13.7mm figures.
+
+**Conclusion**: the historical 12.5-13.7mm figures were essentially
+converged and valid all along; `MAX_BOX_DISP=0.030`'s calibration basis
+needs no footnote. The ~0.1-0.2mm figures earlier the same day were the
+false-quiescence bug (fixed, real). The ~10.2mm figure that briefly replaced
+it in `config/scene.yaml`'s `grasp.pad_centre_offset` was itself a narrower,
+different artifact — a baseline-timing gap specific to interactive
+measurement, not a flaw in the settle-check fix. **Corrected**
+`grasp.pad_centre_offset` to `0.013433` (M0-C's clean, single-script,
+no-cross-tool-call-gap value) in the same commit as this section.
+
+None of this affects `MAX_BOX_DISP` itself, which was never changed and
+remains correctly calibrated throughout.
 
 ## Pad-centre correction and grasp-success verification: design, not yet implemented
 

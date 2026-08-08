@@ -186,11 +186,26 @@ grasp:
   # contact surface sits from tool0, along the same axis. Blocker 2 proved
   # this geometrically (docs/HANDOFF_M3.md): the object seats DOWN from the
   # fingertip-link-origin height tcp_offset is anchored to, onto the true pad
-  # centre, by this much. Original measurement ~12.1mm; re-confirmed live
-  # 2026-08-08 at the same 40mm/0.45rad anchor after a settle-check fix
-  # (previous same-day measurement of ~1-2mm was a false-quiescence artifact,
-  # see docs/grasp_table_20260808_135745.log's AMENDMENT section) — box
-  # dropped from 1.114003 to 1.103815 m over ~120s, converging: 0.010188 m.
+  # centre, by this much. Original measurement ~12.1-13.7mm.
+  #
+  # VALUE BELOW IS FROM m0_verify.sh's M0-C, 2026-08-08
+  # (docs/m0_20260808_*.log), post settle-check fix: box before close
+  # 1.116769 m, box after 1.103336 m, drop 0.013433 m. This superseded an
+  # earlier same-day anchor re-measurement of 0.010188 m
+  # (docs/grasp_table_20260808_135745.log's AMENDMENT section) that turned
+  # out to have ITS OWN baseline artifact: that ad-hoc diagnostic's "before"
+  # sample was taken in a separate tool call after a "settled" declaration,
+  # and the real-world gap between them let the box drift ~2.9mm further
+  # before the baseline was actually read — computed from the SAME true
+  # spawn-height baseline M0-C uses, that same data gives 0.013075 m,
+  # consistent with M0-C's clean value and with the original ~12.1-13.7mm
+  # figures. Net finding: the historical figures were essentially converged
+  # and valid all along; the ~0.001-0.002m figures earlier the same day were
+  # the false-quiescence bug (fixed), and the ~0.010m figure after that fix
+  # was a separate, narrower baseline-timing artifact (not a bug in the fix
+  # itself, a gap specific to interactive multi-turn measurement). Use
+  # M0-C's number: it's a single script's before/after sample with no
+  # cross-tool-call gap in between.
   #
   # NOT YET LIVE-VERIFIED: the SIGN/DIRECTION this should be applied in
   # grasp composition (i.e. that the corrected effective offset is
@@ -213,7 +228,7 @@ grasp:
   # width with the corrected settle window — known follow-up, deliberately
   # deferred). Until then this one re-confirmed anchor value is used for
   # every width, same treatment tcp_offset itself got before this update.
-  pad_centre_offset: 0.010188
+  pad_centre_offset: 0.013433
 
 # ---------------------------------------------------------------------------
 gripper:
