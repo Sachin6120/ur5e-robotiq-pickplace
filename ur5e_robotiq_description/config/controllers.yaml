@@ -65,5 +65,12 @@ gripper_controller:
     # the object and stop moving short of the commanded position. With
     # allow_stalling false, every good grasp reports as a failed goal.
     allow_stalling: true
-    stall_velocity_threshold: 0.001
-    stall_timeout: 1.0
+    # Raised from 0.001/1.0 (docs/HANDOFF_M3.md, "Full width sweep, next
+    # session"): 0.001 sat below this sim's velocity-readback noise floor
+    # (75% of at-rest samples exceeded it), so the 1.0s continuous window
+    # only completed by chance -> observed 60-90s stalled:true latency
+    # against a physical settle of ~5s. 0.05 clears the measured noise body
+    # (>0.05 rad/s: 2.67% of samples) with margin; 0.2s trades window length
+    # for threshold margin, per docs/gripper_stall_velocity_noise_20260806.log.
+    stall_velocity_threshold: 0.05
+    stall_timeout: 0.2

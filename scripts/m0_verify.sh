@@ -275,6 +275,19 @@ FLOOR_Z="${FLOOR_Z:-0.05}"
 POSE_EPS_M="${POSE_EPS_M:-0.0005}"
 JOINT_EPS_RAD_S="${JOINT_EPS_RAD_S:-0.02}"
 SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
+
+# C2's box-after-overclose sample is contact/compliance settling, not free
+# motion -- the plain consecutive-poll gz_settle_pose above (used for the
+# pre-close fingertip settle and the pre-overclose spawn settle, both
+# genuinely fast) cannot tell "at rest" from "creeping at a small constant
+# rate." Confirmed this actually corrupted MAX_BOX_DISP's meaning, not just
+# a theoretical risk: the 2026-08-06 M0-C run recorded displacement=0.0020m
+# (comfortably under MAX_BOX_DISP=0.030, gate PASS) against a threshold
+# calibrated on Blocker 2's 12.5-13.7mm figures -- both measurements were
+# real, but they were sampling the box at very different points on the same
+# settling curve. See docs/HANDOFF_M3.md, "box-settle false-quiescence".
+BOX_SETTLE_WINDOW_S="${BOX_SETTLE_WINDOW_S:-10.0}"
+BOX_SETTLE_TIMEOUT_S="${BOX_SETTLE_TIMEOUT_S:-150.0}"
 LEFT_TIP="robotiq_85_left_finger_tip_link"
 RIGHT_TIP="robotiq_85_right_finger_tip_link"
 
@@ -492,8 +505,9 @@ PY
         bad "master joint did not settle within ${SETTLE}s of the overclose command"
         C_FAIL=1
       fi
-      if ! gz_settle_pose "$GZ_POSE_TOPIC" "$POSE_EPS_M" "$SETTLE" "$SETTLE_POLL_S" "$BOX_NAME"; then
-        bad "box did not settle within ${SETTLE}s of the overclose command"
+      if ! gz_settle_pose_windowed "$GZ_POSE_TOPIC" "$POSE_EPS_M" "$BOX_SETTLE_TIMEOUT_S" \
+           "$SETTLE_POLL_S" "$BOX_SETTLE_WINDOW_S" "$BOX_NAME"; then
+        bad "box did not settle within ${BOX_SETTLE_TIMEOUT_S}s (window=${BOX_SETTLE_WINDOW_S}s) of the overclose command"
         C_FAIL=1
       fi
 

@@ -20,10 +20,36 @@ gz_settle_joint() {
 }
 
 # gz_settle_pose <gz_pose_info_topic> <pos_eps_m> <timeout_s> <poll_dt_s> <link_name> [link_name ...]
+#
+# Consecutive-poll settling only, i.e. the historical default (window_s ==
+# poll_dt) -- fine for non-contact motion (arm links, fingertip pose during a
+# simple open/close), proven fast and accurate for those. NOT safe for an
+# object settling against contact/compliance after a grasp -- use
+# gz_settle_pose_windowed for that. See gz_settle.py's settle_poses docstring.
 gz_settle_pose() {
   local topic="$1" eps="$2" timeout="$3" poll="$4"; shift 4
   python3 "$GZ_SETTLE_PY" pose --topic "$topic" --eps "$eps" \
     --timeout "$timeout" --poll "$poll" "$@"
+}
+
+# gz_settle_pose_windowed <gz_pose_info_topic> <pos_eps_m> <timeout_s> <poll_dt_s> <window_s> <link_name> [link_name ...]
+#
+# Same as gz_settle_pose, but compares each sample against one taken
+# <window_s> seconds earlier instead of just the previous poll. Required for
+# any object settling against gripper contact/compliance: that process creeps
+# slowly enough (confirmed live 2026-08-08, docs/HANDOFF_M3.md -- a box
+# settling after gripper_close_and_hold was declared "settled" by the
+# consecutive-poll check at 0.58s, then measured still sinking ~9.4mm over
+# the next 30s and not leveling off until ~120s) that no number of
+# consecutive short-interval polls can tell it apart from genuine rest --
+# each individual poll-to-poll delta is small even while the object is still
+# very much in motion on a longer timescale. <timeout_s> must comfortably
+# exceed <window_s> (it needs at least one full window of history before it
+# can declare anything settled at all).
+gz_settle_pose_windowed() {
+  local topic="$1" eps="$2" timeout="$3" poll="$4" window="$5"; shift 5
+  python3 "$GZ_SETTLE_PY" pose --topic "$topic" --eps "$eps" \
+    --timeout "$timeout" --poll "$poll" --window-s "$window" "$@"
 }
 
 # gz_assert_joint <gz_joint_state_topic> <joint_name> <expected_rad> <tol_rad> [label]
@@ -162,6 +188,13 @@ gz_wait_controller_active_bounded() {
 #                        caller must treat this as a hard stop, not a value
 #   GRIPPER_HOLD_POSITION — the position now being held (radians, as text;
 #                           empty on UNKNOWN_NO_SAMPLE)
+#   GRIPPER_HOLD_ELAPSED_S — wall-clock seconds from goal send to the first
+#                           Result (or to the <cmd_timeout_s> kill on
+#                           TIMED_OUT_HELD). Exists because the whole point of
+#                           the stall_velocity_threshold/stall_timeout tuning
+#                           (docs/HANDOFF_M3.md) is how long stalled:true
+#                           takes to arrive — that number was previously only
+#                           ever eyeballed from log timestamps after the fact.
 #
 # Returns 0 except on UNKNOWN_NO_SAMPLE, where it returns 1 and does NOT
 # send a hold command (nothing known to hold at).
@@ -175,10 +208,14 @@ gripper_close_and_hold() {
   local gripper_ctrl="$1" master="$2" target="$3" max_effort="$4" \
         cmd_timeout="$5" gz_js_topic="$6" outfile="$7"
 
+  local __t0 __t1
+  __t0=$(date +%s.%N)
   timeout "$cmd_timeout" ros2 action send_goal \
     "/${gripper_ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
     "{command: {position: ${target}, max_effort: ${max_effort}}}" \
     > "$outfile" 2>&1
+  __t1=$(date +%s.%N)
+  GRIPPER_HOLD_ELAPSED_S=$(python3 -c "print(f'{${__t1} - ${__t0}:.3f}')")
 
   local parsed achieved="" stalled=""
   parsed=$(python3 - "$outfile" <<'PY'

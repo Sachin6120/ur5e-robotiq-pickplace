@@ -159,18 +159,61 @@ grasp:
   # is a real approximation, not a measured constant like the rest of this
   # file's recon-derived values.
   #
-  # Value below is the 0.4 rad sample: object.size[grasp_width_axis] here is
-  # 0.045 m, close to the 0.040 m box the M0-C contact probe found stalls
-  # around 0.44-0.46 rad, so 0.4 rad is the closest available sample to this
-  # object's actual expected grasp aperture. It is a placeholder tied to that
-  # similarity, not a computed value for this exact object.
+  # UPDATED 2026-08-08 from docs/grasp_table_20260808_135745.log (script:
+  # scripts/06_measure_grasp_table.sh), which measures tcp_offset AT CONTACT
+  # for a real object width, not interpolated by eye from a free-space table.
+  # object.size[grasp_width_axis] here is 0.045m, an EXACT match to one of
+  # the 5 swept widths (no interpolation needed): grip_angle=0.40553 rad,
+  # tcp_offset_at_grip=0.120405 m. tcp_offset_at_grip is joint/fingertip-pose
+  # driven and independently validated (achieved angle landed in the
+  # established 0.4358-0.4593 cluster at the 40mm anchor) — trust this part.
   #
-  # RE-DERIVE once gripper.width_map exists: at that point tcp_offset should
-  # be looked up at the aperture width_map actually computes for this
-  # object's width, not read off this table by eye. Until then, grasp_tcp's
-  # z-position could be off by several mm if the real contact aperture is
-  # not close to 0.4 rad.
-  tcp_offset: 0.1204
+  # pad_centre_offset is a SEPARATE, ADDITIONAL correction below, not folded
+  # into this number: the pad contact surface sits further from tool0 than
+  # the fingertip-link-origin point tcp_offset_at_grip is anchored to (see
+  # grasp.pad_centre_offset below). Do not add it in here; keep the two
+  # named separately so a future re-measurement of either doesn't require
+  # unpicking a combined scalar.
+  #
+  # RE-DERIVE if object.size changes: this value is an exact-width lookup
+  # against ONE swept object, not a general function of width. If the object
+  # width changes and no longer exactly matches a swept row, interpolate
+  # between docs/grasp_table_20260808_135745.log's rows rather than reusing
+  # this scalar as-is.
+  tcp_offset: 0.120405
+
+  # Distance FURTHER than tcp_offset_at_grip (above) that the true pad
+  # contact surface sits from tool0, along the same axis. Blocker 2 proved
+  # this geometrically (docs/HANDOFF_M3.md): the object seats DOWN from the
+  # fingertip-link-origin height tcp_offset is anchored to, onto the true pad
+  # centre, by this much. Original measurement ~12.1mm; re-confirmed live
+  # 2026-08-08 at the same 40mm/0.45rad anchor after a settle-check fix
+  # (previous same-day measurement of ~1-2mm was a false-quiescence artifact,
+  # see docs/grasp_table_20260808_135745.log's AMENDMENT section) — box
+  # dropped from 1.114003 to 1.103815 m over ~120s, converging: 0.010188 m.
+  #
+  # NOT YET LIVE-VERIFIED: the SIGN/DIRECTION this should be applied in
+  # grasp composition (i.e. that the corrected effective offset is
+  # tcp_offset + pad_centre_offset, moving tool0 FARTHER from the object,
+  # not closer). Reasoned from geometry (tool0 sits above the object during
+  # a vertical approach; the true contact point is deeper/lower than the
+  # naive anchor, so tool0 must stand off farther to still meet it at the
+  # right depth), not confirmed by a live grasp using the corrected target.
+  # This project has been burned by exactly this kind of sign/frame mixup
+  # before (tcp_offset's original anchor-frame confusion, the shortfall-vs-
+  # achieved-angle units error) — verify with a live approach-and-grasp
+  # before trusting this in an unattended run.
+  #
+  # SINGLE-SCALAR PLACEHOLDER, not a per-width table: the 5-width table in
+  # docs/grasp_table_20260808_135745.log has an invalid pad_centre_offset
+  # column (see its AMENDMENT section) because the same false-quiescence bug
+  # hit all 5 rows, not just this one. The fix (gz_settle_pose_windowed,
+  # scripts/lib/gz_settle.py) is applied and validated, but the full 5-width
+  # re-sweep to get a genuine per-width table has NOT been re-run (~150s/
+  # width with the corrected settle window — known follow-up, deliberately
+  # deferred). Until then this one re-confirmed anchor value is used for
+  # every width, same treatment tcp_offset itself got before this update.
+  pad_centre_offset: 0.010188
 
 # ---------------------------------------------------------------------------
 gripper:
