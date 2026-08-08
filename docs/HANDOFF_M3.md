@@ -28,6 +28,7 @@ anything measurement-shaped from this environment.
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
+| M3 grasp node | IMPLEMENTED, not yet passing — 2 live tests, both correctly rejected (no object; a borderline/confounded near-miss). Sliding-contact/timeout anomaly open, world-table gap open. | docs/m3_grasp_run{1,2}_*.log — see "M3 grasp node: implemented, first live tests run, one anomaly open" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1249,6 +1250,115 @@ pad-centre-corrected target (direction pending live verification), grasp
 table lookup/interpolation by object width, achieved-angle tolerance check
 feeding `Result::GRIPPER_GOAL_REJECTED`, and (per the section above) a
 windowed object-settle wait before any slip baseline is captured.
+
+## M3 grasp node: implemented, first live tests run, one anomaly open
+
+Written 2026-08-08. First actual M3 code — `ur5e_pick_place/src/m3_grasp.cpp`
+(new node), `config/grasp_table.yaml` (new, structured extraction of the
+`06` OK rows), `config/scene.yaml`'s new `grasp.grasp_tolerance_rad`,
+`ur5e_pick_place/launch/m3_grasp.launch.py`. Scope deliberately narrow, per
+the design above: pad-centre-corrected approach (reusing M2's proven
+two-stage joint+Cartesian pattern with `tcp_offset + pad_centre_offset` in
+place of `tcp_offset` alone), bounded gripper close+hold (C++ port of
+`gripper_close_and_hold`, same semantics: primary result from the action's
+own Result, TIMED_OUT_HELD ground-truth fallback if it doesn't arrive in
+time, unconditional hold at whatever was achieved), and grasp-success
+verification against `grasp_table.yaml` (`GRIPPER_GOAL_REJECTED` on a
+tolerance miss, reusing the existing enum value per the design decision
+above). No lift, no attachObject, no slip check — still out of scope,
+unchanged from the design section above.
+
+Compiles clean (`colcon build --symlink-install --packages-select
+ur5e_pick_place`), new deps (`rclcpp_action`) wired into `CMakeLists.txt`/
+`package.xml`. `control_msgs` was already a declared dependency, unused
+until now — this is the node it was waiting for.
+
+**Test 1 — no object in the scene.** Ran against the live sim with nothing
+spawned at `object.pick_pose` (an oversight, not a plan — the launch file
+correctly doesn't spawn a test object itself, that's a harness concern).
+Approach succeeded (`cartesian_fraction=1.0`), gripper closed to
+`0.7901 rad` (near-full, `reached_goal: true` — nothing stopped it),
+compared against the table's `0.4055` expected for a 45mm object:
+**correctly rejected**, `GRIPPER_GOAL_REJECTED`, `|err|=0.3846 >>
+tolerance`. This is the check doing exactly its job — a miss that would
+have looked like a normal successful `GripperCommand` result was caught.
+
+**Test 2 — object spawned, but found a second latent gap first.** Spawning
+`pick_target` at `object.pick_pose` (0.450, -0.150, 0.795) dropped it
+straight through to the floor (z settled ~0.02m) — **`empty.sdf` has no
+table collision surface at z=0.795.** Every prior probe script
+(`04`/`06`/`m0_verify.sh`) sidesteps this by spawning its test object
+relative to the gripper's OWN current position, never at an absolute
+world-frame height, so this gap was never hit before now. `object.pick_pose`
+assumes a physical surface that doesn't exist in the test world. **Not
+fixed** — worked around for this test with a temporary static support
+platform (`temp_test_table`, removed after), not a permanent world change.
+**Flagged as a real, separate blocker for the actual M3 milestone**: the
+world needs a table (or `object.pick_pose` needs reconciling with whatever
+the real surface is), independent of anything grasp-composition-related.
+
+**Test 2, re-run with the object properly supported**: approach succeeded
+again. Gripper result: `TIMED_OUT_HELD` at `achieved=0.4291 rad` (5.0s
+bound expired with no Result, fell back to ground-truth sampling) — NOT the
+fast `STALLED` this session's threshold fix produced at the 40mm anchor.
+Compared against the table's `0.4055` expected: `|err|=0.0235`, landing
+**exactly at** `grasp_tolerance_rad` (also `0.0235`, not a coincidence of
+values matching, just where this particular trial happened to fall) —
+**rejected**, outside tolerance (boundary is exclusive as coded).
+
+**Two things about Test 2 not yet explained, flagged rather than
+glossed over:**
+
+1. **Why did the fast stall threshold not produce a `STALLED` result
+   here?** Confirmed live the running controller still has the
+   session's fix (`stall_velocity_threshold=0.05`, `stall_timeout=0.2` —
+   `ros2 param get /gripper_controller ...` checked directly, not
+   assumed). So the threshold value isn't the issue. Working hypothesis,
+   not confirmed: this object (45mm square cross-section, grasped at the
+   pad-centre-corrected depth) produced messier, more sustained contact
+   noise than the well-characterized 40mm anchor the fix was validated
+   against — see point 2. This would be the first live manifestation of
+   the still-open "active-motion noise floor... not yet measured" gap
+   flagged when the threshold was picked (see the
+   `stall_velocity_threshold` section above) — a different, noisier
+   contact regime than the one the fix was tuned on.
+2. **The object moved laterally during closing** (~13-20mm in XY, checked
+   directly via `gz topic -e` on `pick_target` before cleanup), and
+   `wrist_3_link` ground truth showed a correlated-direction positional
+   offset from its commanded target (ground-truth TCP error 53mm total —
+   M2 established ~0.0000m tracking error with the same reconstruction
+   method on an unloaded approach, so this is new, not a measurement
+   artifact carried over). Read together with point 1: an asymmetric,
+   sliding contact (not the clean, centred stall the 40mm anchor
+   consistently produced) is a coherent single explanation for both —
+   sustained sliding could plausibly generate the kind of ongoing velocity
+   noise that prevents the stall check from converging, and could also
+   explain a real (not measurement-artifact) small arm perturbation via
+   sustained off-axis contact force. **Not confirmed** — a coherent
+   hypothesis, not a demonstrated mechanism. Worth a GUI look or an
+   extended-timeout diagnostic (same style as the box-settle
+   investigation above) before trusting any tuning decision made on top
+   of it.
+
+**Net assessment**: the verification logic is doing real work — both
+trials it saw were genuinely bad grasps (no object; a borderline/uncertain
+one) and it rejected both rather than rubber-stamping either. That's the
+safety property the design was for, and it held. What's NOT yet
+established is whether the pad-centre correction's direction/magnitude is
+actually right — neither trial produced a clean accept to check the
+achieved contact geometry against, and Test 2's near-miss is confounded by
+the unexplained sliding/timeout behavior rather than being a clean
+data point on correction accuracy. **Do not tune `grasp_tolerance_rad` or
+`pad_centre_offset` from this one trial** — investigate the sliding/timeout
+anomaly first, per this project's own no-silent-acceptance-of-a-miss
+discipline.
+
+**Not done**: the table-collision-surface gap (world needs a table);
+investigating the sliding-contact/timeout anomaly; any trial that produced
+a clean WITHIN-tolerance result to check the correction's sign against
+(everything so far has been a reject, for two different and only partially
+understood reasons); lift/attachObject/slip-check (always out of scope for
+this pass).
 
 ## Reframing M3: the evidence doesn't point at friction
 
