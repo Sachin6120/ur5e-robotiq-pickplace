@@ -1360,6 +1360,78 @@ a clean WITHIN-tolerance result to check the correction's sign against
 understood reasons); lift/attachObject/slip-check (always out of scope for
 this pass).
 
+## Where this left off — the missing table is one cause, not two anomalies
+
+Written 2026-08-08, end of session. Before treating the two Test 2 anomalies
+above (TIMED_OUT_HELD instead of fast STALLED; 13-20mm lateral object
+drift + 53mm arm-position error) as two separate things to investigate:
+they very likely both come from the SAME cause as the table-collision gap
+already flagged, not from anything new.
+
+`config/scene.yaml`'s `table:` block (`size: [1.20, 0.80, 0.75]`,
+`pose: (0.55, 0.00, 0.375, ...)`, `surface_z: 0.75`) has existed since this
+file's earliest version — the contract implied by its presence is that
+whatever spawns the world reads it and puts a matching collision surface
+there. **That wiring was never built.** `empty.sdf` has no table. Test 2's
+temporary static platform covered `object.pick_pose`'s footprint just
+well enough for the box to rest there at spawn time, but the object was
+never resting on a REAL table during the grasp attempt in any sense that
+matches production geometry — and, more importantly, nothing about that
+patch guarantees the surface was doing what a real table would during
+contact loading.
+
+**An object with no genuine table under it, being squeezed by closing
+fingers, is not stationary — it's free to slide, tip, or partially fall
+during exactly the window the stall check is trying to converge over.**
+That single mechanism accounts for all three observations without
+requiring three explanations:
+
+- **Sliding contact instead of a clean stall** — a wobbling/underspecified
+  support means the box can shift under finger pressure instead of being
+  pinned against a rigid surface the way `04`/`06`/`m0_verify.sh`'s tests
+  (which spawn directly at the gripper's own position, no floor involved)
+  never had to contend with.
+- **A close that never reaches quiescence within 5s** — sustained object
+  motion is sustained velocity-domain noise at the joint, which is exactly
+  what prevents `stall_timeout`'s continuous under-threshold window from
+  completing (the same mechanism the `stall_velocity_threshold` fix
+  targeted, just re-triggered by a different noise source than the one it
+  was tuned against).
+- **The arm holding position while the object (and apparent TCP ground
+  truth) departs** — not a MoveIt/arm positioning error (M2 already proved
+  ~0mm tracking with the identical reconstruction method); the geometry
+  reads as displaced because the OBJECT moved during the still-open
+  gripper action window, not because the arm did.
+
+**Consequence**: the working hypothesis in the section above ("messier
+contact than the 40mm anchor produced") had the right shape but the wrong
+attributed cause — not a property of this object's geometry or the
+pad-centre correction, but a property of testing without the table this
+project's own config file has specified from the start. Investigating the
+sliding/timeout anomaly as a physics or tuning question, on a world that is
+missing its floor, would produce a finding that means nothing — it would be
+characterizing an artifact of the test setup, not the grasp.
+
+**Tomorrow's first job, in order, before anything else**:
+1. Generate the table's collision geometry from `config/scene.yaml`'s
+   `table.size`/`table.pose` and spawn it into the world the same
+   principled way `scene_xacro_args.py` already does for the robot's base
+   pose (single source of truth, no hand-copied constant) — not another
+   one-off temporary platform like Test 2's workaround.
+2. Re-run both M3 grasp tests (no-object case should still correctly
+   reject; the with-object case is the real test) against a world that
+   actually has the table scene.yaml has been describing all along.
+3. Only THEN chase whatever anomaly, if any, survives a properly-supported
+   object. It may vanish entirely (most likely, per the mechanism above),
+   or persist in a smaller/cleaner form worth its own investigation.
+
+**Confirmed right in retrospect**: not tuning `grasp_tolerance_rad` or
+`pad_centre_offset` off Test 2's trial. Either constant would have quietly
+absorbed the missing table's effect — a tolerance widened or an offset
+adjusted to accommodate a sliding, unsupported object would have been
+calibrated against an artifact, and would then silently mismeasure the
+correction once the table gap is actually fixed.
+
 ## Reframing M3: the evidence doesn't point at friction
 
 The spec frames M3 as friction tuning — "treat getting stable friction-grasp
