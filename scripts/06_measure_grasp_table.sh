@@ -123,6 +123,19 @@ JOINT_EPS_RAD_S="${JOINT_EPS_RAD_S:-0.02}"
 SETTLE_TIMEOUT_S="${SETTLE_TIMEOUT_S:-5.0}"
 SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
 
+# The box settling against the gripper AFTER overclose is contact/compliance
+# settling, not free motion -- consecutive-poll gz_settle_pose (above)
+# declares it "settled" after ~0.5s while it is still measurably sinking for
+# up to ~120s (confirmed live 2026-08-08, docs/HANDOFF_M3.md, "box-settle
+# false-quiescence" -- this is what made every pad_centre_offset value in
+# this script's pre-2026-08-08 output an undercount, some by 5-10x). Use the
+# windowed variant with a long enough window and timeout to actually resolve
+# that creep, ONLY for this one post-overclose box settle -- the fingertip
+# and pre-close settles above are known-fast, non-contact motion and stay on
+# the cheap consecutive-poll check.
+BOX_SETTLE_WINDOW_S="${BOX_SETTLE_WINDOW_S:-10.0}"
+BOX_SETTLE_TIMEOUT_S="${BOX_SETTLE_TIMEOUT_S:-150.0}"
+
 LEFT_TIP="robotiq_85_left_finger_tip_link"
 RIGHT_TIP="robotiq_85_right_finger_tip_link"
 WRIST3="wrist_3_link"
@@ -434,9 +447,10 @@ if len(tips) >= 2:
     printf '  [note] master joint did not settle within %ss at width=%s — recording anyway, flagged\n' \
            "$SETTLE_TIMEOUT_S" "$W"
   fi
-  if ! gz_settle_pose "$GZ_POSE" "$POSE_EPS_M" "$SETTLE_TIMEOUT_S" "$SETTLE_POLL_S" "$BOX_NAME"; then
-    printf '  [note] box did not settle within %ss at width=%s — recording anyway, flagged\n' \
-           "$SETTLE_TIMEOUT_S" "$W"
+  if ! gz_settle_pose_windowed "$GZ_POSE" "$POSE_EPS_M" "$BOX_SETTLE_TIMEOUT_S" "$SETTLE_POLL_S" \
+       "$BOX_SETTLE_WINDOW_S" "$BOX_NAME"; then
+    printf '  [note] box did not settle within %ss (window=%ss) at width=%s — recording anyway, flagged\n' \
+           "$BOX_SETTLE_TIMEOUT_S" "$BOX_SETTLE_WINDOW_S" "$W"
   fi
 
   GRIP_ANGLE=$(sample_master_state "$MASTER")

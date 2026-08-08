@@ -27,7 +27,7 @@ anything measurement-shaped from this environment.
 | Blocker 1 | closed | docs/geom_run*.log — bit-identical across 3 runs, 0 timeouts |
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
-| Grasp-table sweep (06) | 0 OK rows; ejection fixed, anchor confirmed; blocked on stall_velocity_threshold (measured too tight, fix not yet applied) | docs/grasp_table_20260806_215515.log, docs/gripper_stall_velocity_noise_20260806.log — see "Full width sweep, next session" below |
+| Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -793,7 +793,8 @@ only gates when the action *reports* a stall, it does not change the
 commanded position or contact physics, so it is a measurement/control-loop
 parameter, not a physics-tuning one, and safer to change than it might look.
 
-**Not done, deliberately, flagged for next session**:
+**Not done, deliberately, flagged for next session** — DONE 2026-08-08, see
+"stall_velocity_threshold fix applied and validated" below:
   - Pick an actual threshold value and validate it live (candidate order
     0.05 rad/s clears the noise body with margin; needs checking against
     genuine active-motion velocity too, not just at-rest noise — not yet
@@ -806,6 +807,371 @@ parameter, not a physics-tuning one, and safer to change than it might look.
   - Re-run `06`'s full sweep once the threshold is changed and validated —
     ejection is already fixed, the anchor value is already confirmed; this
     is the last known blocker before `06` can produce real OK rows.
+
+## stall_velocity_threshold fix applied and validated: `06` produces its first real OK rows
+
+Written 2026-08-08. Direct follow-up to "Full width sweep, next session"
+above, which quantified the root cause (threshold below the noise floor)
+but left picking a value for a session with room to validate live.
+
+**Arithmetic first, no sim.** At the controller's confirmed 500Hz
+`update_rate`, `stall_timeout` seconds requires that many consecutive
+under-threshold samples (1.0s = 500, 0.2s = 100). Modeled the odds of a
+clean window as i.i.d. Bernoulli trials (a simplification — the real signal
+is very likely autocorrelated, not white noise, since the observed 60-90s
+real-world convergence at the *current* 0.001/1.0 pair is already far
+faster than an i.i.d. model predicts at 75% exceedance, which computes to
+something on the order of 10^298 seconds — meaning real noise has quieter
+stretches than pure-chance modeling assumes, and these estimates should be
+read as pessimistic upper bounds, not exact predictions). Computed expected
+wait via the standard expected-trials-to-first-run-of-N-successes formula
+for three candidate pairs, all landing in the ~1-2.3s expected-wait range:
+`0.05 rad/s / 0.2s` (~1.0s, using the directly-measured `>0.05 rad/s:
+2.67%` exceedance point), `p99 (0.2453 rad/s) / 0.5s` (~2.3s), `p99.9
+(0.2570 rad/s) / 1.0s` (~1.3s). p99.5 required interpolating between the
+log's p99 and p99.9 (no raw samples were saved, only the summary), flagged
+as softer than the other two. For contrast: leaving `stall_timeout` at the
+full 1.0s while raising the threshold to clear p95 (0.0253 rad/s) still
+computes to ~3.8x10^11s — confirms threshold alone doesn't fix this, `N`
+sits in the exponent, the *pair* is what matters.
+
+**Picked `0.05 rad/s / 0.2s`** — grounded in a directly-measured exceedance
+fraction rather than an interpolated percentile, shortest expected wait of
+the three. Applied to
+`ur5e_robotiq_description/config/controllers.yaml` (comment there
+documents the reasoning inline). Workspace symlink confirmed still
+resolving straight through (`readlink -f` on the install-space file), so no
+`colcon build` was needed for a config-only change.
+
+**Confirmed the running controller actually loaded the new values**, not
+just that the file changed — the exact failure mode the repo/workspace
+desync bug (see "Spawn-state investigation, closed" above) would produce
+silently: `ros2 param get /gripper_controller stall_velocity_threshold` ->
+`0.05`, `stall_timeout` -> `0.2`.
+
+**Live validation at the 40mm anchor**
+(`docs/probe_stallfix_anchor_20260808_135658.log`, unmodified
+`04_mimic_contact_probe.sh`): `gripper_close_and_hold` reported `STALLED in
+1.710s` — down from the previously-observed 60-90s, and consistent with
+the ~1.0s expected-wait estimate. Achieved angle **0.4501 rad**, inside the
+established 0.4358-0.4593 cluster (checked, not assumed — this is what
+confirms `stall_velocity_threshold` only changed *when the action reports*,
+not the contact physics itself). Box settled ~1.2mm from spawn, no
+ejection.
+
+Added `GRIPPER_HOLD_ELAPSED_S` to `gripper_close_and_hold()`
+(`scripts/lib/gz_settle.sh`) — wall-clock time from goal send to Result,
+wired into all existing call sites automatically. This is the number the
+whole threshold exercise is about; previously it was only ever recoverable
+by eyeballing log timestamps after the fact.
+
+**`06`'s full width sweep (30-50mm) re-run against the same session's
+health-checked sim**: **5/5 OK, zero timeouts, zero ejections**
+(`docs/grasp_table_20260808_135745.log`) — the first fully successful run
+of this script, after two prior sessions' worth of TIMEOUT_OVERCLOSE. 40mm
+row's `grip_angle` (0.45129) matches the anchor validation closely. Table
+now also carries `pad_centre_offset` across all 5 widths (0.030-0.050m):
+0.000391, 0.001514, 0.001972, 0.000873, 0.001025 — noisy, no obvious trend
+with width. Not analyzed further this session; flagged as data toward the
+still-open "does pad-centre offset correlate with grip angle / aperture"
+question from Blocker 2's NOT ESTABLISHED item, not a resolution of it.
+
+**Not done, carried forward, same caveats as the noise-log's own "NOT
+DONE" list:**
+- Active-motion noise floor still unmeasured. The applied pair is
+  validated against an already-resolved contact stall, not against genuine
+  closing motion — a real approach could plausibly dip through 0.05 rad/s
+  for a stray 0.2s window before actual contact and false-trigger a
+  premature stall report. Worth checking before trusting this pair inside
+  the eventual M3 pick-place node's real approach trajectories, not just
+  the probe scripts' fixed pre-close-then-overclose pattern.
+- Faithful 500Hz re-capture of the at-rest noise floor (original sampler
+  only captured 4374/~15000 expected messages) still not done. The applied
+  threshold has enough headroom over the measured 97.33rd-percentile point
+  (0.05 rad/s at 2.67% exceedance) that this gap is unlikely to change the
+  conclusion, but it was never closed.
+- The i.i.d.-Bernoulli expected-wait model used to pick the pair is a
+  simplification, not a validated model of this sim's actual noise
+  autocorrelation — treat the arithmetic as what motivated trying these
+  specific numbers, not as a guarantee; the live 1.71s result is the real
+  evidence.
+
+**Consequence for M3**: this was the last identified blocker before `06`
+could produce trustworthy OK rows (per "Full width sweep, next session"
+above). It's now unblocked. The fix lives in `controllers.yaml`, which the
+production pick-place node loads the same way the probe scripts do — this
+serves M3's grasp procedure directly, not just the measurement harness (the
+concern flagged when this session started).
+
+## Box-settle false-quiescence: a second measurement-integrity bug, same shape as the first
+
+Written 2026-08-08, same session, directly after the stall_velocity_threshold
+fix above. Before trusting `06`'s new `pad_centre_offset` column (all 5 rows
+read 0.4-2mm, in obvious tension with Blocker 2's original ~12.1mm figure at
+the same 40mm/0.45rad configuration), checked it with one live re-measurement
+rather than assuming either number.
+
+**Confirmed live**: reproduced the 40mm anchor, ran `gripper_close_and_hold`
+(STALLED in 2.262s — consistent with the threshold fix above), then watched
+Gazebo ground truth on the box continuously, well past the point
+`gz_settle_pose` would call it settled. `gz_settle_pose` declared the box
+settled at **t=0.58s** (delta 0.14mm over 2 polls). The box was still
+measurably sinking **30 seconds later** (another ~9.4mm), and did not level
+off until roughly **t=120s**. Total drop from pre-overclose to converged
+rest: **1.114003 -> 1.103815 m = 0.010188 m**, consistent with (not
+identical to, but the same order as) Blocker 2's original ~12.1mm figure.
+
+**Root cause, same failure shape as `stall_velocity_threshold`, different
+mechanism.** `gz_settle_pose`'s consecutive-poll check (2 polls, ~0.3s at the
+default 0.15s poll interval) cannot distinguish "at rest" from "creeping at a
+small constant rate": a 0.05mm/s creep produces ~0.0075mm per 0.15s poll,
+comfortably under the 0.5mm `eps` regardless of how many consecutive polls
+are required, because each individual poll-to-poll delta is genuinely small
+even while the object is still very much in motion on a longer timescale.
+Raising `need_streak` (the stall-threshold fix's playbook) does not fix this
+one — there is no noise spike to filter out, the slow tail never violates
+`eps` in the first place.
+
+**Why this was invisible until today**: every prior measurement using this
+box's settled pose (Blocker 2's drop measurements, `06`'s TIMEOUT_OVERCLOSE
+runs) happened to sample AFTER the old `stall_velocity_threshold` bug had
+already forced a 60-90s wait for the *joint* stall declaration — which
+incidentally gave the box's slow settling more than enough time to finish
+before anything downstream read its position. Fixing the joint-stall latency
+this session (down to ~1.7-2.3s) removed that accidental buffer and exposed
+the box-settle check's own blind spot for the first time. The two bugs were
+independent, but the first one had been silently masking the second.
+
+**Fix**: added `gz_settle_pose_windowed` (`scripts/lib/gz_settle.py`,
+`gz_settle.sh`) — compares each sample against one taken `window_s` seconds
+in the past, not just the previous poll, so a slow sustained creep becomes
+visible again (0.05mm/s * 10s = 0.5mm, no longer under `eps`) even though no
+single short interval shows it. Default `window_s` equals the poll interval,
+reproducing the exact old behavior for every other call site (fingertip
+settle, arm-link settle, joint velocity settle) — all of those are genuinely
+fast, non-contact processes and were never suspected or shown to have this
+problem; only the post-overclose box-pose settle (contact/compliance
+settling) was changed to use the windowed variant, in `06` (10s window,
+150s timeout — both informed by this measurement) and left as a documented
+caveat (not changed) in `04`, which doesn't compute a quantitative metric
+from the box pose.
+
+**Validated live**: re-ran the windowed check against the same anchor —
+correctly waited **64.26s** and converged at a genuine ~0.035mm/s residual
+(0.348mm over the 10s window), instead of falsely declaring done at 0.58s.
+
+**`docs/grasp_table_20260808_135745.log` amended in place** (raw captured
+output left untouched, a clearly-marked section appended) marking its
+`pad_centre_offset` column invalid for all 5 rows, with a pointer to this
+section and the corrected anchor value. `grip_angle_rad` and
+`tcp_offset_at_grip_m` in that same log are unaffected (joint/fingertip-pose
+driven, not box-pose driven) — do not discard the whole table over this,
+only that one column.
+
+**Not done**: the full 5-width re-sweep with the fixed settle check (~150s/
+width now that it waits properly — a ~10-15 minute run). Deliberately
+deferred; the single re-confirmed anchor value is used as a placeholder
+scalar in the meantime (see `config/scene.yaml`'s `grasp.pad_centre_offset`,
+same treatment `tcp_offset` got before today).
+
+**Consequence for M3's slip criterion — the actual reason this matters
+beyond one config number.** `thresholds.post_lift_slip_max_m` is 5mm. If a
+grasped object is still settling into true contact by ~10mm over the better
+part of two minutes, and M3's slip check baselines from the pose immediately
+after the gripper reports stalled, ongoing seating settling — not friction
+failure — will read as slip, and the amount will scale with how long the
+cycle takes to reach the post-lift check, not with grasp quality. This would
+make M3's pass/fail measurement a clock, not a friction measurement.
+
+Two structurally different explanations for the slow settle were floated,
+not yet distinguished: (1) bounded compliant seating into the pads —
+exponential approach to an equilibrium, physical and expected to converge
+(the observed decaying deltas, ~0.01mm/10s by t=120s, are consistent with
+this); or (2) unbounded solver/constraint creep that decays but never truly
+stops. The data collected so far favors (1) but does not rule out (2) —
+nothing here ran long enough or checked for a truly asymptotic floor versus
+a very slow ongoing drift.
+
+**This is the strongest argument yet for actually doing the pad-centre
+correction**, not just a data-quality footnote: if the grasp target already
+places contact at (approximately) the true pad-centre depth instead of
+~10mm short of it, most of this settling has no reason to happen — there is
+much less geometric mismatch left to seat into. The correction is not only
+about grasp accuracy, it is what keeps the slip measurement itself from
+being contaminated by an artifact of bad initial targeting. Whether it
+actually shrinks the settle time this much is an open, checkable prediction
+once the correction is applied — not yet done.
+
+**Open design item, not yet resolved**: M3's slip-check implementation must
+not baseline from the pose immediately after `stalled: true` (or after this
+session's `gripper_close_and_hold`). It needs to wait for the OBJECT (not
+just the joint) to genuinely settle first, using `gz_settle_pose_windowed`
+(the same window-based mechanism, not a new one, and not a blind fixed
+sleep — consistent with this project's existing "poll, don't guess a sleep
+duration" rule) before capturing the pre-lift baseline pose the slip
+computation is measured against. How long that takes post-correction is
+unmeasured; recommend checking this empirically once the pad-centre
+correction below is applied, before picking a production timeout for it.
+
+## The false-quiescence bug already corrupted a live gate: M0-C's box displacement
+
+Written 2026-08-08, immediately after the box-settle fix above. The
+"accidental buffer" framing generalizes: every post-close measurement in
+this project got a minute-plus of free settling time it never asked for,
+from the old `stall_velocity_threshold` bug's 60-90s wait. Fixing that
+threshold removed the buffer everywhere at once, not just in the diagnostic
+that happened to expose it.
+
+**Checked by grep, not a re-run** (the number was already in a committed
+log): `docs/m0_20260806_214228.log`, M0-C's C2 section —
+
+```
+box before close: ... 1.1167676483894935
+box after close : ... 1.1151760216363287
+displacement: 0.0020 m   (need < 0.03)
+```
+
+**Confirmed exactly as suspected**: `gripper_close_and_hold: TIMED_OUT_HELD`
+on that run — the 5.0s `gripper.command_timeout_s` bound killed the action
+client and fell back to a live ground-truth sample before either the old
+slow declaration or a genuine settle could occur, and the immediately
+following box-settle call (`gz_settle_pose`, plain consecutive-poll, same
+bug as above) then declared the box "settled" almost immediately. Result:
+`displacement=0.0020m`, comfortably under `MAX_BOX_DISP=0.030` — a clean
+PASS — while measuring the box at a wildly different point on the settling
+curve than the 12.5-13.7mm figures `MAX_BOX_DISP` was originally calibrated
+against (Blocker 2's pre-`gripper_close_and_hold`, unbounded
+`ros2 action send_goal` runs, which genuinely waited for the old slow
+declaration and therefore sampled well past the point of full settling).
+**The gate was passing on a number that no longer meant what the threshold
+was set against — the dangerous case, not the safe one: a gate that changes
+what it measures while staying green.**
+
+This was live independent of today's `stall_velocity_threshold` fix — the
+5.0s `command_timeout_s` bound in `gripper_close_and_hold` was always going
+to cut the wait short one way or another, so this has been silently true
+since `gripper_close_and_hold` was introduced (2026-08-06), not something
+today's session newly broke.
+
+**Fixed**: `m0_verify.sh`'s C2 box-after-overclose settle
+(`scripts/m0_verify.sh`, the call feeding `BOX_AFTER` into `m0c_eval.py`)
+switched from `gz_settle_pose` to `gz_settle_pose_windowed`
+(`BOX_SETTLE_WINDOW_S=10.0`, `BOX_SETTLE_TIMEOUT_S=150.0`, same values as
+`06`'s fix). `MAX_BOX_DISP=0.030` was NOT changed — the historical
+12.5-13.7mm figures it was calibrated against remain valid (they were taken
+under the accidental long buffer, which happened to be long enough for
+genuine settling), so once the settle check is fixed to genuinely wait
+again, the gate is measuring the same thing it always was and the existing
+threshold still applies.
+
+**Scanned every other `gz_settle_pose` call site in `scripts/`** for the
+same pattern (settling AFTER a gripper close, on an object, vs. settling
+before any contact force is applied):
+
+| site | what it settles | contact-loaded? | action |
+|---|---|---|---|
+| `04`:190, `06`:358, `m0_verify.sh`:413 | fingertips, pre-close | no | unchanged |
+| `04`:270, `06`:407, `m0_verify.sh`:465 | box, post-spawn (pre-overclose) | no (gravity only) | unchanged |
+| `04`:303 (§3 closure) | box, post-overclose | **yes** | **fixed** — same windowed swap, this session |
+| `06` (post-overclose) | box, post-overclose | **yes** | **fixed earlier this session** |
+| `m0_verify.sh`:495 (C2) | box, post-overclose | **yes** | **fixed this section** — the one that was confirmed corrupted |
+| `05_measure_gripper_geometry.sh`:117 | fingertips, free-space sweep (no object at all) | no | unchanged |
+
+Three sites shared the exact same bug shape; all three now use
+`gz_settle_pose_windowed`. Every other site settles either a non-object link
+or an object under gravity alone (no sustained contact force driving a slow
+compliance creep) — no evidence or mechanism for the same failure there.
+
+**Not done**: `m0_verify.sh`'s M0-C has not been re-run with the fix to
+confirm it now reproduces something closer to 12.5-13.7mm (or to understand
+why it might not, e.g. box width/PRECLOSE differences between the C2 setup
+and Blocker 2's original runs). Flagged as the natural verification step,
+not yet executed this session.
+
+## Pad-centre correction and grasp-success verification: design, not yet implemented
+
+Written 2026-08-08. `ur5e_pick_place` has no M3 grasp node yet (only
+`m1_joint_goal.cpp` and `m2_cartesian_approach.cpp` exist) — this is fresh
+design, not a modification of existing grasp code. Two related pieces:
+
+**1. Pad-centre-corrected grasp target.** `config/scene.yaml`'s
+`grasp.tcp_offset` and new `grasp.pad_centre_offset` (added this session,
+see above) are now measured, not guessed: `tcp_offset_at_grip=0.120405` at
+an exact width match to `object.size[grasp_width_axis]` (0.045m, no
+interpolation needed), plus a separate `pad_centre_offset=0.010188`. Kept as
+two named scalars, not folded into one, so a future re-measurement of either
+doesn't require unpicking a combined number.
+
+Grasp composition should target `tool0_offset = tcp_offset + pad_centre_offset`
+along tool0's local Z (not `tcp_offset` alone) — the true pad contact surface
+sits `pad_centre_offset` farther from tool0 than the fingertip-link-origin
+point `tcp_offset` is anchored to, per Blocker 2's falsification test.
+**Flagged, not asserted**: the direction (add, not subtract) is reasoned from
+geometry — vertical approach, tool0 above the object, true contact deeper
+than the naive anchor implies a larger standoff is needed to still meet it at
+the right depth — but has not been confirmed by a live grasp using the
+corrected target. This project has already been burned twice by exactly this
+kind of sign/frame mixup (the original `tcp_offset` anchor-frame confusion;
+the shortfall-vs-achieved-angle units error). **Verify with a live
+approach-and-grasp cycle before trusting this unattended**: command the
+corrected target, close, and confirm the achieved contact geometry (fingertip
+pose relative to the object) actually improves versus the uncorrected
+baseline, not just that the run completes.
+
+**2. Grasp-success verification, not the action result.** The ROS action
+result is not evidence of a successful grasp — `stalled: true` only means the
+controller's own noisy heuristic fired, and this session already showed that
+heuristic can misfire in both directions on a false-quiescence-style bug
+(the stall-declaration bug from earlier this session was the same category:
+a signal reported "done" without the physical state matching). The spec's own
+warning applies here directly: never treat a successful `attachObject` as
+evidence of a successful grasp.
+
+Design: after `gripper_close_and_hold` returns, compare the achieved joint
+angle (`GRIPPER_HOLD_POSITION`, already captured by that function) against
+the `grip_angle_rad` this session's grasp table predicts for
+`object.size[grasp_width_axis]` (interpolated between the nearest two rows in
+`docs/grasp_table_20260808_135745.log` if the object width doesn't land on an
+exact sample, as it does for the current 0.045m object). Outside some
+tolerance (not yet picked — should be informed by the same-width spread
+already on record, e.g. the 0.4358-0.4593 rad cluster at 40mm, before
+guessing a number) means the gripper did not actually catch the object at the
+expected geometry: return `Result::GRIPPER_GOAL_REJECTED` (reusing the
+existing enum value — this is still "gripper action rejected, or not reached
+in time" in spirit, a goal that nominally succeeded but not at a position
+consistent with holding the object) and abort the cycle, rather than
+proceeding to `attachObject` and transporting nothing.
+
+This turns the grasp table from a targeting input into a verification input
+too — the same measured data serves both roles, and the second role is what
+actually closes the active-motion / false-early-stall risk that was flagged
+(and mostly ruled out empirically, see below) for the
+`stall_velocity_threshold` change: even if a future noise regime did cause an
+early false stall, the achieved-angle check would catch it as a mismatch
+against the table and reject the cycle, rather than silently transporting an
+ungrasped object.
+
+**Free check performed on existing sweep data, not a new sim session**:
+plotted `grip_angle_rad` and `width_at_grip_m` against `box_width_m` across
+`06`'s 5 rows. Both strictly monotonic (larger object -> smaller stall
+angle, larger measured width-at-grip), no reversals. Deltas cluster tightly
+(angle: mean -0.0447 rad/5mm step, stdev 0.0043, CV ~9.5%; the single
+largest step, 30->35mm, is consistent with the already-documented four-bar
+linkage nonlinearity, not a discontinuity). A false-early-stall on some
+widths and not others would show up as a ragged or non-monotonic relationship
+— it does not. This does not fully retire the active-motion noise-floor gap
+(still genuinely unmeasured — see the stall_velocity_threshold section
+above), but it is direct evidence against the failure mode actually occurring
+in data already collected this session, and the grasp-success check above is
+a stronger, permanent mitigation than further noise characterization would
+have been regardless.
+
+**Not yet done**: no code written — `ur5e_pick_place` has no grasp/M3 node to
+put this in yet. This section is the design for when that node is built:
+pad-centre-corrected target (direction pending live verification), grasp
+table lookup/interpolation by object width, achieved-angle tolerance check
+feeding `Result::GRIPPER_GOAL_REJECTED`, and (per the section above) a
+windowed object-settle wait before any slip baseline is captured.
 
 ## Reframing M3: the evidence doesn't point at friction
 

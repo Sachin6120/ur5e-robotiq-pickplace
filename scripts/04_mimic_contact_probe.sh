@@ -67,6 +67,15 @@ mkdir -p "$OUTDIR"
 # actually stops (or fail loudly) instead.
 POSE_EPS_M="${POSE_EPS_M:-0.0005}"
 JOINT_EPS_RAD_S="${JOINT_EPS_RAD_S:-0.02}"
+
+# §3's box settle (post-overclose) is contact/compliance settling, not free
+# motion -- confirmed to actually corrupt a downstream measurement, not just
+# a theoretical risk: m0_verify.sh's C2 gate sampled its box displacement
+# the same way and recorded 2.0mm against a threshold calibrated on Blocker
+# 2's 12.5-13.7mm figures. See docs/HANDOFF_M3.md, "box-settle
+# false-quiescence".
+BOX_SETTLE_WINDOW_S="${BOX_SETTLE_WINDOW_S:-10.0}"
+BOX_SETTLE_TIMEOUT_S="${BOX_SETTLE_TIMEOUT_S:-150.0}"
 SETTLE_POLL_S="${SETTLE_POLL_S:-0.15}"
 LEFT_TIP="robotiq_85_left_finger_tip_link"
 RIGHT_TIP="robotiq_85_right_finger_tip_link"
@@ -278,8 +287,8 @@ printf '  commanding %s -> %s rad (box is %s m wide, bounded at %ss)\n' \
        "$MASTER" "$OVERCLOSE" "$BOX_W" "$CMD_TIMEOUT_S"
 gripper_close_and_hold "$GRIPPER_CTRL" "$MASTER" "$OVERCLOSE" 50.0 \
   "$CMD_TIMEOUT_S" "$GZ_JS" "$OUTDIR/action_close.txt"
-printf '  gripper_close_and_hold: %s, now holding %s rad (not left driving toward %s)\n' \
-       "$GRIPPER_HOLD_RESULT" "$GRIPPER_HOLD_POSITION" "$OVERCLOSE"
+printf '  gripper_close_and_hold: %s in %ss, now holding %s rad (not left driving toward %s)\n' \
+       "$GRIPPER_HOLD_RESULT" "$GRIPPER_HOLD_ELAPSED_S" "$GRIPPER_HOLD_POSITION" "$OVERCLOSE"
 tail -20 "$OUTDIR/action_close.txt" | sed 's|^|    |'
 if [[ "$GRIPPER_HOLD_RESULT" == "UNKNOWN_NO_SAMPLE" ]]; then
   die "overclose call produced no result AND ground truth could not be sampled -- cannot proceed"
@@ -292,8 +301,9 @@ if ! gz_settle_joint "$GZ_JS" "$JOINT_EPS_RAD_S" "$SETTLE" "$SETTLE_POLL_S" "$MA
   note "master joint did not settle within ${SETTLE}s — sampling anyway, but the"
   note "shortfall number below may include residual motion, not just the stall."
 fi
-if ! gz_settle_pose "$GZ_POSE" "$POSE_EPS_M" "$SETTLE" "$SETTLE_POLL_S" "$BOX_NAME"; then
-  note "box did not settle within ${SETTLE}s — it may still be sliding/ejecting."
+if ! gz_settle_pose_windowed "$GZ_POSE" "$POSE_EPS_M" "$BOX_SETTLE_TIMEOUT_S" "$SETTLE_POLL_S" \
+     "$BOX_SETTLE_WINDOW_S" "$BOX_NAME"; then
+  note "box did not settle within ${BOX_SETTLE_TIMEOUT_S}s (window=${BOX_SETTLE_WINDOW_S}s) — it may still be sliding/ejecting."
   note "the displacement number below is a snapshot mid-motion, not a rest state."
 fi
 

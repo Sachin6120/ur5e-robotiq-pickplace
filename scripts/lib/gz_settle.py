@@ -148,13 +148,40 @@ def settle_joints(topic, names, eps, timeout, poll_dt, need_streak=2):
     return 1
 
 
-def settle_poses(topic, names, eps, timeout, poll_dt, need_streak=2):
+def settle_poses(topic, names, eps, timeout, poll_dt, need_streak=2, window_s=None):
+    # window_s: compare the current sample against the sample from AT LEAST
+    # window_s seconds ago, not just the immediately preceding poll. Defaults
+    # to poll_dt, i.e. the original consecutive-poll behaviour, unchanged for
+    # every existing caller.
+    #
+    # WHY THIS EXISTS, on top of need_streak: consecutive-poll comparison
+    # cannot distinguish "at rest" from "creeping at a small constant rate."
+    # A 0.05 mm/s creep produces ~0.0075mm per 0.15s poll -- comfortably under
+    # eps=0.0005m regardless of how many consecutive polls are required,
+    # because each individual poll-to-poll delta is genuinely small even
+    # while the process is still very much in motion on a longer timescale.
+    # Confirmed directly, 2026-08-08: a box
+    # settling against the gripper after `gripper_close_and_hold` was declared
+    # "settled" by the old consecutive-poll check at t=0.58s, then measured
+    # (dedicated diagnostic, not this function) still sinking ~9.4mm over the
+    # next 30s and not fully leveling off until ~t=120s. See
+    # docs/HANDOFF_M3.md, "box-settle false-quiescence" for the full trace —
+    # same shape of bug as stall_velocity_threshold's noise-floor problem, but
+    # not fixable by raising need_streak alone: the fast-poll deltas were
+    # never above eps in the first place, there was no spike to filter out.
+    # Comparing against a sample far enough back in time makes a slow,
+    # sustained creep visible again (0.05mm/s * 10s = 0.5mm, no longer
+    # invisible at eps=0.0005m), which raising the consecutive-poll count at a
+    # fixed 0.15s cadence cannot do.
+    if window_s is None:
+        window_s = poll_dt
     t0 = time.time()
     streak = 0
-    prev = None
+    history = []  # list of (timestamp, {name: (x,y,z)})
     last_worst = float('nan')
     ever_seen = False
     while time.time() - t0 < timeout:
+        now = time.time()
         cur_all = _parse_link_positions(_gz_echo(topic))
         missing = [n for n in names if n not in cur_all]
         if missing:
@@ -163,20 +190,31 @@ def settle_poses(topic, names, eps, timeout, poll_dt, need_streak=2):
             continue
         ever_seen = True
         cur = {n: cur_all[n] for n in names}
-        if prev is not None:
+        # oldest history entry that is at least window_s old
+        baseline = None
+        for ts, snap in history:
+            if now - ts >= window_s:
+                baseline = snap
+            else:
+                break
+        if baseline is not None:
             last_worst = max(
-                math.sqrt(sum((cur[n][i] - prev[n][i]) ** 2 for i in range(3)))
+                math.sqrt(sum((cur[n][i] - baseline[n][i]) ** 2 for i in range(3)))
                 for n in names
             )
             if last_worst < eps:
                 streak += 1
                 if streak >= need_streak:
                     print(f"[settle] poses settled after {time.time()-t0:.2f}s "
-                          f"(max|delta|={last_worst:.6f} m)", file=sys.stderr)
+                          f"(max|delta over {window_s}s|={last_worst:.6f} m)",
+                          file=sys.stderr)
                     return 0
             else:
                 streak = 0
-        prev = cur
+        history.append((now, cur))
+        # trim history older than window_s plus one poll of slack
+        cutoff = now - window_s - poll_dt
+        history = [(ts, snap) for ts, snap in history if ts >= cutoff]
         time.sleep(poll_dt)
     if not ever_seen:
         print(f"[STOP] link(s) {names} never appeared on {topic} within "
@@ -184,8 +222,9 @@ def settle_poses(topic, names, eps, timeout, poll_dt, need_streak=2):
               file=sys.stderr)
     else:
         print(f"[STOP] links {names} did not settle within {timeout}s "
-              f"(last max|delta|={last_worst:.6f} m, threshold={eps}) — "
-              "refusing to sample a moving target", file=sys.stderr)
+              f"(last max|delta over {window_s}s|={last_worst:.6f} m, "
+              f"threshold={eps}) — refusing to sample a moving target",
+              file=sys.stderr)
     return 1
 
 
@@ -231,6 +270,13 @@ def main():
     pp.add_argument("--eps", type=float, default=0.0005)
     pp.add_argument("--timeout", type=float, default=5.0)
     pp.add_argument("--poll", type=float, default=0.15)
+    pp.add_argument("--window-s", type=float, default=None,
+                     help="compare against a sample this many seconds back, "
+                          "not just the previous poll (default: poll interval, "
+                          "i.e. unchanged consecutive-poll behavior). Use a "
+                          "larger value for contact/compliance settling, "
+                          "which creeps slower than a fixed short window can "
+                          "detect -- see settle_poses' docstring.")
     pp.add_argument("names", nargs="+")
 
     ap_ = sub.add_parser("assert-joint")
@@ -244,7 +290,8 @@ def main():
     if args.mode == "joint":
         rc = settle_joints(args.topic, args.names, args.eps, args.timeout, args.poll)
     elif args.mode == "pose":
-        rc = settle_poses(args.topic, args.names, args.eps, args.timeout, args.poll)
+        rc = settle_poses(args.topic, args.names, args.eps, args.timeout, args.poll,
+                           window_s=args.window_s)
     else:
         rc = assert_joint_position(args.topic, args.name, args.expected, args.tol, args.label)
     sys.exit(rc)
