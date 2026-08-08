@@ -230,6 +230,21 @@ grasp:
   # every width, same treatment tcp_offset itself got before this update.
   pad_centre_offset: 0.013433
 
+  # Tolerance for the grasp-success check (M3): |achieved joint angle at
+  # stall - grasp_table.yaml's grip_angle_rad, interpolated for this
+  # object's width| must be within this to count as a real grasp; otherwise
+  # GRIPPER_GOAL_REJECTED, abort the cycle. See docs/HANDOFF_M3.md,
+  # "Pad-centre correction and grasp-success verification."
+  #
+  # REASONED, NOT DERIVED FOR THIS OBJECT WIDTH: no repeated-trial data
+  # exists at 0.045m specifically. Set from the only same-configuration
+  # repeated-measurement spread on record — the 40mm anchor's
+  # 0.4358-0.4593 rad cluster across this session's re-runs, full spread
+  # 0.0235 rad. Used as-is (not halved) to keep margin against a tolerance
+  # picked to be exactly as tight as the one data point that produced it.
+  # Refine once real repeated trials exist at this object's actual width.
+  grasp_tolerance_rad: 0.0235
+
 # ---------------------------------------------------------------------------
 gripper:
   # CORRECTED by recon (2026-08-03): the donor repo's `finger_joint` name does

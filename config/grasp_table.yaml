@@ -1,0 +1,42 @@
+# grasp_table.yaml — measured (box_width_m, grip_angle_rad) pairs, one
+# contact experiment per row.
+#
+# SOURCE: docs/grasp_table_20260808_135745.log (script:
+# scripts/06_measure_grasp_table.sh), the "OK" rows only, post the
+# 2026-08-08 stall_velocity_threshold and gz_settle_pose_windowed fixes
+# (see docs/HANDOFF_M3.md). grip_angle_rad is joint/fingertip-pose driven,
+# independently validated (achieved angle at the 40mm anchor landed in the
+# established 0.4358-0.4593 rad cluster) — trust this column.
+#
+# USED BY: ur5e_pick_place's M3 grasp node, TWO ways:
+#   1. Grasp-success verification: achieved joint angle at stall compared
+#      against grip_angle_rad (interpolated for object.size[grasp_width_axis]
+#      if it doesn't land on an exact row) within grasp.grasp_tolerance_rad
+#      (config/scene.yaml). Outside tolerance -> GRIPPER_GOAL_REJECTED,
+#      abort the cycle rather than trusting the ROS action's own stalled:true
+#      result. See docs/HANDOFF_M3.md, "Pad-centre correction and
+#      grasp-success verification."
+#   2. NOT YET used for preclose targeting (gripper.preclose_heuristic in
+#      scene.yaml is still the old single-scalar placeholder) — a natural
+#      follow-up, not done in this pass.
+#
+# NOT included here: pad_centre_offset_m and width_at_grip_m from the source
+# log. pad_centre_offset_m in that log is INVALID for all 5 rows (see the
+# log's own AMENDMENT section) — the corrected single-anchor value lives in
+# config/scene.yaml's grasp.pad_centre_offset instead, not here.
+# width_at_grip_m isn't consumed by anything yet.
+#
+# Object width must fall within [min(rows), max(rows)] to be used —
+# extrapolating past the measured range is not supported; a width outside
+# this range is a CONFIG_ERROR in the M3 node, not a silent linear guess.
+rows:
+  - width_m: 0.030
+    grip_angle_rad: 0.5378679450464813
+  - width_m: 0.035
+    grip_angle_rad: 0.48892283785797114
+  - width_m: 0.040
+    grip_angle_rad: 0.45129290607397937
+  - width_m: 0.045
+    grip_angle_rad: 0.40553168907536147
+  - width_m: 0.050
+    grip_angle_rad: 0.3589193249401519

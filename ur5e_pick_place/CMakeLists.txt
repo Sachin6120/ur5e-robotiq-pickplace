@@ -14,6 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -58,10 +59,28 @@ ament_target_dependencies(m2_cartesian_approach
   geometry_msgs
 )
 
+# --- M3: pad-centre-corrected grasp + grasp-success verification ------------
+add_executable(m3_grasp src/m3_grasp.cpp)
+target_include_directories(m3_grasp PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(m3_grasp
+  rclcpp
+  rclcpp_action
+  moveit_ros_planning_interface
+  moveit_core
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  geometry_msgs
+  control_msgs
+)
+
 install(TARGETS
   m1_joint_goal
   static_scene_tf
   m2_cartesian_approach
+  m3_grasp
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
