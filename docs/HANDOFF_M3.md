@@ -1662,6 +1662,54 @@ only the pad-centre term. **n=2 on the direction question (settled); n=1
 each on any magnitude number — do not tune `pad_centre_offset`'s value from
 this alone.**
 
+## Stall-angle/tcp_offset-interpolation check: ruled out, not partial
+
+Written 2026-08-09, same session. The probe above left one candidate
+thread for the 32mm residual: the successful trial's achieved stall angle
+(0.3854 rad) differs from `grasp_table.yaml`'s 45mm reference row (0.4055
+rad), and `tcp_offset` is known to vary ~13.6mm across the full aperture
+range — so `tcp_offset` itself, evaluated at the trial's ACTUAL achieved
+angle rather than the reference row's angle, might account for some of the
+32mm. Testable with arithmetic already on hand, no new sim run: interpolate
+`tcp_offset_at_grip_m` between the two `docs/grasp_table_20260808_135745.log`
+rows bracketing 0.3854 rad (45mm row: angle=0.40553, tcp_offset=0.120405;
+50mm row: angle=0.35892, tcp_offset=0.119550 — 0.3854 falls 43.2% of the
+way toward the 50mm row) and compare against the 0.120405 value actually
+used (the 45mm exact-width row, not angle-adjusted).
+
+**Result: interpolated tcp_offset = 0.120036m, a delta of only 0.37mm from
+what was used — 1.1% of the 32mm residual.** Cross-checked against a
+second, independent source (the wider free-space joint-angle-vs-tcp_offset
+table in `scene.yaml`'s own comments, `05_measure_gripper_geometry.sh`'s
+output, interpolated between its 0.2 and 0.4 rad rows): 0.120064m, only
+0.03mm apart from the grasp-table interpolation — the two methods agree,
+so this isn't an artifact of which table was used.
+
+**This rules the thread out, rather than confirming a partial explanation.**
+If it had accounted for even ~5mm, the stall-angle/aperture-coupling story
+would be a real partial answer with ~27mm left over. At 0.37mm it's
+essentially nothing — `tcp_offset`'s own known aperture-dependence is NOT
+where the 32mm comes from. The correction's SIGN is confirmed right (per
+the zero-offset probe above); this arithmetic now also rules out one
+specific, plausible-sounding candidate for the MAGNITUDE gap.
+
+**Reframes, doesn't resolve, the "one phenomenon or two" question.** The
+achieved angle being lower than the table's reference (0.3854 vs 0.4055 —
+fingers stopped less closed than expected for a true 45mm object) could
+still mean the gripper contacted something effectively wider than 45mm at
+whatever depth it actually reached — i.e. the early stall and the z-shortfall
+could be the SAME event seen two ways (off-target contact producing both a
+smaller angle and a shallower position), not two independent effects. This
+arithmetic doesn't test that hypothesis directly, but by eliminating the
+"boring" explanation (tcp_offset's documented aperture-curve, applied
+mechanically) it makes the same-underlying-cause reading more likely by
+elimination, not because anything new confirms it. **Not yet checked**:
+a live trial specifically designed to separate the two (e.g. does the
+z-shortfall track spawn/target depth the way Blocker 2's falsification test
+tracked spawn height 1:1, isolating position from angle) would be the
+analogous decisive check, same method that closed Blocker 2 — not run this
+session.
+
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not
 speculatively, by prediction-then-measurement. M3 has its first passing
