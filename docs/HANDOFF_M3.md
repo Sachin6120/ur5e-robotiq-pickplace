@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. ROOT QUESTION REFRAMED: direct velocity instrumentation shows the SAME small free-space command (0.096 rad from open) produces three distinct, reproducible outcomes depending on context — clean fast success inside grasp trials (4/4), clean fast failure standalone (5/5, zero movement), and slow/absent creep (2 occurrences) — not reconciled by any theory tested tonight (object contact, clearance, or "recent activity" all ruled out or contradicted). Likely a gripper mechanism / physics-engine friction characteristic, not a targeting or contact question. Highest-priority open item for M3. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. ROOT QUESTION REFRAMED, twice: the same small free-space command succeeds 4/4 from the C++ node but fails 5/5 standalone (CLI), a caller-dependent split — NOT a friction/mechanism finding (retracted after challenge: exact-zero position/velocity for 95s isn't physical). Controller-inactive, competing-MoveIt-client, and topic-staleness all checked live and ruled out. Genuinely unexplained; likely candidate (untested) is a CLI-vs-node action-client timing difference. Highest-priority open item for M3. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2602,20 +2602,49 @@ preceded by recent activity, the arm's joint-space move to pre-grasp) is
 consistently reliable. Recent activity alone does not cleanly predict
 which calls succeed.
 
-**Not resolved tonight.** This looks like a genuine, previously-unknown
-characteristic of this gripper's mechanism or the underlying physics
-engine's friction/stiction model for small, dead-stop position changes —
-not something ad-hoc live probing is well-suited to fully characterize.
-Flagging clearly rather than guessing further: a proper investigation
-needs a controlled, repeatable experimental design (e.g., systematically
-varying what immediately precedes the command — arm motion, gripper
-motion, idle time — across many trials each, not one-off probes), and
-likely needs to look at the physics engine's own contact/friction
-parameters for this joint, not just the ROS-level stall detection. This
-is now the most important open item for M3, ahead of any further
-`preclose_margin_rad` tuning, since it may be the true common cause behind
-the 0.09-0.10 rad clustering seen all session — with or without an
-object present.
+**Not resolved tonight — and NOT a friction/mechanism finding, corrected
+before it went in as one.** Challenged directly: exactly-zero position
+AND exactly-zero velocity, held for up to 95 seconds, does not look like
+stiction — genuine friction/creep produces small nonzero wander (like the
+60-90s case's measurable 0.048/0.056/0.071 rad progression), not a value
+identical to the noise floor for a minute and a half. And the split is by
+CALLER, not by physical condition: standalone CLI 5/5 failure, in-node
+C++ client 4/4 success, same joint, same sim, same command in substance —
+physics can't distinguish which process sent the goal, so something about
+the software CONTEXT differs, not the mechanism.
+
+**Three cheap, direct checks, all done live, all ruled out — not left as
+untested candidates:**
+1. **Is the controller active at the moment of the call?** `ros2 control
+   list_controllers` immediately before sending: `gripper_controller
+   ... active`. Confirmed clean.
+2. **Is a competing client interfering?** `ros2 action info
+   /gripper_controller/gripper_cmd` showed `moveit_simple_controller_manager`
+   registered. Killed `move_group` entirely (verified: no `moveit`/
+   `move_group` process survives, no orphans). Re-ran the identical
+   standalone test: **still fails identically** (`stalled: true` at
+   `position≈0`, `2.34s`). Not MoveIt. (Note: the client listing itself
+   turned out to be STALE — it still showed `moveit_simple_controller_manager`
+   even after that process was confirmed dead, meaning `ros2 action info`'s
+   client list reflects DDS discovery history, not necessarily live
+   connections — a caveat for trusting that command's output at face value
+   in future checks.)
+3. **Is `/joint_states` stale?** Two samples ~2s apart, header timestamps
+   advanced by ~2.7s (sim time tracking wall-clock normally). Not a frozen
+   read.
+
+**Genuinely unexplained, not "previously-unknown mechanism property."**
+That framing was too easy to reach and too hard to falsify — retracted.
+What's actually established: the failure is real, reproducible (6+ times
+tonight), caller-dependent (CLI vs. in-node client), and NOT explained by
+controller state, a competing client, or topic staleness. What's not yet
+checked: whether the CLI tool's own action-client implementation has some
+timing/subscription difference from a persistent `rclcpp_action::Client`
+in a spinning node (e.g. a race between goal acceptance and the
+realtime control loop's next cycle actually picking up the new command
+before the stall-clock starts) — this is the most likely remaining
+candidate but is NOT yet confirmed, just not yet ruled out. Next session
+should start here, not with a multi-trial physical experiment design.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
