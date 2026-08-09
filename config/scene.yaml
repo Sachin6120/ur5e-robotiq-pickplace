@@ -287,9 +287,24 @@ grasp:
   # for the final close-and-verify call to detect — this margin keeps a
   # real, small residual stroke for that check to act on.
   #
-  # UNVALIDATED VALUE: 0.05 rad is a starting point, not measured. Refine
-  # once live trials exist with pre-close active.
-  preclose_margin_rad: 0.05
+  # UPDATED 2026-08-09, same session: 0.05 rad live-tested and found to
+  # cause a NEW failure -- a trajectory capture (position-only ground-truth
+  # polling of the object throughout the descent, no mesh/orientation math)
+  # showed the object starts moving ~1.1s into the ~2.0s Cartesian descent,
+  # well before reaching target depth. Root cause: pre-closing to
+  # (0.4055 - 0.05 = 0.3555 rad) narrows true pad-to-pad clearance to only
+  # ~1.4mm/side (correcting an earlier clearance miscalculation that used
+  # the fingertip LINK's raw y-separation directly, not accounting for the
+  # ~28mm/side inward pad inset from that reference point -- see
+  # docs/HANDOFF_M3.md) against a measured ~8.7mm lateral positioning
+  # error -- a lateral capture failure, not a vertical/knuckle one. 0.30
+  # targets ~0.1 rad pre-close (~12.6mm/side clearance, comfortably over
+  # the measured error) -- STILL UNVALIDATED, and trades away most of
+  # pre-close's original Z-descent-into-free-air benefit (only ~25% of the
+  # full closing motion happens before descent now, not ~90%). May reopen
+  # the original h=45mm stall-at-~0 symptom pre-close was built to fix.
+  # Test before trusting either number.
+  preclose_margin_rad: 0.30
 
 # ---------------------------------------------------------------------------
 gripper:
