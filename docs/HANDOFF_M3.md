@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented (m3_grasp.cpp) and validated in free air. Neither the 90mm nor the 45mm-cube object grasps cleanly yet. A self-found bug in this session's Z-axis mesh analysis (physically-impossible prediction on a sanity check) means the deeper "why" for the pre-close result is NOT reliably established — retracted, not reported as fact. Y-axis knuckle-overlap finding (27.4mm) stands, independently cross-validated. Next: GUI look or position-only trajectory capture, not more formula-guessing. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_preclose_test_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; trajectory capture (position-only, no mesh math) CONFIRMED a lateral-capture failure at the original preclose_margin_rad=0.05 (clearance math also corrected: ~1.4mm/side, not ~29mm). Increased margin to 0.30: tcp_error 65mm->8.1mm, object held stably not knocked away, but achieved angle (0.091 rad) still far short of the 0.4055 rad expected — genuinely caught but not properly gripped. Not yet passing. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2131,6 +2131,80 @@ of the object's ground-truth pose throughout the descent trajectory, to
 at least pin down WHEN contact starts without relying on the buggy
 mesh-Z method. Both are more reliable than another formula built on the
 same unverified geometric reasoning.
+
+## Trajectory capture: lateral-capture hypothesis confirmed directly, clearance math corrected, real progress
+
+Written 2026-08-09, same session. Ran the position-only trajectory
+capture instead of continuing to guess: a background poller sampled
+`pick_target`'s ground-truth pose every 0.2s throughout an entire grasp
+attempt (pre-close through final close), correlated against the run log's
+own stage timestamps. No mesh, no orientation math — pure position, so it
+can't inherit the Z-axis bug found above.
+
+**Result: the object starts moving ~1.1s into the ~2.0s Cartesian
+descent** — well before reaching target depth, well before the final
+close phase even begins. This is unambiguous: a pad (or the gripper more
+generally) is contacting the object DURING descent, not during closing.
+Confirms the first of the three predicted outcomes — lateral misalignment,
+not a vertical/knuckle mechanism. Evidence:
+`docs/m3_grasp_traj_test1_20260809_172336.log` (run log) +
+`docs/m3_object_trajectory1_20260809_172336.txt` (raw position trace).
+
+**Corrected a second calculation error, this one in clearance, not
+Z-axis.** The earlier "~29mm of pad clearance" estimate used the
+fingertip LINK's raw Y-separation directly against the object's
+half-width — wrong, because the actual rubber pad sits inset from that
+link's reference point (an existing, already-documented project note:
+"pads sit roughly 28mm inward per side," inferred, not directly measured
+before now either). Correcting for that inset: true pad-to-pad clearance
+at the original `preclose_margin_rad=0.05` pre-close angle (0.346 rad) is
+only **~1.4mm per side** — not 29mm — against a measured ~8.7mm lateral
+error. Capture failure is exactly what this predicts. At full open,
+corrected clearance is ~17mm/side, comfortably absorbing that same error —
+consistent with why the ORIGINAL (no pre-close) descent never had this
+problem.
+
+| angle (rad) | fingertip y-sep (mm) | corrected clearance/side (mm) |
+|---|---|---|
+| 0.0 (full open) | 135.2 | 17.1 |
+| 0.1 | 126.2 | 12.6 |
+| 0.2 | 116.5 | 7.8 |
+| 0.346 (old preclose target) | 103.7 | 1.4 |
+| 0.385+ (near/at grip angle) | ~102.5 | 0.8 |
+
+**Increased `preclose_margin_rad` from 0.05 to 0.30** (targeting ~0.1 rad
+pre-close, ~12.6mm/side clearance, comfortably over the 8.7mm error) and
+re-ran the SAME trajectory capture. **Real, substantial improvement**:
+`tcp_error_m` dropped to **8.1mm** (vs. 65mm before), and the gripper
+result changed from a clean miss to genuine, sustained contact —
+`TIMED_OUT_HELD` at `achieved=0.0910 rad`, holding stably. Trajectory
+data: object stationary through pre-close, a brief ~5mm lift and small
+lateral shift (~7mm/2mm) about 0.9-1.3s after pre-close completes, then
+**settles and holds rock-steady for the remaining ~10s of capture** — not
+knocked away this time, genuinely caught and held. Evidence:
+`docs/m3_grasp_traj_test3_20260809_172336.log` +
+`docs/m3_object_trajectory3_20260809_172336.txt`.
+
+**Not yet a passing grasp**: `achieved=0.0910 rad` is far short of the
+table's `0.4055 rad` expected angle for this object — the gripper is
+holding the object at a much wider aperture than a real grip should need,
+suggesting either an off-centre contact (one pad touching well before the
+other) or the object tipping/wedging rather than being squarely
+straddled. Genuinely a different, more specific question than what's been
+chased so far — not investigated further this session.
+
+**One unexplained anomaly, flagged not chased**: an intermediate re-run at
+`preclose_margin_rad=0.30` (before the one reported above) logged a
+pre-grasp/grasp target matching the OLD 90mm object's height
+(`0.9288`/`1.0288`) despite `scene.yaml` verified, both before and after,
+to correctly hold the 45mm cube's values. Did not reproduce on immediate
+retry with the identical procedure (confirmed via a direct Python read of
+`scene.yaml` immediately before that retry's launch). No second copy of
+`scene.yaml` found on this filesystem (checked via `find /`) that could
+explain a stale read. Not chased further given it didn't reproduce and
+time was better spent on the confirmed finding above — but worth
+remembering if a similarly stale-looking target value shows up again in a
+future session.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
