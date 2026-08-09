@@ -82,7 +82,21 @@ table:
 object:
   name: pick_target
   type: box
-  size: [0.045, 0.045, 0.090]       # x, y, z  [m]
+  # HEIGHT CHANGED 2026-08-09 (0.090 -> 0.045, a cube): the 90mm object
+  # left only ~4.7mm of vertical clearance between the gripper's inner
+  # knuckle links and the object's top face even under perfect grasp
+  # positioning -- a structural gripper/object-HEIGHT incompatibility, not
+  # a targeting bug. See docs/HANDOFF_M3.md, "Positioned wrong or built
+  # wrong? -- resolved via URDF geometry." Formula derived and validated
+  # there: knuckle_clearance_mm ~= 50 - (height_mm / 2), confirmed against
+  # the live-measured 4.7mm at height=90mm (predicts 5.0mm). At the new
+  # 45mm height: ~27.5mm clearance -- comfortable, not marginal.
+  # WIDTH is UNCHANGED (still 0.045m) specifically so this stays inside
+  # the already-measured grasp table (docs/grasp_table_20260808_135745.log)
+  # -- tcp_offset, pad_centre_offset, grip_angle, and width_at_grip are all
+  # functions of aperture/width, not height, so none of that measured data
+  # is invalidated by this change.
+  size: [0.045, 0.045, 0.045]       # x, y, z  [m]
   grasp_width_axis: 0               # index into size[] the fingers close ACROSS
                                     #   -> object width = size[grasp_width_axis]
   mass: 0.150                       # [kg]
@@ -92,7 +106,7 @@ object:
   pick_pose:
     x:  0.450
     y: -0.150
-    z:  0.795
+    z:  0.7725
     roll:  0.0
     pitch: 0.0
     yaw:   0.0
@@ -100,7 +114,7 @@ object:
   place_pose:
     x:  0.450
     y:  0.200
-    z:  0.795
+    z:  0.7725
     roll:  0.0
     pitch: 0.0
     yaw:   0.0

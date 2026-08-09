@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. ROOT CAUSE FOUND and CONFIRMED via URDF mesh geometry: inner knuckle links overlap the object's footprint by 27.4mm laterally, and even under perfect depth positioning only 4.7mm of vertical margin exists before they hit the object's top — a structural gripper/object-HEIGHT incompatibility (90mm object, not the object's 45mm width), not a `pad_centre_offset` calibration gap. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Root cause of the 32mm residual confirmed via URDF mesh geometry: knuckle/object-HEIGHT incompatibility. Object changed to 45mm cube per the derived clearance formula — depth-tracking confirmed fixed (tcp_error 32mm->4.1mm), but grasp still fails: a DIFFERENT mechanism (fingertip pads' own descent-while-closing) now binds instead. Object geometry choice still open. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2002,6 +2002,70 @@ object, is `object.size`'s HEIGHT (currently 0.090m) relative to the
 comfortably under that) would let the knuckle clear the top even at the
 correct mid-height grasp depth. **Not yet decided or acted on** — this is
 a finding to inform that decision, not a decision itself.
+
+## Object height changed to 45mm cube — depth fix confirmed, a DIFFERENT problem exposed
+
+Written 2026-08-09, same session. Per the formula above
+(`knuckle_clearance_mm ≈ 50 - height_mm/2`, validated against the live
+4.7mm measurement at height=90mm), changed `config/scene.yaml`'s
+`object.size` from `[0.045, 0.045, 0.090]` to `[0.045, 0.045, 0.045]` (a
+cube — width unchanged, so the already-measured grasp table stays valid)
+and updated `pick_pose.z`/`place_pose.z` from 0.795 to 0.7725
+(`table.surface_z + new_size.z/2`). Predicted ~27.5mm knuckle clearance at
+this height, comfortable margin over the 90mm object's marginal 4.7mm.
+
+**Depth tracking: confirmed, dramatically.** `tcp_error_m` dropped from
+32mm (90mm-tall object) to **4.1mm** — reproduced identically on two runs
+(`docs/m3_grasp_cube_test_*.log`, `m3_grasp_cube_test.csv`/`cube_test2.csv`).
+This validates the underlying reasoning: with the knuckle interference
+removed, the arm actually reaches its intended target depth for the first
+time this session, matching M2's own established tracking accuracy far
+more closely than any prior M3 trial. The formula's core claim — that the
+32mm residual was a knuckle/height problem, not a `pad_centre_offset`
+calibration gap — is now confirmed by more than just the static geometry
+argument: fixing the geometry fixed the depth-tracking number directly.
+
+**But the grasp itself did NOT succeed — a different, newly-exposed
+mechanism, not a leftover of the old one.** Both cube-height runs reported
+`STALLED` at `achieved=-0.0000 rad` (essentially zero — the gripper never
+meaningfully closed at all) in ~0.3s, far faster than any genuine contact
+stall this session (all previous stalls, clean or confounded, took
+1.7-2.9s). Reproduced identically (same `tcp_error_m=0.0041` to 4 decimal
+places on both runs) — not noise, a deterministic consequence of the new
+geometry. Checked, not assumed: the object was confirmed UNMOVED
+(ground-truth `pick_target` position exactly matches its settled spawn
+pose after the "stall") — this is not another knock-away.
+
+**Root cause, checked against the same fingertip sweep data used above,
+not guessed.** The knuckle-clearance formula only modeled the KNUCKLE's
+geometry (aperture-invariant, per the Y-axis rotation argument). It did
+NOT account for the FINGERTIP PADS' own vertical travel as they close —
+which the earlier sweep data already contained but wasn't applied here:
+pads descend ~8.5mm just going from 0.0 to 0.3 rad of closing. At the new,
+shorter object's top (0.795), the pads sit only **6.0mm above** it at
+full-open (measured this run: pad z=0.801) — meaning the first ~0.15-0.2
+rad of closing motion (a small fraction of the ~0.4055 rad needed for a
+real grip) is enough for the pads themselves to descend into contact with
+the object's top face, before any real closure happens. **Shrinking the
+object fixed the knuckle's problem and shifted the binding constraint to
+the pads' own descent-while-closing — a mechanism the "positioned wrong or
+built wrong" analysis didn't model, because it only asked whether the
+KNUCKLE clears at a FIXED grasp depth, not whether the PADS clear while
+actively closing.**
+
+**Consequence, not yet resolved**: there may be a genuine trade-off here,
+not a simple monotonic "shorter is better." A taller object gave the pads
+more downward travel budget before their own closing-descent reached the
+top face (previously 9-11mm of headroom AT FULL OPEN, i.e. pads already
+past the top before closing even started) but put the KNUCKLES in
+contact instead. A shorter object clears the knuckles but leaves LESS
+headroom for the pads' own descent. **Not yet checked**: whether some
+intermediate height, or a small adjustment to `pad_centre_offset` /
+`tcp_offset` (targeting slightly ABOVE the object's exact mid-height,
+trading some pad-centre accuracy for descent headroom), resolves both
+constraints simultaneously — this needs the SAME kind of rigorous,
+measured treatment the knuckle question got, not a guess. Object geometry
+choice for M3 is still open, not settled by this session.
 
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not
