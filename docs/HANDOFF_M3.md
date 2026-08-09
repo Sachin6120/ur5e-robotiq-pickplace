@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. 32mm z-shortfall residual open (likely `pad_centre_offset` magnitude/direction, not the table). | docs/m3_grasp_run3_test2_*.log — see "Both tests re-run against the table world: prediction confirmed, first-ever grasp SUCCESS" below |
+| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. `pad_centre_offset` direction CONFIRMED correct (0-offset probe); 32mm z-shortfall residual open, likely magnitude, not sign. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_zero_pad_offset_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1590,6 +1590,77 @@ before this was diagnosed as move_group simply not running. Worth a
 startup guard (parallel to the existing base-pose guard) that fails fast
 and names the missing precondition, rather than a silent hang — not done
 this session, flagged as a real gap.
+
+## pad_centre_offset=0 probe: correction direction confirmed right, residual is separate
+
+Written 2026-08-09, same session, immediately after the table fix commit.
+The 32mm z-shortfall above is roughly 2.4x `pad_centre_offset` (13.433mm)
+— specific enough a signature to be worth checking before concluding
+"the correction is slightly off": could instead mean the correction is
+applied backwards, or double-counted against `tcp_offset`. One cheap probe
+settles it while the sim is warm: re-run the identical grasp with
+`pad_centre_offset` forced to 0.0 (via a scratch copy of scene.yaml passed
+as `scene_file:=...`, not editing the real config) and check which way the
+z-error moves. Object respawned fresh via `08_spawn_pick_object.sh`,
+gripper reopened first, same pick_pose, same sim instance.
+
+**Result: the error GREW, not shrank.**
+
+| | with correction (0.013433) | without correction (0.0) |
+|---|---|---|
+| commanded grasp tool0 target z | 0.9288 | 0.9154 |
+| ground-truth `grasp_tcp` z | 0.827177 | 0.8376 |
+| z-shortfall vs. object (0.795) | 32.2mm | 42.6mm |
+| total `tcp_error_m` | 0.032955 | 0.0436 |
+| grasp-success check | outside tolerance (0.3854 vs 0.4055 expected) | outside tolerance (0.3631 vs 0.4055 expected) |
+
+Growth = 10.4mm, in the same direction and roughly the same order as
+`pad_centre_offset` itself (13.4mm) — not ~2x it, which rules out
+double-counting (that would predict the *opposite* trial, the
+WITH-correction one, showing roughly double the single-offset error, not
+observed). **This settles the question the design doc had flagged as
+"NOT YET LIVE-VERIFIED": the correction's direction (add, not subtract) is
+right.** Removing it makes the grasp worse, not better.
+
+**Sanity-checked the two numbers against each other, not taken at face
+value**: `ground-truth grasp_tcp` is computed in `m3_grasp.cpp` as
+`tool0_actual + tool0_basis * (0, 0, corrected_offset)` — the SAME
+`corrected_offset` used both to command the approach depth and to
+reconstruct the reported TCP position afterward. That means a perfectly-
+tracking arm would report ~0 error regardless of the offset's correctness
+(the offset cancels itself out of the reconstruction) — UNLESS the arm's
+actual descent gets physically stopped short of its open-loop commanded
+target by genuine contact resistance, which is exactly what should happen
+here (the Cartesian descent doesn't know about the object; it's a kinematic
+plan, and the object is physically in the way). Backed out the implied
+actual tool0 height from both trials
+(`tool0_actual_z = achieved_tcp_z + offset_used`): **0.9610m (with
+correction) vs. 0.9580m (without), a 3.0mm difference** — i.e. the arm
+stalled at essentially the SAME real-world height both times, independent
+of which offset was commanded, consistent with contact (not the open-loop
+target) determining where the descent actually stops. This means the
+10.4mm growth in reported error is very close to a pure arithmetic
+consequence of using a smaller offset in the reconstruction, not a
+different physical outcome — exactly the kind of falsification check this
+project's "a suspiciously good/specific number gets a check" discipline
+calls for before trusting a two-point comparison.
+
+**What this does NOT settle, flagged as the next open question**: the
+32mm residual with the correction applied. Backing out the implied true
+offset from `tool0_actual_z ≈ 0.961` and the object surface at `0.795`:
+`0.961 - 0.795 ≈ 0.166m` needed vs. `0.133838m` currently used — suggesting
+`tcp_offset + pad_centre_offset` may be undershooting the TRUE tool0-to-
+pad-centre distance by roughly another 32mm at this trial's achieved stall
+angle (0.3854 rad), not that the sign is wrong. One candidate thread, not
+yet checked: this trial's achieved angle (0.3854 rad) differs from
+`grasp_table.yaml`'s 45mm row (0.4055 rad, itself measured at 0.40553 rad
+in the original sweep) — and `tcp_offset` is known to vary ~13.6mm across
+the aperture range (scene.yaml's own tcp_offset table), so a stall at a
+different angle than the table's reference row could mean the *tcp_offset*
+component (not just pad_centre_offset) is off for this specific trial, not
+only the pad-centre term. **n=2 on the direction question (settled); n=1
+each on any magnitude number — do not tune `pad_centre_offset`'s value from
+this alone.**
 
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not
