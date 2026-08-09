@@ -2248,6 +2248,19 @@ extended, unbounded diagnostic).
 A single extended-bound run separates these two completely different
 next investigations before either gets chased on a guess.
 
+**Prediction, written before running.** Leaning toward "keeps closing
+toward ~0.4055" (a too-short bound, same shape as the original 60-90s
+stall-latency finding), for two reasons already on record: (1) the
+trajectory data showed the object still actively settling — lifting
+~5mm, shifting laterally — in the same window the joint was timing out,
+consistent with an ongoing, not-yet-resolved contact process rather than
+a static wedge; (2) `TIMED_OUT_HELD`'s defining property is that velocity
+never stayed under threshold for a clean 0.2s, which is easier to explain
+by continued (if slow/damped) motion than by a truly static jam, though
+a genuine wedge with persistent micro-vibration could also produce that
+signature — this prediction could be wrong. Extending the bound to 30s
+and logging the master joint over time settles it either way.
+
 **Also queued for next session**: port `GRIPPER_HOLD_ELAPSED_S` from
 `scripts/lib/gz_settle.sh` into `m3_grasp.cpp`'s `gripper_close_and_hold`
 — reconstructing elapsed time from log timestamps after the fact is
