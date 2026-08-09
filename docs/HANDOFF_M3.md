@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. ROOT CAUSE FOUND for the 32mm residual: inner knuckle links have NEGATIVE lateral clearance (-9.8mm) around this 45mm object — a gripper/object-width compatibility limit, not a `pad_centre_offset` calibration gap. Fingertip pads are correctly positioned; the inner knuckle assembly cannot clear this width at any standoff. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
+| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. ROOT CAUSE FOUND and CONFIRMED via URDF mesh geometry: inner knuckle links overlap the object's footprint by 27.4mm laterally, and even under perfect depth positioning only 4.7mm of vertical margin exists before they hit the object's top — a structural gripper/object-HEIGHT incompatibility (90mm object, not the object's 45mm width), not a `pad_centre_offset` calibration gap. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1888,12 +1888,120 @@ not a targeting-calibration gap — consistent with (and now mechanistically
 explaining) point 3's capture-window-edge finding above: push the standoff
 far enough and the interaction changes from "knuckle clips the top" to "the
 whole approach misses/glances," never passing through a clean zero-shortfall
-regime in between for this object width. **Not yet checked**: what the
-actual minimum clear object width is for this gripper (could be derived
-from the inner knuckle links' measured half-spacing, 12.7mm, i.e. objects
-narrower than ~25mm might clear structurally where 45mm does not) — this
-bears directly on `object.size` and M3's eventual object choice, not just
-on `pad_centre_offset`.
+regime in between for this object width. **SUPERSEDED by the section immediately below** — the "narrower object
+width" framing here was wrong; the real constraint turned out to be object
+HEIGHT, not width, and is now rigorously confirmed via mesh geometry, not
+inferred from one link-origin snapshot. Left here struck through in
+spirit (not deleted) so the reasoning trail stays visible, same practice
+as this doc's other corrections.
+
+## "Positioned wrong or built wrong?" — resolved via URDF geometry, not a GUI look
+
+Written 2026-08-09, same session, direct response to a legitimate
+methodological challenge: does inner-knuckle lateral spacing actually
+change with aperture (25.3mm fixed at ALL apertures would be geometrically
+suspicious for a 0-85mm-stroke four-bar), and are the knuckles positioned
+wrong (descent too deep) or is the gripper built wrong (structural
+incompatibility)? Both answered with data, not a GUI look — the GUI isn't
+available to this agent for direct visual inspection, but URDF/mesh
+geometry is, and turned out to be decisive.
+
+**Check 1 — swept the master joint 0.0 to 0.767 rad (10 points), same
+method as `05_measure_gripper_geometry.sh`, tracking inner-knuckle,
+outer-knuckle, and fingertip Y-separation and Z-position relative to
+`wrist_3_link` at each step** (no object in the scene — pure free-space
+gripper-geometry characterization). Result: inner-knuckle Y-separation is
+**dead flat at 25.3mm across the entire range** (25.3mm at 0.0 rad,
+25.3mm at 0.767 rad, no measurable variation in between). Outer knuckle
+similarly flat (61.0mm -> 60.9mm). Fingertip pads DO vary substantially
+with aperture (135.2mm open -> 102.5mm at the achieved stall angle 0.385
+rad -> 102.6mm near-closed) — confirming the sweep methodology is
+sound and the flatness of the knuckle links is real, not a sampling
+artifact. Full sweep evidence: `docs/m3_knuckle_sweep_20260809_151156.log`.
+
+**Why the knuckle links are aperture-invariant — checked in the URDF, not
+assumed.** `robotiq_2f_85_macro.urdf.xacro`: both
+`robotiq_85_left_inner_knuckle_joint` and `robotiq_85_left_knuckle_joint`
+are declared with `<axis xyz="0 -1 0" />` — rotation exactly about the Y
+axis, the SAME axis the fingers separate along. Rotation about an axis
+cannot change any point's coordinate ALONG that axis — so not just the
+link's reported origin (which sits on the rotation axis by construction)
+but the link's ENTIRE body, wherever its mesh actually extends, has a
+Y-coordinate that is mathematically invariant under the joint's rotation.
+This is a real, deliberate property of this gripper's kinematics (the
+proximal linkage stays close to the mounting plane; only the distal pads
+swing outward as the four-bar opens), not a URDF/mimic bug and not a
+simulation artifact.
+
+**Correcting a real gap in the earlier "what touches first" analysis,
+directly, before it went further**: the earlier −9.8mm clearance number
+used each link's reported GROUND-TRUTH ORIGIN, which for a link on a
+fixed-axis pivot is the pivot location, not necessarily where its physical
+COLLISION MESH extends to. A body can pivot at one point while its mass
+sits elsewhere entirely. This needed checking, not defending. Read the
+actual `<collision>` mesh geometry from the URDF and computed real
+bounding boxes directly from the STL files
+(`left_inner_knuckle.stl`, `left_knuckle.stl`, in
+`/opt/ros/jazzy/share/robotiq_description/meshes/collision/`):
+
+| link | local Y bbox (mm) | world Y-span (pivot + bbox) | object Y-span | overlap |
+|---|---|---|---|---|
+| inner knuckle (left) | −17.35 to +17.65 | [−0.1555, −0.1205] | [−0.1731, −0.1281] | **27.4mm** |
+| outer knuckle (left) | −8.08 to +8.48 | [−0.1282, −0.1116] | [−0.1731, −0.1281] | 0.1mm (noise floor) |
+| fingertip pad | (varies with aperture — see sweep table) | clear at every tested aperture | — | none |
+
+**The inner knuckle's physical mesh overlaps the object's lateral
+footprint by 27.4mm — not the link-origin's -9.8mm approximation, the
+actual collision geometry, confirmed by three independent lines of
+evidence converging (empirical sweep flatness, the joint-axis rotation
+argument, and the STL mesh bounding box itself).** This is now
+established, not inferred from one ambiguous snapshot. The outer knuckle
+is genuinely borderline (0.1mm, within measurement noise) — not the
+culprit either way. Fingertip pads remain clear at every aperture tested,
+including the achieved stall angle, not just full-open.
+
+**"Positioned wrong or built wrong" — answered directly, with a margin
+number, not a guess.** Computed where the inner knuckle would sit if the
+pads were positioned EXACTLY at the object's true grasp depth (mid-height,
+0.795 — the intended, correct target, not the ~32mm-short position this
+session's trials actually reached). Fingertip-to-inner-knuckle Z offset
+(measured in the same sweep, at the achieved stall angle): 49.7mm (knuckle
+sits that much closer to tool0 than the pads). If pads sat exactly at
+0.795: knuckle would be at `0.795 + 0.0497 = 0.8447`, versus the object's
+top at `0.840` — **a margin of only 4.7mm, even under perfect
+positioning.** Combined with the knuckle's mesh having substantial local
+Z-extent (up to ~49mm) that sweeps through world space as the linkage
+closes, and zero-to-negative lateral clearance throughout, a 4.7mm margin
+is not survivable — contact is essentially inevitable regardless of
+getting the depth exactly right.
+
+**Answer: BUILT, not positioned.** This is a genuine structural
+incompatibility between this gripper's proximal-linkage geometry and this
+object's HEIGHT (90mm) — not a targeting/depth bug in `m3_grasp.cpp`'s
+composition, and not fixable by any `pad_centre_offset` value. The
+2F-85's 85mm figure describes fingertip STROKE (open-to-closed pad
+travel), which is a different quantity entirely from proximal-linkage
+ground clearance over a tall object — a real product can have a full
+85mm stroke and still have its knuckle assembly foul a sufficiently TALL
+object approached from directly above, exactly as this data shows.
+Whether the physical 2F-85 has this same limitation is unverified (this
+URDF is the best available model of it, per this project's own recon
+process, but recon confirmed joint names/limits, not this specific
+geometric interaction) — flagged, not asserted as a general 2F-85 fact.
+
+**Correction to the earlier (wrong) recommendation**: this is a HEIGHT
+constraint, not a WIDTH constraint. The earlier suggestion to check
+whether a narrower `object.size` width would clear was based on the
+flawed link-origin analysis and pointed at the wrong dimension entirely —
+width was never the limiting factor (fingertip pads clear at every
+aperture regardless of object width, up to their own stroke limit). The
+actual lever, if this needs a design-level fix rather than a different
+object, is `object.size`'s HEIGHT (currently 0.090m) relative to the
+~50mm fingertip-to-knuckle Z offset — an object with less than roughly
+50mm of half-height (i.e. under ~100mm tall, with real margin needed
+comfortably under that) would let the knuckle clear the top even at the
+correct mid-height grasp depth. **Not yet decided or acted on** — this is
+a finding to inform that decision, not a decision itself.
 
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not

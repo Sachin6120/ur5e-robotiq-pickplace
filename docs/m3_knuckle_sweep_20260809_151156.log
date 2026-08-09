@@ -1,0 +1,51 @@
+[ok] gripper open (robotiq_85_left_knuckle_joint) = 0.0000 rad, within 0.0000 +/- 0.05
+[settle] poses settled after 0.60s (max|delta over 0.15s|=0.000000 m)
+target=0.0 rad  wrist_3_z=0.9419
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.8/  -71.0mm
+  outer_knuckle: y_sep=   61.0mm  z_rel_to_wrist3(l/r)=  -67.6/  -63.2mm
+  fingertip     : y_sep=  135.2mm  z_rel_to_wrist3(l/r)= -113.3/ -103.7mm
+[settle] poses settled after 3.12s (max|delta over 0.15s|=0.000125 m)
+target=0.1 rad  wrist_3_z=0.9419
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.8/  -71.0mm
+  outer_knuckle: y_sep=   61.0mm  z_rel_to_wrist3(l/r)=  -67.6/  -63.2mm
+  fingertip     : y_sep=  126.2mm  z_rel_to_wrist3(l/r)= -116.4/ -107.5mm
+[settle] poses settled after 0.65s (max|delta over 0.15s|=0.000059 m)
+target=0.2 rad  wrist_3_z=0.9427
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.8/  -70.9mm
+  outer_knuckle: y_sep=   61.0mm  z_rel_to_wrist3(l/r)=  -67.6/  -63.1mm
+  fingertip     : y_sep=  116.5mm  z_rel_to_wrist3(l/r)= -119.1/ -110.7mm
+[settle] poses settled after 0.62s (max|delta over 0.15s|=0.000167 m)
+target=0.3 rad  wrist_3_z=0.9500
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.1mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  106.0mm  z_rel_to_wrist3(l/r)= -121.8/ -111.5mm
+[settle] poses settled after 0.64s (max|delta over 0.15s|=0.000193 m)
+target=0.385 rad  wrist_3_z=0.9529
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.2mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.1mm
+  fingertip     : y_sep=  102.5mm  z_rel_to_wrist3(l/r)= -122.3/ -112.5mm
+[settle] poses settled after 0.57s (max|delta over 0.15s|=0.000206 m)
+target=0.4 rad  wrist_3_z=0.9526
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.1mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  102.7mm  z_rel_to_wrist3(l/r)= -122.3/ -112.4mm
+[settle] poses settled after 0.63s (max|delta over 0.15s|=0.000078 m)
+target=0.5 rad  wrist_3_z=0.9527
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.1mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  102.7mm  z_rel_to_wrist3(l/r)= -122.3/ -112.3mm
+[settle] poses settled after 0.70s (max|delta over 0.15s|=0.000082 m)
+target=0.6 rad  wrist_3_z=0.9528
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.2mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  102.7mm  z_rel_to_wrist3(l/r)= -122.3/ -112.4mm
+[settle] poses settled after 0.69s (max|delta over 0.15s|=0.000111 m)
+target=0.7 rad  wrist_3_z=0.9531
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.1mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  102.5mm  z_rel_to_wrist3(l/r)= -122.4/ -112.4mm
+[settle] poses settled after 0.61s (max|delta over 0.15s|=0.000163 m)
+target=0.767 rad  wrist_3_z=0.9533
+  inner_knuckle: y_sep=   25.3mm  z_rel_to_wrist3(l/r)=  -72.6/  -70.2mm
+  outer_knuckle: y_sep=   60.9mm  z_rel_to_wrist3(l/r)=  -67.9/  -62.0mm
+  fingertip     : y_sep=  102.6mm  z_rel_to_wrist3(l/r)= -122.3/ -112.4mm
