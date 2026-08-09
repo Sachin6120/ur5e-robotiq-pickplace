@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. `pad_centre_offset` direction CONFIRMED correct (0-offset probe); 32mm z-shortfall residual open, likely magnitude, not sign. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_zero_pad_offset_*.log |
+| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. `pad_centre_offset` direction CONFIRMED correct; depth-tracking test shows a fixed ~z=0.96 clamp (not a simple offset error) causes the 32mm residual, mechanism still unexplained; a larger offset finds a capture-window edge (object ejected) instead of fixing it. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1709,6 +1709,89 @@ z-shortfall track spawn/target depth the way Blocker 2's falsification test
 tracked spawn height 1:1, isolating position from angle) would be the
 analogous decisive check, same method that closed Blocker 2 — not run this
 session.
+
+## Depth-tracking trial: two points confirm "clamped descent," a third exposes a different failure mode entirely
+
+Written 2026-08-09, same session. The stall-angle arithmetic left "one
+phenomenon or two" open — resolved (for the tested range) with the
+Blocker-2-style falsification test that question actually calls for:
+command the grasp at multiple depths (via `pad_centre_offset`, same
+scratch-scene.yaml method as the zero-offset probe) and check whether the
+achieved height tracks the command 1:1 (two effects: accurate tracking +
+a separate constant offset error) or stays fixed regardless of command
+(one phenomenon: something clamps the descent at a fixed physical height).
+Two points already existed from the probes above (`offset=0.0` and
+`offset=0.013433`); added a third at `offset=0.030` (commanded target
+~30mm shallower than the first point) to get a real spread.
+
+| trial | commanded tool0 target z | achieved z | shortfall |
+|---|---|---|---|
+| `offset=0.000` | 0.915405 | 0.9580 (back-calculated) | 42.6mm |
+| `offset=0.013433` | 0.928838 | 0.961015 (back-calculated) | 32.2mm |
+| `offset=0.030` | 0.945405 | **0.945405 (measured directly via `gz topic -e`, `wrist_3_link`)** | **0.0mm** |
+
+**First two points: a clean, strong confirmation of "clamped descent."**
+Commanded target moved 13.4mm between them; achieved height moved only
+3.0mm (0.958 -> 0.961). That's the Blocker-2 falsification signature for
+"something else has a fixed effect independent of what you asked for" —
+matches the "one phenomenon" prediction closely.
+
+**Third point does NOT extend that line — it's a qualitatively different
+outcome, not more of the same trend.** Reached its FULL commanded target
+with zero error (confirmed by direct `wrist_3_link` ground truth query,
+not just the log's own claim) — no clamping at all this time. But the
+object was found afterward displaced **180mm laterally and 23mm down**
+from its settled spawn pose, and the gripper closed to `REACHED_GOAL`
+0.7902 rad — the same signature as Test 1's original no-object trial
+(0.7901 rad). **The object got knocked away during descent/approach
+rather than the arm being stopped by it**, and by the time the close
+action ran, there was nothing there. A light 150g object can be shoved
+aside by a glancing, off-centre contact without generating enough reaction
+force to visibly deflect the arm's own trajectory — different from the
+first two trials, where contact was apparently square/centred enough
+(object backed by the rigid table, not pushed aside) to actually stop the
+arm's descent.
+
+**Reading this honestly, not force-fit into the two predicted buckets**:
+within the tested near-current-value range (`offset` 0 to 0.013433), the
+data cleanly supports "one phenomenon — a fixed clamp near z=0.96, most
+likely the fingers (at whatever aperture they're at during descent)
+contacting the object's top edge before tool0 reaches its open-loop
+commanded depth." Pushing `pad_centre_offset` substantially further
+(`0.030`, ~17mm past the current value) does not approach zero shortfall
+smoothly — it jumps into a THIRD regime: a glancing miss that ejects the
+object rather than a controlled grasp. This is the same shape of finding
+as Blocker 2's "capture window has a sharp edge, not a graceful one" — the
+useful correction range likely has a boundary not far past the current
+value, past which the geometry stops producing a clean square contact at
+all.
+
+**Practical consequence, not yet acted on**: the fix for the 32mm residual
+is NOT "increase `pad_centre_offset` until shortfall reaches zero" — the
+two-point data shows the clamp barely responds to a modest increase (3mm
+of movement for 13.4mm of command), and a larger increase found the edge
+of the capture window instead of approaching zero. The 32mm gap likely has
+a different root cause than `pad_centre_offset`'s magnitude alone —
+plausibly the finger/pre-close aperture geometry during descent, not
+purely a standoff-distance calibration question. **Not yet investigated**: what specifically stops the arm at z≈0.96.
+Checked one candidate mechanism immediately, before leaving it on record
+unverified: does the gripper pre-close to `gripper.preclose_heuristic`
+before or during the Cartesian descent, such that the fingers' own
+geometry at that narrower aperture could clip the object before tool0
+reaches full depth? **No** — grepped `m3_grasp.cpp` directly:
+`preclose`/`PRECLOSE` do not appear anywhere in it. The gripper stays
+fully open (near-max aperture, ~85mm, well wider than the 45mm object)
+through the entire Cartesian descent; closing only happens afterward via
+`gripper_close_and_hold`. This is itself a known, separately-tracked gap
+(`config/scene.yaml`'s `gripper.preclose_heuristic` is "still the old
+single-scalar placeholder," per "Other M3 prerequisites" below — "M3 will
+fail and look like a friction problem otherwise") but it rules OUT
+fingers-at-preclose-aperture as the mechanism behind THIS clamp, since
+there's no preclose happening at all yet. With the gripper fully open
+throughout descent, the fingers are spread wider than the object and
+shouldn't intersect its width — leaving the actual clamp mechanism
+genuinely unexplained: a GUI look at the descent in progress is the
+natural next step, not a code-reading guess.
 
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not
