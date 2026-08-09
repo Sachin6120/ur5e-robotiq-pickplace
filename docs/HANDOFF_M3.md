@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; object-shift and clearance explanations both checked and ruled out. The apparent CLI-vs-node split RESOLVED: not causal, a coincidence of timing — `probe_gripper_cmd` (new diagnostic tool) confirmed 4/4 success immediately after a fresh restart vs. 21/21 failure after ~30-40min of cumulative runtime, same as the earlier sim-degradation episode. Standing operational note added: this sim degrades within ~30min of heavy gripper testing, invisible to process-census checks — budget periodic mid-session restarts. Genuine open M3 question (why grip angle sometimes stalls near 0.09-0.10 rad even with clearance) is unchanged, to be revisited fresh. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2767,6 +2767,76 @@ Each time, the thing actually being studied (the robot, the grasp, the
 gripper) was fine, and the RIG was not. Worth treating "is this
 environmental" as a standing first question for the next surprising
 result, not just this one.
+
+## 2026-08-10: re-confirmation list, run — and a real methodology gap found in how it was run
+
+Written 2026-08-10, next session. Opened by re-running the three-item
+list above before touching the open M3 question, per the ordering
+`docs/HANDOFF_M3.md` itself specified (item 3 is the premise the open
+question depends on).
+
+**Sim had been running ~5.2 hours since last night** (`etimes` checked,
+not assumed) — restarted before anything else, `gz_assert_gripper_responsive`
+passed cleanly (2.93s).
+
+**Item 1 — lateral-capture magnitude: CONFIRMED, real.** New measurement:
+26.3mm total lateral shift (dx=25.4mm, dy=6.5mm), object resettling to
+exactly table height (0.7725) afterward — same "brief disturbance then
+resettle" shape as every prior observation. Movement began 1.31s into
+the Cartesian descent, matching last night's ~1.1s almost exactly. This
+number is larger than last night's individual readings (5mm/8.7mm/17mm)
+but consistent with the same mechanism and timing — the magnitude varies
+run to run, the phenomenon and its timing don't.
+
+**Item 3 — "0.09-0.10 rad" is RETRACTED as a characterized finding, not
+confirmed with added spread.** Two trials run this morning: first
+(`0.0912 rad`, `tcp_error=0.0078m`) closely matched last night's cluster;
+second (`0.0504 rad`, `tcp_error=0.0062m`) did not. Initially reported
+this as "more spread than expected" — **wrong framing, corrected before
+it became load-bearing**: the tight clustering itself was part of why
+0.09-0.10 rad looked like a real physical limit rather than noise. A
+result that breaks the cluster on a fresh instance means either the
+earlier consistency was itself a property of a consistently-degraded
+state, or the true stopping point is genuinely variable and last night's
+agreement was coincidence. Either way, "stalls at 0.09-0.10 rad" does not
+belong in this doc as a characteristic anymore. What the data actually
+supports: **the achieved grip angle stalls well short of the 0.4055
+expected value, landing somewhere between roughly 0.05 and 0.10 rad
+across the runs observed so far** — a real, reproducible qualitative
+pattern (always well short, always `TIMED_OUT_HELD` or similar, always
+small `tcp_error`), not yet a precisely characterized number.
+
+**A real gap in how the re-confirmation itself was run, caught before it
+compounded.** The gate (`gz_assert_gripper_responsive`) was run once,
+before the first of the two grasp trials — not bracketed immediately
+before AND after each individual measurement. Checked directly: no gate
+check exists between trial 1 (`0.0912`) and trial 2 (`0.0504`); the FIRST
+gate check after trial 2 (attempted before starting item 2) **failed**.
+This means trial 2's `0.0504` reading cannot be trusted as measured on a
+confirmed-healthy instance — degradation may have already begun during or
+shortly after it. Trial 1 is less suspect (closer to the one passing gate
+check) but is not cleanly bracketed either, strictly speaking.
+
+**Protocol correction, going forward — two changes, not one**:
+1. **Degradation is usage-driven, not time-driven.** Last night: ~30-40
+   minutes of mixed work before the gate would have failed. This morning:
+   the gate failed after roughly 7-8 minutes of back-to-back grasp trials
+   (heavier load: MoveIt planning + Cartesian execution + gripper actuation
+   repeated rapidly, vs. last night's mix of lighter probes). A wall-clock
+   restart budget is not a reliable proxy — the real trigger is cumulative
+   *usage*, and specifically heavy usage, not elapsed minutes.
+2. **Bracket every measurement, don't just precede a session with one
+   check.** Run `gz_assert_gripper_responsive` immediately BEFORE and
+   immediately AFTER each individual measurement, not once at
+   session-start. Pass-measure-pass means the number was taken inside a
+   confirmed-healthy window. Pass-measure-fail means the exact onset of
+   degradation relative to the measurement is unknown — discard and
+   retake, don't keep the number with a caveat attached.
+
+**Not yet done**: a properly bracketed retake of item 3 (gate pass,
+single grasp trial, gate pass, before trusting any specific achieved-angle
+number). This is the correct next step before writing anything more
+specific than "somewhere between 0.05 and 0.10 rad" into this doc.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
