@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; trajectory capture (position-only, no mesh math) CONFIRMED a lateral-capture failure at the original preclose_margin_rad=0.05 (clearance math also corrected: ~1.4mm/side, not ~29mm). Increased margin to 0.30: tcp_error 65mm->8.1mm, object held stably not knocked away, but achieved angle (0.091 rad) still far short of the 0.4055 rad expected — genuinely caught but not properly gripped. Not yet passing. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). But run-to-run variability now the headline finding: same config produced a stable 10s+ catch in one trial and a catch-then-release (large uncommanded joint excursion during descent, object slips free) in the next. n=2, not yet characterized. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2248,6 +2248,14 @@ extended, unbounded diagnostic).
 A single extended-bound run separates these two completely different
 next investigations before either gets chased on a guess.
 
+## Extended-timeout diagnostic: neither predicted branch — a third, more surprising result
+
+Written 2026-08-09, next session (same day). Ran the diagnostic with
+`gripper.command_timeout_s` raised to 30s (scratch scene.yaml, not the
+real config) and, this time, polled the MASTER JOINT ANGLE itself
+(ground truth, `/world/empty/model/ur5e_robotiq/joint_state`) every 0.5s
+throughout, rather than the object's pose.
+
 **Prediction, written before running.** Leaning toward "keeps closing
 toward ~0.4055" (a too-short bound, same shape as the original 60-90s
 stall-latency finding), for two reasons already on record: (1) the
@@ -2260,6 +2268,64 @@ by continued (if slow/damped) motion than by a truly static jam, though
 a genuine wedge with persistent micro-vibration could also produce that
 signature — this prediction could be wrong. Extending the bound to 30s
 and logging the master joint over time settles it either way.
+
+**Result: the prediction was wrong, but not in favour of the other
+branch either — a third, more surprising thing happened.** Neither "kept
+closing toward 0.4055" nor "sat flat at ~0.091 with noise." Instead, the
+master joint (ground truth, no explicit gripper command issued during
+this window — pre-close had already completed and held at 0.096 rad,
+final close hadn't started yet) **swung on its own from 0.096 up to
+0.497 rad and back down to fully open (~0), entirely DURING the arm's
+Cartesian descent**:
+
+| t (offset from descent start) | joint angle (rad) | note |
+|---|---|---|
+| −0.38s | ~0.000 | just before pre-close lands |
+| +0.26s | 0.303 | jumps — no command issued here |
+| +0.91s | **0.497** | peaks — past the FULL grip angle (0.4055) |
+| +2.32s | 0.003 | back near zero |
+| +5.10s onward | ~0.000 | fully open, stays here for the remaining ~30s |
+
+The final close call (issued only after this had already happened, once
+the arm's Cartesian descent completed) found nothing: `STALLED` in 0.75s
+at `achieved=-0.0000` — a clean, fast stall at essentially zero closure,
+the same signature as a genuine no-object miss. Ground truth on the
+object afterward: moved ~11mm/1mm laterally, Z unchanged — a real but
+modest disturbance, smaller than the earlier 17mm/12mm shove.
+`docs/m3_grasp_extended_timeout_20260809_173827.log`,
+`docs/m3_master_joint_trace_20260809_173827.txt`.
+
+**Reading this, not just reporting it**: the joint moving substantially
+with NO explicit command issued is only possible because contact force
+can move the mimic linkage independently of what's commanded — an
+already-established fact of this stack (`dartsim does not enforce mimic
+constraints... contact DOES oppose it`, from the M-1 recon). The most
+coherent story: the pre-closed gripper (0.096 rad, ~12.6mm/side
+clearance) caught the object during descent — consistent with the
+lateral-capture mechanism already confirmed — swinging the follower
+joint up toward (and past) the full grip angle as contact resisted the
+mimic linkage, then the object SLIPPED FREE partway through, letting the
+joint relax back open. This is NOT a controller-timing question at all
+(the extended 30s bound was never even exercised — the eventual close
+stalled cleanly in well under a second) — it's a **contact-dynamics**
+question, and it means the SAME configuration
+(`preclose_margin_rad=0.30`, same object) that produced a stable catch
+one run (traj_run3: held 10+s, `tcp_error_m=0.0081`) produced a
+catch-then-release the very next run. **This configuration does not yet
+reproduce reliably — that's the headline finding, more than either
+predicted branch was.**
+
+**Consequence**: the "keeps closing vs. sits flat" question this
+diagnostic was built to answer turned out not to be the live one this
+run — a third failure mode (transient capture, then release, during
+descent) preempted it. Worth repeating this diagnostic a few more times
+before concluding anything about run-to-run consistency at
+`preclose_margin_rad=0.30` — n=2 (one clean catch, one catch-then-release)
+is not enough to characterize a contact process already known from this
+project's own history to be sensitive near a marginal clearance boundary
+("capture window has a sharp edge, not a graceful one," Blocker 2). Not
+run further this session — flagging the variability itself as the
+finding, not chasing a fix for it yet.
 
 **Also queued for next session**: port `GRIPPER_HOLD_ELAPSED_S` from
 `scripts/lib/gz_settle.sh` into `m3_grasp.cpp`'s `gripper_close_and_hold`
