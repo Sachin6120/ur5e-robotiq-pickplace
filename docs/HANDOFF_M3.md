@@ -2186,12 +2186,37 @@ knocked away this time, genuinely caught and held. Evidence:
 `docs/m3_object_trajectory3_20260809_172336.txt`.
 
 **Not yet a passing grasp**: `achieved=0.0910 rad` is far short of the
-table's `0.4055 rad` expected angle for this object — the gripper is
-holding the object at a much wider aperture than a real grip should need,
-suggesting either an off-centre contact (one pad touching well before the
-other) or the object tipping/wedging rather than being squarely
-straddled. Genuinely a different, more specific question than what's been
-chased so far — not investigated further this session.
+table's `0.4055 rad` expected angle for this object. Checked before
+concluding anything about why: was this a genuine contact stall, or a
+false-positive from the still-unmeasured active-motion noise floor risk
+flagged when `stall_velocity_threshold` was picked ("a stray 0.2s quiet
+window mid-motion could in principle false-trigger early")? Two cheap
+discriminators exist (re-issue the close and see if it moves further; or
+check the elapsed time — genuine stalls this session ran 1.7-2.9s, the
+earlier no-object misses ran ~0.3s). `GRIPPER_HOLD_ELAPSED_S` was never
+ported from `scripts/lib/gz_settle.sh` to `m3_grasp.cpp`'s
+`gripper_close_and_hold` — a real, separate gap — so it isn't in the log
+verbatim, but computable from the log's own timestamps.
+
+**Result: neither predicted pattern. `TIMED_OUT_HELD`, elapsed 5.209s —
+the FULL `gripper.command_timeout_s` bound (5.0s), not the fast ~0.3s a
+false stall would produce.** `TIMED_OUT_HELD` specifically means the
+controller's own `stall_velocity_threshold`/`stall_timeout` mechanism
+NEVER cleanly declared `stalled: true` within the whole 5-second window —
+velocity stayed above threshold, or kept crossing it, often enough that a
+clean 0.2s quiet window never completed, for the entire bound. This rules
+out the false-stall hypothesis specifically (a false stall would resolve
+FAST, not time out) — but it's also not a clean genuine stall either.
+Read together with the trajectory data above (object lifts ~5mm, shifts
+laterally, then settles into a stable hold over roughly this same window):
+the picture is sustained, MESSY contact — the object moving/settling
+against the pad kept generating enough velocity noise to repeatedly reset
+the stall-timer's quiet-window requirement, so the controller never got a
+clean 0.2s to declare done, and the 5s client-side bound is what actually
+ended the call. **Genuine contact, not a noise-floor false trigger** — the
+open question is why it resolves at such a wide aperture (off-centre
+contact, tipping, or wedging against a single pad), not whether contact
+happened at all. Not investigated further this session, per plan.
 
 **One unexplained anomaly, flagged not chased**: an intermediate re-run at
 `preclose_margin_rad=0.30` (before the one reported above) logged a
