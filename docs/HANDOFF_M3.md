@@ -2401,14 +2401,47 @@ comparison gives a directional, concrete reason to expect it's smaller
 than calculated — consistent with genuine contact starting almost as soon
 as the final close begins, which is exactly the observed clustering.
 
-**Not established**: the exact magnitude of this compliance effect at
-pre-close's much more open aperture (0.096-0.1055 rad) specifically — the
-7.1mm figure is measured at 0.4 rad, far more closed, and the effect may
-not be constant across the range. This explains the DIRECTION and gives a
-concrete mechanism, not a precise number to correct by. A real-contact
-sweep at the pre-close aperture specifically (same method as `06`, but at
-a much smaller commanded angle) would settle the magnitude — not run this
-session.
+**RETRACTED, same session, minutes later — the compliance mechanism above
+is wrong. Full clean restart + re-verification disproved it directly, not
+just left it unmeasured.** Challenged before building on it: does `05`'s
+own historical free-space width and this session's ad-hoc sweep actually
+measure the same thing? Read the code directly — `05`, `06`, and
+`grasp_table.yaml` all compute width identically
+(`norm(sub(left_pos, right_pos))` between the two fingertip LINK
+origins, no pad-inset anywhere). Confirmed: not a units/definition
+mismatch. But verifying this LIVE exposed something more important:
+commanding the gripper to 0.4 rad in a genuinely empty scene (object
+removed, confirmed via ground truth) **stalled instantly at ~0 rad** —
+impossible in true free space, and not what this session's own earlier
+sweep or `05`'s historical baseline ever showed.
+
+**Did a full clean restart** (`kill_sim`, verified `gz_assert_clean_slate`
+passes, fresh `ros2 launch` with `gazebo_gui:=true`, controller-activation
+1.43s — healthy) and re-ran the identical free-space test: gripper closes
+smoothly to 0.390 rad, `reached_goal: true`, no stall. Measured width:
+**95.834mm — bit-identical to `05`'s historical 2026-08-04 baseline
+(`docs/geom_run1_20260804_112018.log`: `0.4  0.095834`)**, and within
+0.24mm of the contact-loaded `grasp_table` value (95.597mm at 0.40553
+rad). **There is no free-space-vs-contact-loaded compliance gap.** The
+102.7mm this session's own mid-session sweep reported, and the instant
+spurious stall just observed, were both artifacts of **the long-running
+sim instance having degraded** — not orphaned processes (checked, none
+present both times), some other accumulated state (physics-engine
+internal, not process-level) after several hours of continuous heavy use
+across this session. A process census alone is not sufficient to
+guarantee sim health, extending this project's own "system health is an
+assertion" discipline — it needs a behavioral check (a known-answer
+sanity test), not just a clean `ps` listing.
+
+**This has a real consequence beyond just this one measurement**: if a
+simple, well-established free-space reading degraded silently mid-session,
+**the run-to-run variability observed in the 45mm-cube grasp trials this
+same session** (stable 10s+ hold, catch-then-release, hold-with-zero-
+disturbance — all logged as "genuine contact-dynamics sensitivity") needs
+re-checking on this fresh instance before trusting that framing. Some or
+all of that variability may have been sim degradation, not a real
+property of the grasp near a marginal clearance boundary. Re-verifying
+next, same session, while the fresh instance is up.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
