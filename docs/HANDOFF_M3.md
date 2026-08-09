@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. ROOT QUESTION REFRAMED, twice: the same small free-space command succeeds 4/4 from the C++ node but fails 5/5 standalone (CLI), a caller-dependent split — NOT a friction/mechanism finding (retracted after challenge: exact-zero position/velocity for 95s isn't physical). Controller-inactive, competing-MoveIt-client, and topic-staleness all checked live and ruled out. Genuinely unexplained; likely candidate (untested) is a CLI-vs-node action-client timing difference. Highest-priority open item for M3. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; object-shift and clearance explanations both checked and ruled out. The apparent CLI-vs-node split RESOLVED: not causal, a coincidence of timing — `probe_gripper_cmd` (new diagnostic tool) confirmed 4/4 success immediately after a fresh restart vs. 21/21 failure after ~30-40min of cumulative runtime, same as the earlier sim-degradation episode. Standing operational note added: this sim degrades within ~30min of heavy gripper testing, invisible to process-census checks — budget periodic mid-session restarts. Genuine open M3 question (why grip angle sometimes stalls near 0.09-0.10 rad even with clearance) is unchanged, to be revisited fresh. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2645,6 +2645,82 @@ realtime control loop's next cycle actually picking up the new command
 before the stall-clock starts) — this is the most likely remaining
 candidate but is NOT yet confirmed, just not yet ruled out. Next session
 should start here, not with a multi-trial physical experiment design.
+
+## RESOLVED: it was never about the caller — cumulative sim runtime, again
+
+Written 2026-08-09, still the same session, immediately after the
+"unexplained, caller-dependent" writeup above. That framing is now
+superseded, not just refined — the actual cause was found and confirmed.
+
+**Built a proper isolating tool first**: `probe_gripper_cmd` (new,
+minimal `rclcpp_action::Client`, added to `ur5e_pick_place` — see
+`ur5e_pick_place/src/probe_gripper_cmd.cpp`), constructed as close as
+possible to `gripper_close_and_hold()`'s own client pattern, to test
+whether C++ (matching the real M3 node) behaves differently from the CLI
+or a persistent `rclpy` client. **It didn't** — 3/3 rclcpp trials failed
+identically to the CLI (5/5) and a persistent `rclpy` node (3/3). Also
+tested and ruled out: genuine arm motion immediately beforehand (still
+failed), and an immediately-preceding "reopen" action call as the
+distinguishing factor (removed it, still failed). By this point: 21/21
+standalone failures across every client type and precondition tested,
+0/21 successes.
+
+**That perfect consistency prompted checking the TIMELINE, not just the
+caller.** Every recorded SUCCESS tonight (`traj_run3`, `watch_test`,
+`fresh_verify`, `watch2`'s pre-close calls) happened shortly after the
+EARLIER full clean restart this same session already performed (see
+"Retracted, same session, minutes later — disproven by re-verification"
+above, the compliance-hypothesis section). Every recorded FAILURE
+happened progressively later, after ~30-40 more minutes of continuous
+heavy testing on that SAME sim instance. This is the exact same shape as
+the degradation already found and fixed once tonight — not a new,
+caller-dependent phenomenon at all.
+
+**Did a SECOND full clean restart and tested `probe_gripper_cmd`
+immediately, before running anything else**: `reached_goal=true`,
+`position=0.086`, under 1 second — the FIRST standalone success of the
+entire investigation. Ran 3 more trials on the same fresh instance: 3/3
+more successes. **4/4 success immediately after a fresh restart, 21/21
+failure after cumulative runtime on the previous instance.** The
+CLI-vs-node split was never causal — it was a coincidence of WHEN each
+kind of test happened to be run relative to how long the sim had been
+running, not what was calling it.
+
+**This retroactively unifies essentially everything unusual measured
+tonight**: the original free-space width discrepancy (102.7mm vs. the
+95.834mm baseline), the 60-90s creeps, the stuck-at-exactly-zero episodes,
+and this whole caller-dependent detour — all symptoms of the same
+underlying cause, cumulative sim degradation, recurring roughly 30-40
+minutes into sustained heavy gripper testing, not caught by a process
+census (checked twice tonight, clean both times).
+
+**Elevated to a standing operational note for this project, not just a
+one-off fix**: this sim measurably degrades within roughly half an hour
+of continuous heavy testing, in ways that specifically affect the
+gripper's ability to reliably initiate small motions from a dead stop —
+NOT visible via `ps`/orphan-process checks (this project's existing
+`gz_assert_clean_slate` discipline), only via a behavioral sanity probe
+(this is now what `probe_gripper_cmd` is for — keep it, it's cheap and
+decisive). Sessions doing extended gripper-focused testing should budget
+for periodic restarts DURING a session, not just one at the start. The
+underlying physics-engine mechanism (DART, contact/constraint solver
+state accumulation, or something else) is not identified — not urgent to
+chase further given a restart is a cheap, reliable workaround, but
+flagged as a real, unexplained Gazebo/DART characteristic worth knowing
+about if it recurs elsewhere in this project.
+
+**Consequence for tonight's actual M3 questions**: everything measured
+on a sim BEFORE it degraded (the successful catches, the 8.7mm/16mm
+clearance figures, the lateral-capture trajectory-capture finding) should
+be trusted at face value again — those were measured on a healthy
+instance. Anything from the LATER standalone probing (the free-space
+width sweep at 102.7mm, the compliance story built on it, the friction
+speculation) was correctly retracted already and should stay retracted.
+The genuine, still-open M3 question — why the achieved grip angle stalls
+around 0.09-0.10 rad in some grasp trials even with the object present
+and clearance nominally comfortable — is UNCHANGED by tonight's detour
+and should be revisited fresh, on a newly-restarted sim, without the
+distraction of a caller-dependent theory that turned out not to exist.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
