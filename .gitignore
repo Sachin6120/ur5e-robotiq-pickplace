@@ -8,3 +8,4 @@ probe_out/
 grasp_table_out/
 m0_evidence/
 m3_grasp_run*.csv
+m3_grasp_probe_*.csv
