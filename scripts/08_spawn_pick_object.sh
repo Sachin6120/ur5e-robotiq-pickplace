@@ -72,7 +72,9 @@ SDF="<?xml version='1.0'?><sdf version='1.9'><model name='${OBJ_NAME}'>
 <collision name='c'><geometry><box><size>${OBJ_SX} ${OBJ_SY} ${OBJ_SZ}</size></box></geometry>
   <surface><friction><ode><mu>${OBJ_MU}</mu><mu2>${OBJ_MU}</mu2></ode></friction></surface>
 </collision>
-<visual name='v'><geometry><box><size>${OBJ_SX} ${OBJ_SY} ${OBJ_SZ}</size></box></geometry></visual>
+<visual name='v'><geometry><box><size>${OBJ_SX} ${OBJ_SY} ${OBJ_SZ}</size></box></geometry>
+  <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse><specular>1 1 1 1</specular></material>
+</visual>
 </link></model></sdf>"
 
 # protobuf text-format cannot have a string literal cross a physical line
