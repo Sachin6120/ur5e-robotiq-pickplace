@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). Run-to-run variability observed (stable hold / catch-then-release / hold-with-zero-disturbance, n=3, same config). Consistent stop near 0.09-0.10 rad traced to a real, directly-measured gap: this session's free-space sweep underestimates contact-loaded closure by 7.1mm at a comparable angle vs. the project's own grasp_table — every clearance number this session computed is probably still optimistic. Controller stall-timer carryover ruled out via source read. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). Sim degradation FOUND and FIXED (full clean restart) after a compliance hypothesis was disproven by re-verification — process census alone doesn't guarantee sim health. Post-restart: the 0.09-0.10rad stopping point reproduces identically (real, not a degradation artifact); static clearance at pre-close's aperture re-measured clean at ~16mm/side (comfortable, not marginal) — both static explanations (compliance, insufficient clearance) now ruled out. Best-supported remaining hypothesis: the object shifts during descent (already confirmed via position-only trajectory capture) enough to close an otherwise-comfortable margin. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2442,6 +2442,47 @@ re-checking on this fresh instance before trusting that framing. Some or
 all of that variability may have been sim degradation, not a real
 property of the grasp near a marginal clearance boundary. Re-verifying
 next, same session, while the fresh instance is up.
+
+**Re-verification: the grasp behaviour is real, not a degradation
+artifact — full clean restart, ran the same trial again.** Fresh sim,
+fresh move_group, fresh object spawn, `preclose_margin_rad=0.30`
+unchanged. Result: `TIMED_OUT_HELD` at `achieved=0.0914 rad`,
+`tcp_error_m=0.0078` — matching the DEGRADED-sim `watch_test` run
+(`0.0912`, `0.0078`) to within 0.0002 rad. **This specific behaviour
+(stops near pre-close's own aperture) reproduces identically on a
+verified-healthy sim.** It was never a degradation artifact — only the
+free-space WIDTH measurement (and the compliance story built on it) was.
+
+**Clean clearance recheck at the actual pre-close aperture, on the fresh
+sim, using the correct (no ad-hoc inset) methodology.** Measured width
+at exactly `0.096 rad` (pre-close's own achieved value): **127.781mm**.
+Derived a proper pad-inset from the project's own contact data instead of
+reusing the old inferred-not-measured 28mm figure:
+`grasp_table`'s 95.597mm width at genuine 45mm-object contact implies
+`(95.597-45)/2 = 25.3mm` inset per side — empirically grounded, not
+guessed. Applied to the pre-close reading: true pad-to-pad gap ≈ 77.2mm,
+**clearance ≈ 16.1mm per side — comfortable, not marginal.**
+
+**Where this leaves the open question.** Both of this session's static
+explanations for the 0.09-0.10 rad stopping point are now ruled out:
+neither a free-space/contact-loaded compliance gap (disproven — the
+fresh width measurement matches the historical baseline and the
+contact-loaded reference almost exactly) nor insufficient static
+clearance at the pre-close aperture (disproven — ~16mm is generous).
+What remains standing, unaffected by any of this width-methodology
+confusion because it never depended on it: the **trajectory capture**
+from earlier this session, which used position-only ground truth (no
+mesh math, no width formula) and directly showed the object MOVING during
+the descent itself — a dynamic event, not a static clearance shortfall.
+The most likely explanation is still that the object shifts during
+descent (observed directly, multiple times, by amounts from ~5mm to
+~17mm depending on the run) enough to close the nominally-comfortable
+16mm margin at some point during the approach — not that the margin was
+never there. Not yet directly confirmed (would need the trajectory
+capture repeated with simultaneous fingertip-position tracking to see
+the margin actually closing), but this is now the best-supported
+remaining hypothesis, having survived two rounds of the other candidates
+being checked and eliminated.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
