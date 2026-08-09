@@ -1,0 +1,29 @@
+5 repeated standalone trials of `ros2 action send_goal .../gripper_cmd
+control_msgs/action/GripperCommand "{command: {position: 0.096,
+max_effort: 50.0}}"`, each preceded by a fresh reopen to 0.0, on the
+2026-08-09 freshly-restarted sim, no object in the scene, arm untouched.
+
+trial 1: elapsed=4.38s  Result: position: -2.2971444498413276e-11 effort: 50.0 stalled: true
+trial 2: elapsed=2.31s  Result: position: -2.297147638263075e-11  effort: 50.0 stalled: true
+trial 3: elapsed=2.30s  Result: position: -2.2971547298126407e-11 effort: 50.0 stalled: true
+trial 4: elapsed=2.27s  Result: position: -2.297157349245094e-11  effort: 50.0 stalled: true
+trial 5: elapsed=1.83s  Result: position: -2.2971684833942535e-11 effort: 50.0 stalled: true
+
+5/5: clean, fast stall at essentially zero position (no measurable
+movement at all) -- not the 60-90s slow creep, not success. Directly
+contradicts pre-close's own success rate inside actual grasp trials
+(4/4 REACHED_GOAL at ~0.096 rad, 3.6-6.0s, same command in substance).
+
+A sixth trial (not logged with per-trial output, run via a single
+send_goal call after 20 rapid `gz topic -e` queries meant to test
+whether recent sim activity changes the outcome) hung past the 95s
+internal `timeout` bound and the surrounding 100s tool timeout; direct
+ground-truth query afterward showed position and velocity both still
+reading essentially exactly zero -- worse than the original 60-90s creep,
+which at least showed measurable intermediate progress (0.048, 0.056,
+0.071 rad at successive checks). See docs/HANDOFF_M3.md, "Direct velocity
+instrumentation: three distinct, reproducible behaviors for the identical
+command — not reconciled" for the full analysis, including the velocity
+trace confirming exactly-zero velocity throughout a clean-fail trial
+(docs/m3_velocity_trace_20260809_184950.txt, sampler script
+docs/m3_sample_velocity_live_20260809_184950.py).
