@@ -28,7 +28,8 @@ anything measurement-shaped from this environment.
 | Blocker 2 | closed (geometric seating) | docs/probe_zsweep_*.log — see below |
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
-| M3 grasp node | IMPLEMENTED, not yet passing — 2 live tests, both correctly rejected (no object; a borderline/confounded near-miss). Sliding-contact/timeout anomaly open, world-table gap open. | docs/m3_grasp_run{1,2}_*.log — see "M3 grasp node: implemented, first live tests run, one anomaly open" below |
+| World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
+| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. 32mm z-shortfall residual open (likely `pad_centre_offset` magnitude/direction, not the table). | docs/m3_grasp_run3_test2_*.log — see "Both tests re-run against the table world: prediction confirmed, first-ever grasp SUCCESS" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1431,6 +1432,174 @@ absorbed the missing table's effect — a tolerance widened or an offset
 adjusted to accommodate a sliding, unsupported object would have been
 calibrated against an artifact, and would then silently mismeasure the
 correction once the table gap is actually fixed.
+
+## Table wired into the world; re-run of both grasp tests
+
+Written 2026-08-09. `config/scene_table_sdf.py` added (single source
+deriving a static-box SDF from scene.yaml's `table:` block, same treatment
+`scene_xacro_args.py` gives `robot.base_pose`) and wired into
+`ur5e_robotiq_sim_control.launch.py` as a second `ros_gz_sim create` spawn
+alongside the robot's own — not another one-off `temp_test_table` like
+Test 2's workaround. `scripts/08_spawn_pick_object.sh` added as the
+object-side counterpart: spawns `object:` at `pick_pose` from scene.yaml
+instead of a hand-typed `gz service` call.
+
+**Prediction, written before re-running anything**: if the missing table
+was the single cause behind Test 2's anomalies (per "the missing table is
+one cause, not two anomalies" above), then with a genuine table present:
+
+- The gripper close should reach `STALLED` within ~1-2s (matching the 40mm
+  anchor's fast-stall behavior), not `TIMED_OUT_HELD` at the 5.0s bound.
+- Lateral object drift during closing should be at or near zero — not the
+  previously observed 13-20mm.
+- Ground-truth TCP error should return to ~0mm, matching M2's established
+  tracking accuracy — not the previously observed 53mm.
+
+One fix, three symptoms: all three should disappear together, not
+independently. Test 1 (no object spawned) should still correctly reject,
+unchanged — that trial never depended on the table.
+
+## Both tests re-run against the table world: prediction confirmed, first-ever grasp SUCCESS
+
+Written 2026-08-09. Fresh sim + move_group, table verified spawned at the
+correct pose live (`gz topic -e -t /world/empty/pose/info` showed
+`table` at `x=0.55 z=0.375`, not the earlier bug's `(0,0,0)` — see below),
+gripper open confirmed, controller-activation 2.4-3.8s across three
+restarts (healthy band). `scripts/08_spawn_pick_object.sh` added
+(single-source object spawn from scene.yaml's `object:` block, mirroring
+`scene_table_sdf.py`'s treatment of `table:`) to replace Test 2's original
+hand-typed `gz service` call.
+
+**Real bug found and fixed before any test could be trusted**: the first
+table-spawn attempt put the table at world origin `(0,0,0)`, not
+`(0.55, 0.00, 0.375)`. Root cause: `ros_gz_sim create -string` does NOT
+honor a `<pose>` embedded in the SDF string — it always spawns at
+`-x/-y/-z/-R/-P/-Y`, defaulting to 0 if those flags aren't also passed.
+This is specific to the `create` executable's own argument handling, not a
+property of SDF or of the `gz service .../create` EntityFactory path
+04/06/m0_verify.sh's scripts use (that one does honor an embedded pose,
+confirmed by years of correct box placements). The robot spawn never
+exposed this because its pose is baked into the URDF via xacro args
+(`base_xyz`/`base_rpy`), not an SDF-level model pose — a genuinely
+different mechanism that happened to look the same. Fixed:
+`config/scene_table_sdf.py` gained `table_pose_args()`, returning explicit
+`-x ... -Y ...` flags from `scene.yaml`'s `table.pose`, now passed
+alongside `-string` in the launch file's spawn `Node`. Verified live after
+the fix: `table` at `x: 0.55 z: 0.375` (y omitted = 0, matching
+scene.yaml).
+
+**Test 1 (no object) — confirmed still correctly rejects**, unchanged from
+2026-08-08: gripper closed to `0.7901 rad` (near-full, nothing to catch),
+compared against the table's `0.4055` expected for 45mm, `GRIPPER_GOAL_REJECTED`,
+`tcp_error_m=0.0000` (perfect tracking, matching M2). Took 3 attempts to get
+a clean run — see "New, unrelated flakiness surfaced" below; none of the
+intervening failures involved the gripper/grasp logic at all.
+
+**Test 2 (object spawned on the real table) — SUCCESS. First one on
+record for M3.** `object.pick_pose` object settle-checked before the grasp
+attempt: spawned via `08_spawn_pick_object.sh`, settled in 0.64s at
+`z=0.79500` — exactly `table.surface_z + size.z/2`, i.e. genuinely resting
+on the table, not falling through. Grasp result:
+
+| metric | before (missing table, 2026-08-08) | after (table present, 2026-08-09) | M2 baseline | prediction |
+|---|---|---|---|---|
+| gripper result | `TIMED_OUT_HELD` at 5.0s bound | `STALLED` in ~2.0s | n/a | fast STALLED — **confirmed** |
+| lateral object drift | 13-20mm | 8.7mm (measured via `gz topic -e`, spawn vs. post-grasp `pick_target` pose) | n/a | near zero — **mostly confirmed**, not fully zero |
+| ground-truth TCP error | 0.0534m (53mm) | 0.0330m (33mm) | ~0.0000m | ~0mm — **partially confirmed**, improved but not zero |
+| grasp-success check | N/A (rejected) | `achieved=0.3854` vs `expected=0.4055`, `|err|=0.0201 < tolerance=0.0235` — **WITHIN TOLERANCE** | n/a | n/a |
+
+**One fix, three symptoms — direction and rough magnitude all confirmed,
+not just the first one.** All three moved in the predicted direction and
+by a similar large fraction (TIMED_OUT_HELD→STALLED: qualitative fix;
+drift 13-20mm→8.7mm, ~50-60% reduction; TCP error 53mm→33mm, ~40%
+reduction) — consistent with one shared root cause (the missing table)
+dominating all three, not three independent effects that happened to
+improve together by coincidence.
+
+**Residual, NOT the same failure mode as before — a new, smaller, separate
+finding.** 33mm TCP error is NOT random: `docs/m3_grasp_run3_test2_*.log`
++ CSV show it's almost entirely a z-axis gap — `achieved_z=0.827177` vs
+`commanded_z=0.795000`, a 32mm vertical shortfall, with x/y off by only
+~4-6mm each. Reading this together with grasp composition's own
+`corrected_offset=0.133838` (`tcp_offset=0.120405 + pad_centre_offset=0.013433`,
+flagged in this doc's design section as "NOT YET LIVE-VERIFIED" direction/
+magnitude): a coherent explanation is that the gripper stalled on contact
+~32mm before reaching the naive target depth, i.e. the correction is
+standing tool0 off farther than the true pad-centre depth actually
+requires. This is now the first LIVE data point bearing on that
+not-yet-verified correction, not a confounded trial like the pre-table
+Test 2 was — worth investigating before trusting `pad_centre_offset`'s
+current 0.013433m value or the "add, not subtract" direction unattended.
+**Not yet investigated further this session** — flagging per "chase only
+what survives," and this genuinely is what survives: small, consistent
+with a known open question (pad-centre correction direction/magnitude),
+not the sliding/unsupported-object failure mode the table fix targeted.
+
+**New, unrelated flakiness surfaced while re-running — neither is the
+missing-table question, both are new open items:**
+
+1. **OMPL/RRTConnect self-collision, reproduced 1/3 attempts.** Test 1's
+   first genuine attempt (after fixing the move_group precondition below)
+   failed `PLAN_FAILURE`: a found RRTConnect solution passed initial
+   planning but failed `ValidateSolution`'s stricter recheck — self-collision
+   between `forearm_link` and `robotiq_85_right_finger_link` at some
+   intermediate waypoint. Same pre-grasp target coordinates as the
+   successful 2026-08-08 run (`[0.4500 -0.1500 1.0288]`), so this is
+   planner-search randomness (no fixed OMPL seed), not a regression from
+   today's table change. **Open question, not yet investigated**: only one
+   "Calling Planner 'OMPL'" line appeared in the move_group log despite
+   `plan_attempts=10` being set via `setNumPlanningAttempts` — suggests
+   MoveIt's attempt-count may govern re-search only when OMPL itself fails
+   to find *any* solution within budget, not when a found solution later
+   fails the separate `ValidateSolution` response-adapter recheck. If so,
+   `plan_attempts=10` is not actually providing the retry margin its value
+   implies for this specific failure mode. Worth checking against MoveIt's
+   source before relying on it for the 20-cycle run.
+2. **`rclcpp_action`: "unknown goal response/result response, ignoring"
+   + `EXECUTE_FAILURE` code -7 on Test 2's first attempt. ROOT CAUSE FOUND,
+   not a mystery: operator error this session, not an environment bug.**
+   Before Test 2, `kill_sim` + `pkill -9 -f "move_group.launch.py"` was run
+   to get a clean baseline, then a fresh `move_group` was launched. Checked
+   afterward, not assumed: the `pkill` silently failed to match — `ps -eo
+   pid,lstart,cmd` showed the ORIGINAL move_group (from Test 1, started
+   12:24:59) still alive alongside the new one (started 12:29:48), **two
+   move_group instances simultaneously claiming the same action server
+   names** for the entire first Test 2 attempt. A planning request handled
+   by one instance and an execute request answered by (or routed to) the
+   other is a direct, mechanical explanation for "unknown goal response,
+   ignoring" — no DDS-crosstalk speculation needed. The second attempt
+   "succeeding" was luck (which of the two duplicate servers happened to
+   answer which call), not a fix — the duplicate was still running
+   underneath it. Killed the stray (`kill -9` on the actual PIDs, not
+   `pkill -f`, then verified via `ps` — the same "checked, not assumed"
+   discipline `gz_assert_clean_slate` already applies to `gz sim`/
+   `robot_state_publisher`/`parameter_bridge`, which do NOT currently
+   include `move_group` in their pattern match). **Action item, not yet
+   done**: `gz_assert_clean_slate` (`scripts/lib/gz_settle.sh`) should
+   also check for stray `move_group` processes — it currently only
+   greps `gz sim|robot_state_publisher|parameter_bridge|controller_manager|
+   spawner`, which is exactly the blind spot that let this go undetected
+   through two full test attempts.
+
+**Also newly required, not previously documented as a precondition
+anywhere obvious**: `m3_grasp.launch.py`'s own header says move_group must
+already be running, same as M1/M2 — true, but easy to miss (the file's
+`PRECONDITION` comment says it, nothing enforces or checks it). First Test
+1 attempt today hung past "Loaded robot model" for 30s+ with no error
+before this was diagnosed as move_group simply not running. Worth a
+startup guard (parallel to the existing base-pose guard) that fails fast
+and names the missing precondition, rather than a silent hang — not done
+this session, flagged as a real gap.
+
+**Net assessment**: the missing-table hypothesis from 2026-08-08 is
+confirmed as the dominant cause of Test 2's original three anomalies — not
+speculatively, by prediction-then-measurement. M3 has its first passing
+grasp trial. What's left before trusting `grasp_tolerance_rad` or
+`pad_centre_offset` as tuned: more trials (this is n=1, and the same
+"suspiciously good number gets a falsification test" discipline that
+caught the shortfall-vs-achieved-angle and baseline-artifact mistakes
+earlier in this project applies here too), and a look at whether the 32mm
+z-shortfall is systematic (repeats every trial) or this trial's noise.
 
 ## Reframing M3: the evidence doesn't point at friction
 

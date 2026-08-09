@@ -101,16 +101,27 @@ kill_sim() {
 #
 # STANDARD PREAMBLE, run before any script launches a sim it intends to
 # treat as fresh. Counts stray parameter_bridge / robot_state_publisher /
-# gz sim / spawner processes and ABORTS BY NAME if any exist, rather than
-# launching on top of them and calling the result "fresh". This exists
-# because "no prior sim instance running" was previously asserted by a
-# check that only looked for the launch.py parent and gz sim itself --
+# gz sim / spawner / move_group processes and ABORTS BY NAME if any exist,
+# rather than launching on top of them and calling the result "fresh". This
+# exists because "no prior sim instance running" was previously asserted by
+# a check that only looked for the launch.py parent and gz sim itself --
 # exactly the check that missed the orphan leak kill_sim() documents above.
 # A script that wants to clean up and continue should call kill_sim first,
 # then this, not skip straight past it.
+#
+# move_group added 2026-08-09: a `pkill -9 -f "move_group.launch.py"`
+# silently failed to match mid-session (cause not chased down -- possibly a
+# cmdline-quoting/argv difference between how the process was actually
+# spawned and the pattern), leaving two move_group instances alive
+# simultaneously, both claiming the same action server names. Symptom was
+# `rclcpp_action: unknown goal response, ignoring` + spurious
+# EXECUTE_FAILURE on an M3 grasp trial -- a real, reproduced failure, not
+# theoretical. Only caught by checking `ps -eo pid,lstart,cmd` by hand;
+# this function's own pattern didn't include move_group at the time. See
+# docs/HANDOFF_M3.md, "New, unrelated flakiness surfaced" (item 2).
 gz_assert_clean_slate() {
   local leftover
-  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner" | grep -v grep)
+  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner|move_group" | grep -v grep)
   if [[ -n "$leftover" ]]; then
     printf '  [STOP] gz_assert_clean_slate: stray process(es) present -- refusing to call this launch fresh:\n%s\n' "$leftover" >&2
     return 1

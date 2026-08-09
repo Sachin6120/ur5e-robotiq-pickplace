@@ -90,6 +90,43 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
+def _load_scene():
+    # Shared by base-pose defaulting and table-geometry spawning below —
+    # both derive from the same scene.yaml, loaded once here rather than
+    # each re-implementing its own existence check.
+    scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
+    if not os.path.isfile(scene_file):
+        return None
+    import yaml
+    with open(scene_file, "r") as fh:
+        return yaml.safe_load(fh)
+
+
+def _load_table_sdf_module():
+    import importlib.util
+    module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_table_sdf.py")
+    spec = importlib.util.spec_from_file_location("scene_table_sdf", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _table_spawn_args(scene):
+    # config/scene_table_sdf.py is the single source deriving the world's
+    # table collision geometry from scene.yaml's table: block — same
+    # treatment scene_xacro_args.py gives robot.base_pose. Returns None if
+    # scene.yaml (or its table: block) isn't present, matching
+    # _default_base_args()'s own graceful fallback for M0-style structural
+    # checks that predate scene.yaml. Returns (sdf_string, pose_args) —
+    # BOTH are required, not just the SDF: see table_pose_args()'s
+    # docstring for why `ros_gz_sim create -string` needs the pose passed
+    # as separate -x/-y/-z/-R/-P/-Y flags too.
+    if not scene or "table" not in scene:
+        return None
+    module = _load_table_sdf_module()
+    return module.table_sdf(scene), module.table_pose_args(scene)
+
+
 def launch_setup(context, *args, **kwargs):
     ur_type = LaunchConfiguration("ur_type")
     tf_prefix = LaunchConfiguration("tf_prefix")
@@ -237,6 +274,29 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
+    # The table: spawns a static collision surface at the pose/size
+    # scene.yaml's table: block describes (see _table_spawn_args /
+    # config/scene_table_sdf.py). Same design as gz_spawn_entity above —
+    # no ordering dependency on gz_launch_description below; `ros_gz_sim
+    # create` already tolerates that for the robot spawn, so it does here
+    # too. None if scene.yaml/table: isn't present — no table gets
+    # spawned, matching _default_base_args()'s own fallback.
+    _table_spawn = _table_spawn_args(_load_scene())
+    gz_spawn_table = (
+        Node(
+            package="ros_gz_sim",
+            executable="create",
+            output="screen",
+            arguments=(
+                ["-string", _table_spawn[0]]
+                + _table_spawn[1]
+                + ["-name", "table", "-allow_renaming", "false"]
+            ),
+        )
+        if _table_spawn
+        else None
+    )
+
     gz_launch_description = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
@@ -264,7 +324,7 @@ def launch_setup(context, *args, **kwargs):
         name="GZ_SIM_RESOURCE_PATH", value=gz_resource_path
     )
 
-    return [
+    actions = [
         set_gz_resource_path,
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
@@ -275,9 +335,12 @@ def launch_setup(context, *args, **kwargs):
         gz_launch_description,
         gz_sim_bridge,
     ]
+    if gz_spawn_table is not None:
+        actions.append(gz_spawn_table)
+    return actions
 
 
-def _default_base_args():
+def _default_base_args(scene):
     # CORRECTED (M2): base_xyz/base_rpy used to default to "0 0 0"
     # unconditionally, independent of scene.yaml. That was invisible right up
     # until it mattered: a plain `ros2 launch ...` with no extra args span the
@@ -292,16 +355,10 @@ def _default_base_args():
     # Falls back to "0 0 0" if scene.yaml or robot.base_pose isn't there —
     # this file is also used standalone for M0-style structural checks that
     # predate scene.yaml's base_pose field and don't need it.
-    scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
-    if not os.path.isfile(scene_file):
+    if not scene or "robot" not in scene or "base_pose" not in scene["robot"]:
         return {"base_xyz": "0 0 0", "base_rpy": "0 0 0"}
     import importlib.util
 
-    import yaml
-    with open(scene_file, "r") as fh:
-        scene = yaml.safe_load(fh)
-    if "robot" not in scene or "base_pose" not in scene["robot"]:
-        return {"base_xyz": "0 0 0", "base_rpy": "0 0 0"}
     args_module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
     spec = importlib.util.spec_from_file_location("scene_xacro_args", args_module_path)
     module = importlib.util.module_from_spec(spec)
@@ -310,7 +367,7 @@ def _default_base_args():
 
 
 def generate_launch_description():
-    default_base_args = _default_base_args()
+    default_base_args = _default_base_args(_load_scene())
     declared_arguments = [
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("tf_prefix", default_value=""),
