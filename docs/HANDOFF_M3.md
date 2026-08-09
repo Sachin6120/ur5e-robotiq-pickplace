@@ -2218,6 +2218,44 @@ open question is why it resolves at such a wide aperture (off-centre
 contact, tipping, or wedging against a single pad), not whether contact
 happened at all. Not investigated further this session, per plan.
 
+**Reframe, recorded before it's lost — the question above may be the
+wrong one.** `TIMED_OUT_HELD` means the close call was CUT OFF at the 5s
+bound, not resolved by a controller-declared stall. `achieved=0.091 rad`
+is wherever the joint WAS when the client gave up waiting, not
+necessarily where it would have settled. With velocity noise present
+throughout (that's what prevented the controller's own stall check from
+ever completing), the joint may simply have still been CLOSING, slowly,
+when time ran out — not sitting wedged at an equilibrium. This is a
+different question than "why does it resolve at 0.091" — it may instead
+be "why is it closing so slowly" or "it just hadn't finished yet."
+
+**Tomorrow's first job, cheap**: re-run with `gripper.command_timeout_s`
+extended well past 5s (e.g. 60-90s, matching the scale of the original
+pre-fix stall-latency finding) and watch the achieved angle over time
+(same style as the earlier mid-close instrumented captures, or a direct
+extended, unbounded diagnostic).
+- **Continues closing toward ~0.4055** → not an equilibrium at all, just
+  a bound too short for whatever's damping the motion this time. Same
+  shape as the original 60-90s stall-latency finding this project already
+  solved once (`stall_velocity_threshold` fix) — worth checking whether
+  this is a recurrence of that same class of problem in a new context
+  (contact-loaded, off-centre, or otherwise messier than the anchor case
+  the fix was tuned against), or something new.
+- **Sits at ~0.091 with velocity noise but no net travel over a much
+  longer window** → genuinely wedged; off-centre/single-pad contact
+  becomes the live question, investigated for real rather than assumed.
+
+A single extended-bound run separates these two completely different
+next investigations before either gets chased on a guess.
+
+**Also queued for next session**: port `GRIPPER_HOLD_ELAPSED_S` from
+`scripts/lib/gz_settle.sh` into `m3_grasp.cpp`'s `gripper_close_and_hold`
+— reconstructing elapsed time from log timestamps after the fact is
+exactly the shape of hazard that produced the M0-C baseline-artifact
+mistake earlier in this project; the C++ node should carry the same
+instrumentation the bash version already does, not require re-deriving it
+each time.
+
 **One unexplained anomaly, flagged not chased**: an intermediate re-run at
 `preclose_margin_rad=0.30` (before the one reported above) logged a
 pre-grasp/grasp target matching the OLD 90mm object's height
