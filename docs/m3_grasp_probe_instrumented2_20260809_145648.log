@@ -1,0 +1,33 @@
+[INFO] [launch]: All log files can be found below /home/sachin/.ros/log/2026-08-09-14-54-20-569405-Sachin-8428
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [static_scene_tf-1]: process started with pid [8459]
+[INFO] [m3_grasp-2]: process started with pid [8460]
+[static_scene_tf-1] [0m[INFO] [1786280060.825269955] [static_scene_tf]: published static frames: world->object_frame (pick_pose), object_frame->grasp_frame (approach_axis=[0.000 0.000 -1.000] roll=0.000), tool0->grasp_tcp (tcp_offset=0.1204)[0m
+[m3_grasp-2] [0m[INFO] [1786280060.852608817] [m3_grasp]: GRASP MODE: friction (physics)[0m
+[m3_grasp-2] [0m[INFO] [1786280060.852697723] [m3_grasp]: pad-centre-corrected offset: tcp_offset=0.120405 + pad_centre_offset=0.013433 = 0.133838 m (NOT YET LIVE-VERIFIED direction -- see file header)[0m
+[m3_grasp-2] [0m[INFO] [1786280060.965118512] [m3_grasp]: base-pose guard OK: 'base_link' matches scene.yaml within tolerance (pos error 0.00000 m, angle error 0.00000 rad)[0m
+[m3_grasp-2] [33m[WARN] [1786280060.994417381] [rcl.logging_rosout]: Publisher already registered for node name: 'm3_grasp'. If this is due to multiple nodes with the same name then all logs for the logger named 'm3_grasp' will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.[0m
+[m3_grasp-2] [0m[INFO] [1786280061.005465738] [m3_grasp.moveit.ros.rdf_loader]: Loaded robot model in 0 seconds[0m
+[m3_grasp-2] [0m[INFO] [1786280061.005536906] [m3_grasp.moveit.core.robot_model]: Loading robot model 'ur5e_robotiq'...[0m
+[m3_grasp-2] [0m[INFO] [1786280061.005562198] [m3_grasp.moveit.core.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint[0m
+[m3_grasp-2] [0m[INFO] [1786280061.020676434] [m3_grasp.moveit.kinematics.kdl_kinematics_plugin]: Joint weights for group 'arm': 1 1 1 1 1 1[0m
+[m3_grasp-2] [0m[INFO] [1786280061.540867873] [m3_grasp.moveit.ros.move_group_interface]: Ready to take commands for planning group arm.[0m
+[m3_grasp-2] [0m[INFO] [1786280061.541024412] [m3_grasp]: pre-grasp tool0 target (world): [0.4500 -0.1500 1.0288]  grasp tool0 target: [0.4500 -0.1500 0.9288]  (corrected_offset=0.133838)[0m
+[m3_grasp-2] [0m[INFO] [1786280061.541202193] [m3_grasp.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m3_grasp-2] [0m[INFO] [1786280061.542062986] [m3_grasp.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786280061.566800517] [m3_grasp.moveit.ros.move_group_interface]: Planning request complete![0m
+[m3_grasp-2] [0m[INFO] [1786280061.567203108] [m3_grasp.moveit.ros.move_group_interface]: time taken to generate plan: 0.0203218 seconds[0m
+[m3_grasp-2] [0m[INFO] [1786280061.567814771] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786280063.570426441] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786280063.573855707] [m3_grasp]: computeCartesianPath fraction achieved: 1.0000 (need > 0.9500)[0m
+[m3_grasp-2] [0m[INFO] [1786280063.573914933] [m3_grasp]: executing Cartesian descent to grasp target...[0m
+[m3_grasp-2] [0m[INFO] [1786280063.574276255] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786280065.576278816] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786280065.576423986] [m3_grasp]: execution reported SUCCESS[0m
+[m3_grasp-2] [0m[INFO] [1786280070.714790847] [m3_grasp]: gripper_close_and_hold: TIMED_OUT_HELD in achieved=0.4678 rad (target was 0.8000)[0m
+[m3_grasp-2] [0m[INFO] [1786280070.714840221] [m3_grasp]: grasp-success check: achieved=0.4678 expected=0.4055 (width=0.0450m) |err|=0.0622 tolerance=0.0235 -> OUTSIDE TOLERANCE[0m
+[m3_grasp-2] [31m[ERROR] [1786280070.714855631] [m3_grasp]: GRIPPER_GOAL_REJECTED: achieved angle 0.4678 rad is 0.0622 rad from the table's expected 0.4055 rad for a 0.0450m object (tolerance 0.0235) — not treating this as a successful grasp, aborting the cycle.[0m
+[m3_grasp-2] [0m[INFO] [1786280071.311308701] [m3_grasp]: ground-truth grasp_tcp (Gazebo, not TF): [0.4872 -0.1757 0.8201]  error vs commanded: 0.0517 m[0m
+[m3_grasp-2] [0m[INFO] [1786280071.311424770] [m3_grasp]: wrote evidence to m3_grasp_probe_instrumented2.csv[0m
+[m3_grasp-2] [0m[INFO] [1786280071.311463510] [m3_grasp]: RUN SUMMARY: milestone=M3 result=GRIPPER_GOAL_REJECTED cartesian_fraction=1.0000 executed=yes tcp_error_m=0.0517 ground_truth=yes gripper_result=TIMED_OUT_HELD achieved_grip_angle=0.4678 expected_grip_angle=0.4055 within_tolerance=no[0m
+[ERROR] [m3_grasp-2]: process has died [pid 8460, exit code 1, cmd '/home/sachin/ur5e_ws/install/ur5e_pick_place/lib/ur5e_pick_place/m3_grasp --ros-args -r __node:=m3_grasp --params-file /tmp/launch_params_11rnxm19 --params-file /tmp/launch_params_15bp7wag --params-file /tmp/launch_params_yvx4eq3e --params-file /tmp/launch_params_jiyfo31a --params-file /tmp/launch_params_0lu1tu2t --params-file /tmp/launch_params_qm5l_4vb'].
