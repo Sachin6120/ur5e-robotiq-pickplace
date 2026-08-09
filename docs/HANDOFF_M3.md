@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. `pad_centre_offset` direction CONFIRMED correct; depth-tracking test shows a fixed ~z=0.96 clamp (not a simple offset error) causes the 32mm residual, mechanism still unexplained; a larger offset finds a capture-window edge (object ejected) instead of fixing it. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
+| M3 grasp node | First SUCCESS on record (n=1) — Test 1 (no object) still correctly rejects; Test 2 (object on real table) passes grasp-success check. ROOT CAUSE FOUND for the 32mm residual: inner knuckle links have NEGATIVE lateral clearance (-9.8mm) around this 45mm object — a gripper/object-width compatibility limit, not a `pad_centre_offset` calibration gap. Fingertip pads are correctly positioned; the inner knuckle assembly cannot clear this width at any standoff. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -1792,6 +1792,108 @@ throughout descent, the fingers are spread wider than the object and
 shouldn't intersect its width — leaving the actual clamp mechanism
 genuinely unexplained: a GUI look at the descent in progress is the
 natural next step, not a code-reading guess.
+
+## What touches first: inner knuckle links, not the pads — geometry confirmed live
+
+Written 2026-08-09, same session, direct follow-up to a sharper read of the
+depth-tracking data than the write-up above gave credit for: point 3
+(offset=0.030) reaching its FULL commanded depth with zero shortfall
+disproves a fixed-height clamp outright — if something were limiting the
+descent at a fixed z regardless of command, point 3 (commanded to go
+DEEPER than points 1-2) would have hit it too. It didn't; the object got
+displaced instead. That means the OBJECT is the obstruction, not a fixed
+mechanical limit independent of it. Sharper still: reconstructing
+`tool0 - tcp_offset` (NOT the full corrected offset — the naive,
+fingertip-link-origin anchor point) for the two stalled trials lands
+within 0.6-2.4mm of the object's own top face (`pick_pose.z=0.795 +
+half-height 0.045 = 0.840`) — checked, not assumed:
+
+```
+offset=0.000:    tool0-tcp_offset = 0.8376   gap to top = -2.4mm
+offset=0.013433: tool0-tcp_offset = 0.8406   gap to top = +0.6mm
+```
+
+That precision (sub-3mm on two independent trials) is not a coincidence.
+**The descent is terminating on contact with the object's TOP FACE, not
+settling around its sides at the intended pad-centre depth.**
+
+**Live-instrumented to find out which part, rather than guessed.** Two
+open questions this raised: (1) the open aperture (~85mm nominal for a
+2F-85) should give ~20mm clearance per side around a 45mm object — so
+either the approach is laterally misaligned by more than that, or some
+part OTHER than the pads is what's contacting; (2) is the commanded grasp
+z geometrically sound (targeting the object's centre, requiring the
+descent to pass the top face without contact)? Answered (1) directly:
+re-ran the grasp with a tight poll loop watching the log for "execution
+reported SUCCESS" (Cartesian descent complete, gripper still fully open,
+closing not yet started) and fired an immediate full `gz topic -e -t
+.../pose/info` snapshot at that instant — catching the geometry BEFORE any
+finger motion could confound it. Evidence:
+`docs/m3_grasp_probe_instrumented_20260809_145648.log` (run log) +
+`docs/m3_pose_snapshot_at_stall_20260809_145648.txt` (raw pose dump).
+
+**Result — fingertip pads have generous clearance; inner knuckle links do
+not, at all:**
+
+| part | y-separation | half-width | clearance vs. object half-width (22.5mm) | z vs. object top (0.840) |
+|---|---|---|---|---|
+| fingertip pads | 129.3mm | 64.6mm | **+42.1mm** (well clear) | −11.5 / −9.4mm (already below top — correct, intended depth) |
+| outer knuckle links | 61.2mm | 30.6mm | **+8.1mm** (clear, but tight) | +34.9 / +35.9mm (well above top at this instant) |
+| inner knuckle links | 25.4mm | 12.7mm | **−9.8mm** — **inside the object's own footprint** | +28.7 / +29.1mm (above top, but laterally already overlapping) |
+
+**This is decisive on its own, independent of any dynamics.** The
+fingertip pads are correctly positioned — already below the object's top,
+generously clear laterally, exactly where a proper grasp needs them. The
+inner knuckle links, by contrast, sit laterally INSIDE the object's own
+45mm-wide footprint (both left and right) at this fully-open aperture —
+meaning any further descent into the object's height band (0.75-0.840)
+guarantees a collision there, structurally, independent of the fingertip
+pads' own generous clearance. **It is not "the fingers failing to
+straddle" — the pads straddle fine. It's the knuckle assembly, closer to
+the base, whose lateral spacing does not scale with aperture the way the
+pad spacing does, and which cannot clear this object's width at all.**
+
+**Caveat, stated precisely rather than overclaimed**: this geometry was
+measured at ONE joint state (fully open, aperture=0) — whether the inner
+knuckle links' lateral position stays fixed across the full aperture range
+(plausible, since a rotating link's reported origin is typically at or
+near its fixed base pivot, not its swept extent) or changes with closing
+was NOT checked across multiple apertures this session. Treat "does not
+scale with aperture" as a reasoned inference from one measurement, not an
+established fact across the range.
+
+**Secondary, softer confirmation attempted, weaker than intended.** Tried
+a second instrumented capture ~1.3s into the closing window (mid-motion)
+to catch the actual contact moment. That particular re-run turned out
+noisier than the clean trials — `TIMED_OUT_HELD` rather than `STALLED`,
+`tcp_error_m=0.0517` (larger than the clean-trial baseline) — matching the
+still-occasional variability already documented in this contact regime.
+By 1.3s in, the object had already been shoved substantially from its
+spawn pose (~30mm/26mm lateral), making a clean "linkage vs. original
+footprint" comparison impossible; qualitatively still consistent with the
+inner knuckle links remaining very close to the object's (now-shifted)
+footprint, but this run is a supporting data point, not a second clean
+proof — don't lean on it the way the static full-open snapshot can be
+leaned on. Evidence: `docs/m3_grasp_probe_instrumented2_20260809_145648.log`
++ `docs/m3_pose_snapshot_mid_close_20260809_145648.txt`.
+
+**Consequence for the 32mm residual and for `pad_centre_offset` more
+generally**: this reframes the whole open question. It was never really a
+`pad_centre_offset` calibration error — the correction's DIRECTION is
+still confirmed right (per the zero-offset probe), but the MAGNITUDE
+question is moot for this object width: no value of `pad_centre_offset`
+fixes a gripper whose inner-knuckle assembly cannot geometrically clear a
+45mm-wide object. This is a **gripper/object width compatibility limit**,
+not a targeting-calibration gap — consistent with (and now mechanistically
+explaining) point 3's capture-window-edge finding above: push the standoff
+far enough and the interaction changes from "knuckle clips the top" to "the
+whole approach misses/glances," never passing through a clean zero-shortfall
+regime in between for this object width. **Not yet checked**: what the
+actual minimum clear object width is for this gripper (could be derived
+from the inner knuckle links' measured half-spacing, 12.7mm, i.e. objects
+narrower than ~25mm might clear structurally where 45mm does not) — this
+bears directly on `object.size` and M3's eventual object choice, not just
+on `pad_centre_offset`.
 
 **Net assessment**: the missing-table hypothesis from 2026-08-08 is
 confirmed as the dominant cause of Test 2's original three anomalies — not
