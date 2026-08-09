@@ -76,11 +76,22 @@ ament_target_dependencies(m3_grasp
   control_msgs
 )
 
+# --- diagnostic: CLI vs rclcpp_action::Client timing check, see
+# docs/HANDOFF_M3.md "check the CLI vs node action-client timing
+# difference" -- not part of the M-milestone chain, kept for reuse. ---
+add_executable(probe_gripper_cmd src/probe_gripper_cmd.cpp)
+ament_target_dependencies(probe_gripper_cmd
+  rclcpp
+  rclcpp_action
+  control_msgs
+)
+
 install(TARGETS
   m1_joint_goal
   static_scene_tf
   m2_cartesian_approach
   m3_grasp
+  probe_gripper_cmd
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
