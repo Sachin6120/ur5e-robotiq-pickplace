@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). But run-to-run variability now the headline finding: same config produced a stable 10s+ catch in one trial and a catch-then-release (large uncommanded joint excursion during descent, object slips free) in the next. n=2, not yet characterized. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). Run-to-run variability observed (stable hold / catch-then-release / hold-with-zero-disturbance, n=3, same config). Consistent stop near 0.09-0.10 rad traced to a real, directly-measured gap: this session's free-space sweep underestimates contact-loaded closure by 7.1mm at a comparable angle vs. the project's own grasp_table — every clearance number this session computed is probably still optimistic. Controller stall-timer carryover ruled out via source read. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2347,6 +2347,68 @@ explain a stale read. Not chased further given it didn't reproduce and
 time was better spent on the confirmed finding above — but worth
 remembering if a similarly stale-looking target value shows up again in a
 future session.
+
+## Why it consistently stops near 0.09-0.10 rad: two checks, one ruled out, one real lead
+
+Written 2026-08-09, same day, watching live with the user via
+`gazebo_gui:=true`. Across several runs at `preclose_margin_rad=0.30`,
+the final close consistently lands within ~0.005 rad of pre-close's own
+target (0.096-0.1055) regardless of outcome (stable hold, catch-then-
+release, or hold-with-zero-disturbance). That tight clustering, right at
+the pre-close boundary, is the thing to explain.
+
+**Check 1 — does the controller's stall-timer carry over from the
+pre-close hold into the final close, making it look stalled before it
+even starts moving? Ruled out, by reading the actual controller source,
+not guessing.** `gripper_close_and_hold()` unconditionally re-issues a
+hold command after every call (line ~306) — including pre-close — so the
+final close's goal is sent right after the joint was just being actively
+held stationary. If the stall-detection clock didn't reset on the new
+goal, a stall could fire almost instantly regardless of real motion.
+Checked directly:
+`/opt/ros/jazzy/include/gripper_action_controller/gripper_controllers/gripper_action_controller_impl.hpp`,
+`accepted_callback()`: `last_movement_time_ = get_node()->now();` runs
+unconditionally on every accepted goal (line 109), before the new goal
+starts executing. **This is not a stall-timer carryover bug** — the
+clock genuinely resets each time.
+
+**Check 2 — compare this project's own free-space sweep (used to build
+every clearance estimate this session) against its own established
+real-contact measurement. Found a real, directly-measured gap.** At a
+DIRECTLY comparable angle (0.4 rad, essentially the same as the grasp
+table's 0.40553 rad stall angle for a 45mm object): my free-space sweep
+(no object, gripper closing in open air) reads fingertip y-separation
+**102.7mm**. `grasp_table.yaml`/`06`'s sweep (a REAL 45mm object, contact-
+loaded, measured at the moment of genuine stall) reads **95.6mm** — 7.1mm
+LESS. **The contact-loaded gripper closes further than free-space
+kinematics predict at the same commanded angle.** More strikingly: the
+free-space sweep's fingertip separation never drops below ~102.5mm
+anywhere across the full tested range (0 to 0.767 rad) — it never reaches
+95.6mm AT ALL, at any angle, in free space.
+
+**Reading this**: dartsim doesn't rigidly enforce the mimic constraint
+(already established — `gz_ros2_control` writes follower positions in
+software, but genuine contact force CAN move them independently). Under
+real contact load, the follower/pad geometry compresses further than
+free-space software-mimicry alone predicts at the same master angle — a
+real compliance effect this session's free-space-only sweep never had a
+chance to see. **Every clearance number computed this session — the
+original ~29mm miscalculation, the corrected ~1.4mm/~12.6mm-per-side
+figures, all of it — was built entirely from the free-space sweep,
+and is therefore probably still systematically optimistic.** The true
+contact-loaded clearance at pre-close's aperture is unmeasured, but this
+comparison gives a directional, concrete reason to expect it's smaller
+than calculated — consistent with genuine contact starting almost as soon
+as the final close begins, which is exactly the observed clustering.
+
+**Not established**: the exact magnitude of this compliance effect at
+pre-close's much more open aperture (0.096-0.1055 rad) specifically — the
+7.1mm figure is measured at 0.4 rad, far more closed, and the effect may
+not be constant across the range. This explains the DIRECTION and gives a
+concrete mechanism, not a precise number to correct by. A real-contact
+sweep at the pre-close aperture specifically (same method as `06`, but at
+a much smaller commanded angle) would settle the magnitude — not run this
+session.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
