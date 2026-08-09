@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; lateral-capture failure confirmed and fixed for object width (preclose_margin_rad 0.05->0.30). Sim degradation FOUND and FIXED (full clean restart) after a compliance hypothesis was disproven by re-verification — process census alone doesn't guarantee sim health. Post-restart: the 0.09-0.10rad stopping point reproduces identically (real, not a degradation artifact); static clearance at pre-close's aperture re-measured clean at ~16mm/side (comfortable, not marginal) — both static explanations (compliance, insufficient clearance) now ruled out. Best-supported remaining hypothesis: the object shifts during descent (already confirmed via position-only trajectory capture) enough to close an otherwise-comfortable margin. Not yet passing, not yet reliable. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. NEW, unresolved: a free-space-only closure to the pre-close aperture (no object anywhere) took 60-90s instead of the usual <1s, with the stall-threshold fix confirmed still correctly loaded — a live, first-time manifestation of the never-closed-out "active-motion noise floor" risk flagged when that fix was picked. Casts doubt on how to interpret every TIMED_OUT_HELD result from today. Not yet passing, not yet reliable, not yet understood. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2483,6 +2483,77 @@ capture repeated with simultaneous fingertip-position tracking to see
 the margin actually closing), but this is now the best-supported
 remaining hypothesis, having survived two rounds of the other candidates
 being checked and eliminated.
+
+## A third run, watched live, reveals the object was never necessary at all
+
+Written 2026-08-09, still the same session, watching live with the user.
+Ran the identical trial a third time on the fresh sim: `TIMED_OUT_HELD`
+at `achieved=0.0909 rad`, `tcp_error_m=0.0077` — the THIRD near-identical
+reproduction (0.0914, 0.0912, 0.0909; 0.0078, 0.0078, 0.0077). Checked the
+object afterward: **zero displacement**, exactly at spawn — the second
+run (of three) with no disturbance at all, alongside two with visible
+shifts. Two sub-patterns at the identical config, not one.
+
+**That split motivated a cheaper, sharper test: does resistance require
+the object at all?** Removed the object entirely, reopened the gripper,
+commanded the SAME pre-close aperture (0.096 rad) with nothing anywhere
+near the gripper. **The command hung — a plain `ros2 action send_goal`
+with a 10s wrapper never returned.** Polled ground truth directly:
+the master joint was genuinely, slowly creeping (0.048 -> 0.056 -> 0.071
+rad over ~30s, not stuck at zero, not moving at normal speed either) —
+eventually reaching 0.096 and settling cleanly (`velocity≈0`), but only
+after roughly 60-90 SECONDS for a trivial, completely unobstructed
+0.096 rad closure. Every other pre-close call this entire session
+completed in under 1 second.
+
+**Checked, not assumed: is the stall-threshold fix actually still
+loaded?** `ros2 param get /gripper_controller stall_velocity_threshold`
+-> `0.05`; `stall_timeout` -> `0.2`. Correctly loaded, not reverted. This
+is NOT the fix regressing.
+
+**This is a live, first-time-observed manifestation of a risk this
+project flagged and never closed out**: when `stall_velocity_threshold`
+was picked (`docs/HANDOFF_M3.md`, "stall_velocity_threshold fix applied
+and validated"), the validation was explicitly against an
+ALREADY-RESOLVED CONTACT STALL — "Active-motion noise floor still
+unmeasured... a real approach could plausibly dip through 0.05 rad/s for
+a stray 0.2s window before actual contact and false-trigger a premature
+stall report." The measured noise floor itself (same doc,
+`gripper_stall_velocity_noise_20260806.log`) has a "rarer spike
+population (p99 0.245, max 0.264)" — i.e. even genuine rest occasionally
+exceeds the 0.05 rad/s threshold by 1% of samples. A SLOW, GENTLE
+free-space approach to a small target (not a fast open-to-closed sweep)
+spends a long time in a low-velocity regime where this same noise can
+repeatedly reset the stall timer's 0.2s quiet-window requirement, without
+ever being fast enough to look like "real" motion by the same threshold —
+plausibly explaining 60-90s of genuine, physical, if very slow, closing.
+
+**Why this matters for everything read as `TIMED_OUT_HELD` today**: the
+final close call in every grasp trial is bounded at 5.0s
+(`gripper.command_timeout_s`). If the SAME noise-driven latency affects
+that call — closing from ~0.096 toward 0.8 — then achieving only ~0.091
+within a 5-second bound may mean "hadn't gotten far into a genuinely slow
+approach yet," not "hit real resistance right at the pre-close boundary."
+This is a DIFFERENT, more fundamental candidate explanation than either
+the (already-ruled-out) compliance/clearance stories OR the
+already-queued "extend the bound and watch" diagnostic — except that
+diagnostic (run last session, `preclose_margin_rad=0.30`, 30s bound) saw
+a dramatic joint SWING (0.096 -> 0.497 -> 0), not a slow creep, so it does
+not cleanly fit this mechanism either. **Two different anomalous
+behaviors have now been observed at the same configuration
+(slow-creep-to-target in pure free space; dramatic swing-and-release
+during an actual grasp attempt) — not yet reconciled into one story.**
+
+**Not yet done, and higher priority than continuing to tune
+`preclose_margin_rad`**: reproduce the free-space slow-creep with direct
+velocity instrumentation (same method as the original noise-floor
+measurement — a dedicated rclcpp subscriber, not `gz topic -e` polling
+which is too coarse to see this) to confirm the noise-driven-reset
+mechanism directly rather than infer it. Until this is understood, treat
+EVERY `TIMED_OUT_HELD` result from today's session (and the
+`preclose_margin_rad=0.30` value itself) as measured against clocks whose
+meaning is now in question — not necessarily wrong, but not confidently
+interpretable either.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
