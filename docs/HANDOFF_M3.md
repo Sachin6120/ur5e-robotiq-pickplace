@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. NEW, unresolved: a free-space-only closure to the pre-close aperture (no object anywhere) took 60-90s instead of the usual <1s, with the stall-threshold fix confirmed still correctly loaded — a live, first-time manifestation of the never-closed-out "active-motion noise floor" risk flagged when that fix was picked. Casts doubt on how to interpret every TIMED_OUT_HELD result from today. Not yet passing, not yet reliable, not yet understood. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim degradation found and fixed (full clean restart, disproved a compliance hypothesis en route). Object-shift and clearance explanations both checked and ruled out. ROOT QUESTION REFRAMED: direct velocity instrumentation shows the SAME small free-space command (0.096 rad from open) produces three distinct, reproducible outcomes depending on context — clean fast success inside grasp trials (4/4), clean fast failure standalone (5/5, zero movement), and slow/absent creep (2 occurrences) — not reconciled by any theory tested tonight (object contact, clearance, or "recent activity" all ruled out or contradicted). Likely a gripper mechanism / physics-engine friction characteristic, not a targeting or contact question. Highest-priority open item for M3. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2554,6 +2554,68 @@ EVERY `TIMED_OUT_HELD` result from today's session (and the
 `preclose_margin_rad=0.30` value itself) as measured against clocks whose
 meaning is now in question — not necessarily wrong, but not confidently
 interpretable either.
+
+## Direct velocity instrumentation: three distinct, reproducible behaviors for the identical command — not reconciled
+
+Written 2026-08-09, still the same session. Built a dedicated `rclpy`
+subscriber to `/joint_states` (same method as the project's original
+2026-08-06 noise-floor measurement — direct subscription, not polling)
+and ran the SAME command (0.096 rad, from a genuinely open/settled 0.0
+rad, nothing anywhere near the gripper) repeatedly, in isolation.
+
+**Result 1 — 5/5 standalone trials, all identical: clean, fast FAILURE.**
+Every one of 5 repeated trials returned `stalled: true` at
+`position≈0` (literally no measurable movement — the velocity trace
+confirms exactly zero velocity for the entire capture window, not just a
+small drift) in 1.8-4.4 seconds. Not the 60-90s creep from the section
+above. Not a slow approach. Genuinely never started moving, and the
+controller correctly (from its own perspective) declared a stall because
+velocity truly never exceeded the noise floor.
+
+**This directly contradicts what happens inside every actual grasp
+trial**, where this SAME command (pre-close, target 0.096-0.1055 rad,
+also starting from a genuinely open state) has succeeded with
+`REACHED_GOAL` in every single logged run today (`traj_run3`,
+`watch_test`, `fresh_verify`, `watch2` — 4/4), taking 3.6-6.0s each time
+— slower than instant, but always genuine, measurable progress to the
+target, never a stall.
+
+**A third pattern, also reproduced**: one further isolated trial (this
+time preceded by 20 rapid `gz topic` queries, testing whether recent sim
+activity changes the outcome) hung well past 95 seconds with the joint
+still reading essentially exactly 0 position and 0 velocity — worse than
+the original 60-90s creep (that one at least showed measurable
+intermediate progress: 0.048, 0.056, 0.071 rad at successive checks; this
+one showed none at all within the observed window).
+
+**Three reproducible outcomes for the identical command, and no theory
+tested so far reconciles all three**: clean fast success (inside grasp
+trials), clean fast failure (standalone, 5/5), and slow-or-absent creep
+(standalone, 2 occurrences). Considered and rejected as a full
+explanation: "recent activity helps initiate motion" — the FINAL close
+call inside a grasp trial (the one that actually shows the problematic
+`TIMED_OUT_HELD`-near-0.09 pattern) is issued immediately after (a)
+pre-close's own motion, (b) pre-close's own explicit hold-to-stationary
+command, and (c) the arm's ~2s Cartesian descent — i.e. immediately after
+recent activity — yet IT is the unreliable one, while pre-close (also
+preceded by recent activity, the arm's joint-space move to pre-grasp) is
+consistently reliable. Recent activity alone does not cleanly predict
+which calls succeed.
+
+**Not resolved tonight.** This looks like a genuine, previously-unknown
+characteristic of this gripper's mechanism or the underlying physics
+engine's friction/stiction model for small, dead-stop position changes —
+not something ad-hoc live probing is well-suited to fully characterize.
+Flagging clearly rather than guessing further: a proper investigation
+needs a controlled, repeatable experimental design (e.g., systematically
+varying what immediately precedes the command — arm motion, gripper
+motion, idle time — across many trials each, not one-off probes), and
+likely needs to look at the physics engine's own contact/friction
+parameters for this joint, not just the ROS-level stall detection. This
+is now the most important open item for M3, ahead of any further
+`preclose_margin_rad` tuning, since it may be the true common cause behind
+the 0.09-0.10 rad clustering seen all session — with or without an
+object present.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
