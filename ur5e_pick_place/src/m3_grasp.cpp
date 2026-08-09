@@ -366,6 +366,7 @@ int main(int argc, char ** argv)
   std::vector<double> grasp_table_widths_m;
   std::vector<double> grasp_table_grip_angles_rad;
   double grasp_tolerance_rad = 0.0235;
+  double preclose_margin_rad = 0.05;
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
@@ -399,6 +400,7 @@ int main(int argc, char ** argv)
   node->get_parameter_or(
     "grasp_table_grip_angles_rad", grasp_table_grip_angles_rad, grasp_table_grip_angles_rad);
   node->get_parameter_or("grasp_tolerance_rad", grasp_tolerance_rad, grasp_tolerance_rad);
+  node->get_parameter_or("preclose_margin_rad", preclose_margin_rad, preclose_margin_rad);
 
   RCLCPP_INFO(
     logger, "GRASP MODE: %s",
@@ -419,6 +421,30 @@ int main(int argc, char ** argv)
       "CONFIG_ERROR: grasp_table_widths_m is empty. Did the launch file load "
       "config/grasp_table.yaml?");
     result = Result::CONFIG_ERROR;
+  }
+
+  // Grasp-table lookup moved here (was previously computed only after the
+  // final close call) so PRE-CLOSE, below, has a data-driven target angle
+  // to aim for before the Cartesian descent even starts — not just the
+  // grasp-success check afterward. Same interpolation, same table, used
+  // twice: once as a target, once as a verification threshold.
+  double expected_grip_angle = 0.0;
+  bool have_expected_grip_angle = false;
+  if (ur5e_pick_place::ok(result)) {
+    auto expected = interpolate_grip_angle(
+      grasp_table_widths_m, grasp_table_grip_angles_rad, object_width_m);
+    if (!expected) {
+      RCLCPP_ERROR(
+        logger,
+        "CONFIG_ERROR: object_width_m=%.4f falls outside grasp_table.yaml's "
+        "measured range [%.4f, %.4f] — refusing to extrapolate a "
+        "grasp-success tolerance past what was actually swept.",
+        object_width_m, grasp_table_widths_m.front(), grasp_table_widths_m.back());
+      result = Result::CONFIG_ERROR;
+    } else {
+      expected_grip_angle = *expected;
+      have_expected_grip_angle = true;
+    }
   }
 
   const double corrected_offset = tcp_offset + pad_centre_offset;
@@ -530,8 +556,8 @@ int main(int argc, char ** argv)
 
   GripperCloseResult grip;
   bool have_grip_result = false;
-  double expected_grip_angle = 0.0;
-  bool have_expected_grip_angle = false;
+  GripperCloseResult preclose_result;
+  bool have_preclose_result = false;
   bool within_tolerance = false;
 
   if (ur5e_pick_place::ok(result) && got_grasp_tf) {
@@ -583,6 +609,66 @@ int main(int argc, char ** argv)
       }
     }
 
+    // Stage 1.5: pre-close the gripper toward (expected_grip_angle -
+    // preclose_margin_rad) WHILE STILL AT PRE-GRASP HEIGHT — standoff
+    // metres above the object, free air, nothing to contact yet. This is
+    // the pre-close this project's own spec has required since the
+    // ejection finding (scene.yaml's gripper.preclose_heuristic), but
+    // m3_grasp.cpp never implemented it — confirmed by grep during this
+    // session's "what touches first" investigation. Turns out to matter
+    // for a second reason nobody had connected until the depth-tracking
+    // and knuckle-clearance findings met: with the gripper fully open
+    // through the ENTIRE descent (the previous behaviour), the ~8-9mm of
+    // pad (and knuckle) descent that happens as the joint closes from 0
+    // to grip_angle happens RIGHT NEXT TO the object, eating into the
+    // already-thin clearance margin. Pre-closing here means that descent
+    // happens in free air instead, and the final close-and-verify call
+    // below only has a few hundredths of a radian left to travel, not the
+    // full stroke. See docs/HANDOFF_M3.md, "positioned wrong or built
+    // wrong" and the cube-height follow-up.
+    //
+    // Target is expected_grip_angle MINUS a margin, not the expected angle
+    // itself: closing exactly to the expected contact angle in free air
+    // (nothing to stop it) would just drive to that commanded position
+    // with reached_goal:true, leaving nothing left to genuinely verify
+    // during the final close — the margin preserves a real, detectable
+    // contact event for the grasp-success check to act on.
+    auto gripper_client = rclcpp_action::create_client<GripperCommand>(
+      node, "/" + gripper_ctrl + "/gripper_cmd");
+    if (ur5e_pick_place::ok(result) && have_expected_grip_angle) {
+      if (!gripper_client->wait_for_action_server(
+            std::chrono::duration<double>(gripper_command_timeout_s)))
+      {
+        RCLCPP_ERROR(
+          logger, "GRIPPER_GOAL_REJECTED: action server /%s/gripper_cmd not available "
+          "within %.1fs (pre-close)", gripper_ctrl.c_str(), gripper_command_timeout_s);
+        if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
+      } else {
+        const double preclose_target =
+          std::max(0.0, expected_grip_angle - preclose_margin_rad);
+        preclose_result = gripper_close_and_hold(
+          gripper_client, preclose_target, gripper_max_effort, gripper_command_timeout_s,
+          gz_js_topic, actuated_joint, logger);
+        have_preclose_result = true;
+        RCLCPP_INFO(
+          logger, "pre-close: %s in achieved=%.4f rad (target was %.4f, free air)",
+          to_string(preclose_result.kind), preclose_result.achieved_position, preclose_target);
+        if (preclose_result.kind != GripperCloseResult::Kind::REACHED_GOAL) {
+          // Anything other than a clean REACHED_GOAL means something
+          // stopped the gripper before it reached its free-air target —
+          // by construction there should be nothing there to stop it.
+          // Don't proceed into the descent on an unexplained surprise.
+          RCLCPP_ERROR(
+            logger,
+            "GRIPPER_GOAL_REJECTED: pre-close reported %s instead of REACHED_GOAL in "
+            "what should be free air (no object in reach at pre-grasp height) — "
+            "refusing to descend on an unexplained result.",
+            to_string(preclose_result.kind));
+          if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
+        }
+      }
+    }
+
     // Stage 2: short vertical Cartesian descent to the corrected grasp
     // target. Same 0.95-fraction discipline as M2.
     if (ur5e_pick_place::ok(result)) {
@@ -626,79 +712,59 @@ int main(int argc, char ** argv)
 
     // -----------------------------------------------------------------
     // Gripper close, hold, and verify — only once the arm has genuinely
-    // reached the corrected grasp target.
+    // reached the corrected grasp target. Reuses gripper_client from the
+    // pre-close stage above (same action server, no need to reconnect).
     // -----------------------------------------------------------------
     if (executed) {
-      auto client = rclcpp_action::create_client<GripperCommand>(
-        node, "/" + gripper_ctrl + "/gripper_cmd");
-      if (!client->wait_for_action_server(std::chrono::duration<double>(gripper_command_timeout_s))) {
-        RCLCPP_ERROR(
-          logger, "GRIPPER_GOAL_REJECTED: action server /%s/gripper_cmd not available "
-          "within %.1fs", gripper_ctrl.c_str(), gripper_command_timeout_s);
-        if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
-      } else {
-        // Command PAST what the object permits and let contact stop it —
-        // same pattern as every measurement script in this project
-        // (04/06/m0_verify.sh's C2), not a new heuristic. Closed position
-        // resolved from the URDF's own joint bounds at runtime, per
-        // scene.yaml's own documented intent for gripper.closed_position,
-        // rather than hardcoding 0.8.
-        double target_position = 0.8;
-        if (auto model = move_group.getRobotModel()) {
-          if (auto joint = model->getJointModel(actuated_joint)) {
-            target_position = joint->getVariableBounds(actuated_joint).max_position_;
-          }
+      // Command PAST what the object permits and let contact stop it —
+      // same pattern as every measurement script in this project
+      // (04/06/m0_verify.sh's C2), not a new heuristic. Closed position
+      // resolved from the URDF's own joint bounds at runtime, per
+      // scene.yaml's own documented intent for gripper.closed_position,
+      // rather than hardcoding 0.8. With pre-close already having done
+      // most of the travel, this call's job is the small residual close
+      // plus genuine contact detection, not the whole stroke.
+      double target_position = 0.8;
+      if (auto model = move_group.getRobotModel()) {
+        if (auto joint = model->getJointModel(actuated_joint)) {
+          target_position = joint->getVariableBounds(actuated_joint).max_position_;
         }
+      }
 
-        grip = gripper_close_and_hold(
-          client, target_position, gripper_max_effort, gripper_command_timeout_s,
-          gz_js_topic, actuated_joint, logger);
-        have_grip_result = true;
+      grip = gripper_close_and_hold(
+        gripper_client, target_position, gripper_max_effort, gripper_command_timeout_s,
+        gz_js_topic, actuated_joint, logger);
+      have_grip_result = true;
 
+      RCLCPP_INFO(
+        logger, "gripper_close_and_hold: %s in achieved=%.4f rad (target was %.4f)",
+        to_string(grip.kind), grip.achieved_position, target_position);
+
+      if (grip.kind == GripperCloseResult::Kind::UNKNOWN_NO_SAMPLE) {
+        RCLCPP_ERROR(
+          logger, "GRIPPER_GOAL_REJECTED: overclose call produced no result AND "
+          "ground truth could not be sampled");
+        if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
+      } else if (have_expected_grip_angle) {
+        // Grasp-success verification: compare against the table, not the
+        // action's own stalled:true/reached_goal fields. See file header.
+        const double err = std::abs(grip.achieved_position - expected_grip_angle);
+        within_tolerance = err <= grasp_tolerance_rad;
         RCLCPP_INFO(
-          logger, "gripper_close_and_hold: %s in achieved=%.4f rad (target was %.4f)",
-          to_string(grip.kind), grip.achieved_position, target_position);
-
-        if (grip.kind == GripperCloseResult::Kind::UNKNOWN_NO_SAMPLE) {
+          logger,
+          "grasp-success check: achieved=%.4f expected=%.4f (width=%.4fm) "
+          "|err|=%.4f tolerance=%.4f -> %s",
+          grip.achieved_position, expected_grip_angle, object_width_m, err,
+          grasp_tolerance_rad, within_tolerance ? "WITHIN TOLERANCE" : "OUTSIDE TOLERANCE");
+        if (!within_tolerance) {
           RCLCPP_ERROR(
-            logger, "GRIPPER_GOAL_REJECTED: overclose call produced no result AND "
-            "ground truth could not be sampled");
+            logger,
+            "GRIPPER_GOAL_REJECTED: achieved angle %.4f rad is %.4f rad from the "
+            "table's expected %.4f rad for a %.4fm object (tolerance %.4f) — "
+            "not treating this as a successful grasp, aborting the cycle.",
+            grip.achieved_position, err, expected_grip_angle, object_width_m,
+            grasp_tolerance_rad);
           if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
-        } else {
-          // Grasp-success verification: compare against the table, not the
-          // action's own stalled:true/reached_goal fields. See file header.
-          auto expected = interpolate_grip_angle(
-            grasp_table_widths_m, grasp_table_grip_angles_rad, object_width_m);
-          if (!expected) {
-            RCLCPP_ERROR(
-              logger,
-              "CONFIG_ERROR: object_width_m=%.4f falls outside grasp_table.yaml's "
-              "measured range [%.4f, %.4f] — refusing to extrapolate a "
-              "grasp-success tolerance past what was actually swept.",
-              object_width_m, grasp_table_widths_m.front(), grasp_table_widths_m.back());
-            if (ur5e_pick_place::ok(result)) { result = Result::CONFIG_ERROR; }
-          } else {
-            expected_grip_angle = *expected;
-            have_expected_grip_angle = true;
-            const double err = std::abs(grip.achieved_position - expected_grip_angle);
-            within_tolerance = err <= grasp_tolerance_rad;
-            RCLCPP_INFO(
-              logger,
-              "grasp-success check: achieved=%.4f expected=%.4f (width=%.4fm) "
-              "|err|=%.4f tolerance=%.4f -> %s",
-              grip.achieved_position, expected_grip_angle, object_width_m, err,
-              grasp_tolerance_rad, within_tolerance ? "WITHIN TOLERANCE" : "OUTSIDE TOLERANCE");
-            if (!within_tolerance) {
-              RCLCPP_ERROR(
-                logger,
-                "GRIPPER_GOAL_REJECTED: achieved angle %.4f rad is %.4f rad from the "
-                "table's expected %.4f rad for a %.4fm object (tolerance %.4f) — "
-                "not treating this as a successful grasp, aborting the cycle.",
-                grip.achieved_position, err, expected_grip_angle, object_width_m,
-                grasp_tolerance_rad);
-              if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
-            }
-          }
         }
       }
     }
@@ -745,7 +811,7 @@ int main(int argc, char ** argv)
              "commanded_x,commanded_y,commanded_z,"
              "achieved_x,achieved_y,achieved_z,tcp_error_m,have_ground_truth,"
              "gripper_result_kind,achieved_grip_angle_rad,expected_grip_angle_rad,"
-             "within_tolerance\n";
+             "within_tolerance,preclose_result_kind,preclose_achieved_rad\n";
       csv << to_string(result) << ',' << achieved_fraction << ',' << (executed ? 1 : 0)
           << ',' << commanded_tcp[0] << ',' << commanded_tcp[1] << ',' << commanded_tcp[2]
           << ',' << achieved_tcp[0] << ',' << achieved_tcp[1] << ',' << achieved_tcp[2]
@@ -753,7 +819,9 @@ int main(int argc, char ** argv)
           << ',' << (have_grip_result ? to_string(grip.kind) : "N/A")
           << ',' << (have_grip_result ? grip.achieved_position : -1.0)
           << ',' << (have_expected_grip_angle ? expected_grip_angle : -1.0)
-          << ',' << (within_tolerance ? 1 : 0) << '\n';
+          << ',' << (within_tolerance ? 1 : 0)
+          << ',' << (have_preclose_result ? to_string(preclose_result.kind) : "N/A")
+          << ',' << (have_preclose_result ? preclose_result.achieved_position : -1.0) << '\n';
       RCLCPP_INFO(logger, "wrote evidence to %s", csv_path.c_str());
     } else {
       RCLCPP_ERROR(logger, "could not open %s for writing", csv_path.c_str());
@@ -764,13 +832,15 @@ int main(int argc, char ** argv)
     rclcpp::get_logger("m3_grasp"),
     "RUN SUMMARY: milestone=M3 result=%s cartesian_fraction=%.4f executed=%s "
     "tcp_error_m=%.4f ground_truth=%s gripper_result=%s achieved_grip_angle=%.4f "
-    "expected_grip_angle=%.4f within_tolerance=%s",
+    "expected_grip_angle=%.4f within_tolerance=%s preclose_result=%s preclose_achieved=%.4f",
     to_string(result), achieved_fraction, executed ? "yes" : "no", tcp_error_m,
     have_ground_truth ? "yes" : "no",
     have_grip_result ? to_string(grip.kind) : "N/A",
     have_grip_result ? grip.achieved_position : -1.0,
     have_expected_grip_angle ? expected_grip_angle : -1.0,
-    within_tolerance ? "yes" : "no");
+    within_tolerance ? "yes" : "no",
+    have_preclose_result ? to_string(preclose_result.kind) : "N/A",
+    have_preclose_result ? preclose_result.achieved_position : -1.0);
 
   executor.cancel();
   if (spinner.joinable()) { spinner.join(); }

@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Root cause of the 32mm residual confirmed via URDF mesh geometry: knuckle/object-HEIGHT incompatibility. Object changed to 45mm cube per the derived clearance formula — depth-tracking confirmed fixed (tcp_error 32mm->4.1mm), but grasp still fails: a DIFFERENT mechanism (fingertip pads' own descent-while-closing) now binds instead. Object geometry choice still open. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log |
+| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented (m3_grasp.cpp) and validated in free air. Neither the 90mm nor the 45mm-cube object grasps cleanly yet. A self-found bug in this session's Z-axis mesh analysis (physically-impossible prediction on a sanity check) means the deeper "why" for the pre-close result is NOT reliably established — retracted, not reported as fact. Y-axis knuckle-overlap finding (27.4mm) stands, independently cross-validated. Next: GUI look or position-only trajectory capture, not more formula-guessing. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_preclose_test_*.log |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2052,6 +2052,85 @@ the pads' own descent-while-closing — a mechanism the "positioned wrong or
 built wrong" analysis didn't model, because it only asked whether the
 KNUCKLE clears at a FIXED grasp depth, not whether the PADS clear while
 actively closing.**
+
+## Pre-close implemented — validated in free air, but a self-found bug blocks trusting the deeper analysis
+
+Written 2026-08-09, same session. Implemented pre-close in `m3_grasp.cpp`
+per the reasoning above: a new Stage 1.5 between pre-grasp arrival and the
+Cartesian descent, closing to `interpolate_grip_angle(width) -
+preclose_margin_rad` (new `grasp.preclose_margin_rad` scalar in
+scene.yaml, default 0.05 rad, unvalidated) while still at pre-grasp
+height — free air, standoff metres above the object. Reuses the SAME
+`gripper_close_and_hold` bounded-close mechanism, just with a different
+target and a different expected outcome (`REACHED_GOAL`, not `STALLED` —
+nothing should be there to stall against). Grasp-table interpolation moved
+earlier in the function so this target is available before the descent;
+the final close-and-verify call downstream is otherwise unchanged, just
+starting from a smaller residual. Compiled clean
+(`colcon build --packages-select ur5e_pick_place`).
+
+**Pre-close itself works exactly as designed.** Live run:
+`pre-close: REACHED_GOAL in achieved=0.3460 rad (target was 0.3555, free
+air)` — clean, no anomaly, confirms nothing is in the way at pre-grasp
+height and the mechanism does what it's supposed to.
+
+**The grasp still fails — with a DIFFERENT, not obviously related,
+symptom.** Final result: `gripper_close_and_hold: REACHED_GOAL in
+achieved=0.7906 rad` (essentially fully closed — the same signature as
+Test 1's original no-object trial) and `tcp_error_m=0.0651` (65mm, worse
+than either the pre-preclose 32mm or the non-preclose cube test's 4.1mm).
+Checked ground truth: the object moved from its settled spawn pose by
+~17mm/12mm laterally, Z UNCHANGED (still exactly at table height) — shoved
+sideways along the table, not knocked into the air. `docs/m3_grasp_preclose_test_*.log`.
+
+**Attempted to explain this with the same STL-mesh method that resolved
+the knuckle question — found a bug in my own analysis before trusting it,
+not after.** Extended the mesh-bounding-box approach to estimate the
+fingertip pad's Z-extent (not just knuckle Y-extent) and to model the
+KNUCKLE's Z-sweep during the whole descent trajectory (not just its final
+resting position) — reasoning that pre-closing before descent means the
+already-lowered knuckle sweeps through the object's height band for the
+ENTIRE Cartesian descent, not just at the end, which the earlier "final
+position only" margin check never modeled. This produced numbers
+suggesting collision was likely (and worse with pre-close than without).
+**Before reporting that as a finding, sanity-checked it against a case
+where the physical answer is already known**: applied the same mesh-Z
+method to the earlier NON-preclose h=45mm test (fully open aperture, no
+contact yet, wrist_3 ground truth already on record) and asked where it
+predicts the pad's lowest point to be. **Answer: 0.7447m — below the
+table surface (0.750m), which is physically impossible** (the gripper
+never touched the table in that trial). The origin-based reading from the
+SAME moment (0.801m, using this project's established `tcp_offset`
+methodology) is physically sensible and consistent with everything
+observed. **This means my mesh-based Z-axis reasoning has an unresolved
+bug or methodological error — most likely a mismatch between the STL
+mesh's authored local frame and the rotation I applied, or the wrong mesh
+file/orientation source** — not yet found. The Y-axis knuckle-overlap
+finding (27.4mm) is NOT necessarily affected (it was independently
+cross-validated by the aperture-invariance argument, a separate,
+purely-mathematical check unrelated to any Z-axis reasoning), but
+everything built on the mesh-based Z-extent — the "h<75.7mm" formula, the
+"15.4mm margin at h=45mm," and this session's attempted explanation for
+why pre-close made things worse — **is retracted as unverified, not
+confirmed**. Better to find this by checking against a known-physical case
+than to hand the user a formula built on a silent bug.
+
+**Where this leaves things, honestly**: pre-close's mechanism is
+validated (clean in free air) and worth keeping — it's still a documented
+spec requirement independent of whether it alone solves this object's
+grasp. But it did not fix the h=45mm cube grasp, and turned a
+partially-understood failure (pad stalls at ~0 rad) into a
+less-understood one (full closure, object shoved sideways) that this
+session's tools couldn't reliably explain. **Not recommended: continuing
+to guess at further targeting/geometry tweaks without a reliable way to
+verify them** — this is exactly the "trial number five" scenario worth
+avoiding. **Two paths forward, neither taken yet**: (1) a live GUI look
+(`gazebo_gui:=true`) — this agent cannot see it directly, but the user
+can; (2) a position-only (no mesh/orientation math) multi-sample capture
+of the object's ground-truth pose throughout the descent trajectory, to
+at least pin down WHEN contact starts without relying on the buggy
+mesh-Z method. Both are more reliable than another formula built on the
+same unverified geometric reasoning.
 
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads

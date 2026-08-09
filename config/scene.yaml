@@ -257,7 +257,39 @@ grasp:
   # 0.0235 rad. Used as-is (not halved) to keep margin against a tolerance
   # picked to be exactly as tight as the one data point that produced it.
   # Refine once real repeated trials exist at this object's actual width.
+  #
+  # grasp_tolerance_rad and preclose_margin_rad (below) are related but
+  # distinct: this one bounds the FINAL achieved-vs-expected comparison;
+  # preclose_margin_rad bounds how much travel is deliberately left for
+  # that final comparison to have something real to measure.
   grasp_tolerance_rad: 0.0235
+
+  # ADDED 2026-08-09: m3_grasp.cpp had no pre-close — the gripper stayed
+  # fully open through the whole Cartesian descent, confirmed by grep
+  # during the "what touches first" investigation. This was already a
+  # documented spec requirement from the ejection finding
+  # (gripper.preclose_heuristic below), but never implemented. It turns
+  # out to matter for a second reason: with the gripper open through the
+  # whole descent, the ~8-9mm of pad/knuckle descent that happens as the
+  # joint closes from 0 toward grip_angle happens RIGHT NEXT TO the
+  # object, eating into an already-thin clearance margin (see
+  # docs/HANDOFF_M3.md, the cube-height follow-up). Pre-closing at
+  # pre-grasp height (free air, nothing to contact) moves that travel out
+  # of the way.
+  #
+  # This is the MARGIN subtracted from grasp_table.yaml's interpolated
+  # grip_angle to get the pre-close target — NOT the pre-close target
+  # itself, and NOT the same quantity as gripper.preclose_heuristic below
+  # (that one is a free-space aperture-matching placeholder pending
+  # width_map; this one works off the grasp table's AT-CONTACT
+  # measurements instead, which is more directly applicable here).
+  # Pre-closing to the full expected angle in free air would leave nothing
+  # for the final close-and-verify call to detect — this margin keeps a
+  # real, small residual stroke for that check to act on.
+  #
+  # UNVALIDATED VALUE: 0.05 rad is a starting point, not measured. Refine
+  # once live trials exist with pre-close active.
+  preclose_margin_rad: 0.05
 
 # ---------------------------------------------------------------------------
 gripper:

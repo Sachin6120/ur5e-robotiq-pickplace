@@ -191,6 +191,7 @@ def _setup(context, *args, **kwargs):
                 "grasp_table_widths_m": grasp_table_widths_m,
                 "grasp_table_grip_angles_rad": grasp_table_grip_angles_rad,
                 "grasp_tolerance_rad": float(grasp["grasp_tolerance_rad"]),
+                "preclose_margin_rad": float(grasp["preclose_margin_rad"]),
             },
         ],
     )
