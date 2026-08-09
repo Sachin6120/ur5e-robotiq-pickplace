@@ -2722,6 +2722,52 @@ and clearance nominally comfortable — is UNCHANGED by tonight's detour
 and should be revisited fresh, on a newly-restarted sim, without the
 distraction of a caller-dependent theory that turned out not to exist.
 
+**Made the gate real, not just a narrative lesson.** Added
+`gz_assert_gripper_responsive` to `scripts/lib/gz_settle.sh`, same shape
+as `gz_assert_clean_slate` — a behavioral precondition asserted before
+trusting a session, not a process census (which this specific failure
+mode is invisible to). Commands the gripper open, then to a small test
+aperture, and `[STOP]`s if that doesn't cleanly return `reached_goal:
+true` within a bound. **First version used a 3.0s bound and immediately
+false-alarmed** on the genuinely-healthy fresh sim (took 3.21s) — caught
+before trusting it, not after: action-server discovery/connection
+overhead alone varied 0.2-3.2s across tonight's own confirmed-healthy
+`probe_gripper_cmd` trials, unrelated to gripper health. Widened to 8s
+(still nowhere near the 60-90s degraded pattern) and re-validated: 3/3
+clean passes on the current fresh instance.
+
+**The uncomfortable corollary, written down as asked rather than acted on
+unilaterally**: several numbers from tonight (and possibly earlier
+sessions) were measured 20-40+ minutes into a sim instance's lifetime,
+without this gate existing yet. Not "redo everything," but anything
+still load-bearing for M3 deserves one fresh-instance re-confirmation
+before being built on further:
+- The lateral-capture trajectory-capture magnitudes (8.7mm, ~17mm/12mm,
+  ~5mm lift) — these predate tonight's degradation discovery and their
+  exact position in any instance's lifetime wasn't tracked at the time.
+- The ~16.1mm clearance-at-pre-close-aperture figure and the
+  empirically-derived 25.3mm/side pad inset it depends on — measured
+  AFTER the first restart tonight, likely early, but not confirmed
+  against this gate specifically.
+- The "achieved grip angle consistently lands near 0.09-0.10 rad"
+  pattern itself, across all of tonight's grasp trials — some of those
+  runs may have been on an already-drifting instance even before full
+  degradation set in enough to fail outright (degradation is presumably
+  gradual, not a step function at exactly 30 minutes).
+- Anything from EARLIER project sessions (prior to today) that was
+  measured well into a long working session — not audited tonight, flagged
+  as a category to watch, not a specific claim that any of it is wrong.
+
+**Recurring pattern worth naming explicitly, third time now**: this
+project has now found the anomaly under investigation was ENVIRONMENTAL
+three separate times — orphaned processes (accumulating across repeated
+launches), a stale repo/workspace symlink desync (edits silently having
+zero effect), and now sim instance degradation over cumulative runtime.
+Each time, the thing actually being studied (the robot, the grasp, the
+gripper) was fine, and the RIG was not. Worth treating "is this
+environmental" as a standing first question for the next surprising
+result, not just this one.
+
 **Consequence, not yet resolved**: there may be a genuine trade-off here,
 not a simple monotonic "shorter is better." A taller object gave the pads
 more downward travel budget before their own closing-descent reached the

@@ -166,6 +166,62 @@ gz_wait_controller_active_bounded() {
   return 0
 }
 
+# gz_assert_gripper_responsive [gripper_ctrl] [master_joint] [bound_s]
+#
+# BEHAVIORAL health check, not a process census -- complements
+# gz_assert_clean_slate rather than replacing it. Confirmed live
+# 2026-08-09 (docs/HANDOFF_M3.md, "RESOLVED: it was never about the
+# caller -- cumulative sim runtime, again"): this sim measurably degrades
+# within roughly 30-40 minutes of heavy gripper testing in ways
+# gz_assert_clean_slate's process census cannot see (checked clean both
+# times the degradation was found). Confirmed via a controlled A/B: 4/4
+# success under 1s each on a fresh instance, 21/21 failure (stuck at
+# exactly zero position/velocity, or 60-90s creeps) after cumulative
+# runtime on a degraded one -- across every ROS2 action client type
+# tested (CLI, persistent rclpy, rclcpp matching this project's own M3
+# node), ruling out anything client-side. Environmental, not physical:
+# a small, genuinely unobstructed close should complete in well under a
+# second; if it doesn't, the SIM is suspect, not the gripper or whatever
+# is being measured against it.
+#
+# Commands the gripper open, then to a small test aperture, and [STOP]s
+# if that doesn't complete with reached_goal:true inside <bound_s>
+# (default 8s). NOT tight against the actual close motion, which is
+# consistently ~0.15-0.3s when healthy -- action-server discovery/
+# connection overhead alone varied 0.2-3.2s across confirmed-healthy
+# trials the night this was built (unrelated to gripper health, just
+# DDS/ROS2 connection variance), so the bound has to clear that noise
+# floor with margin. 8s is still nowhere near the 60-90s degraded
+# pattern this check exists to catch. Leaves the gripper open on either
+# outcome. Run this before trusting ANY gripper measurement in a session
+# that has been running a while, the same way gz_assert_clean_slate is
+# run before trusting a "fresh" launch -- a precondition asserted, not
+# assumed. A load-bearing number measured LATE in a long session without
+# this check should get one fresh-instance re-confirmation before being
+# trusted, not be treated as final on the strength of a clean process
+# census alone.
+gz_assert_gripper_responsive() {
+  local ctrl="${1:-gripper_controller}" joint="${2:-robotiq_85_left_knuckle_joint}" bound="${3:-8.0}"
+  ros2 action send_goal "/${ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
+    "{command: {position: 0.0, max_effort: 50.0}}" >/dev/null 2>&1
+  local t0 t1 elapsed out
+  t0=$(date +%s.%N)
+  out=$(timeout "$bound" ros2 action send_goal "/${ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
+    "{command: {position: 0.1, max_effort: 50.0}}" 2>&1)
+  local rc=$?
+  t1=$(date +%s.%N)
+  elapsed=$(python3 -c "print(f'{${t1} - ${t0}:.2f}')")
+  ros2 action send_goal "/${ctrl}/gripper_cmd" control_msgs/action/GripperCommand \
+    "{command: {position: 0.0, max_effort: 50.0}}" >/dev/null 2>&1
+  if [[ $rc -ne 0 ]] || ! printf '%s\n' "$out" | grep -q "reached_goal: true"; then
+    printf '  [STOP] gz_assert_gripper_responsive: a trivial 0.1rad close did not cleanly succeed within %ss (took %ss) -- sim is likely degraded (see docs/HANDOFF_M3.md), not a property of "%s". Restart the sim before trusting any measurement.\n' \
+      "$bound" "$elapsed" "$joint" >&2
+    return 1
+  fi
+  printf '  [ok] gripper responsive: 0.1rad close completed cleanly in %ss\n' "$elapsed"
+  return 0
+}
+
 # gripper_close_and_hold <gripper_ctrl> <master_joint> <target_pos> <max_effort> <cmd_timeout_s> <gz_joint_state_topic> <outfile>
 #
 # Sends a gripper_cmd goal toward <target_pos>, bounded by <cmd_timeout_s>,
