@@ -17,6 +17,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(moveit_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -60,7 +61,11 @@ ament_target_dependencies(m2_cartesian_approach
 )
 
 # --- M3: pad-centre-corrected grasp + grasp-success verification ------------
-add_executable(m3_grasp src/m3_grasp.cpp)
+# transport.cpp is a separate translation unit (lift/transport/place/release/
+# retreat) rather than folded into m3_grasp.cpp -- see that file's own header
+# for why: m3_grasp.cpp is verified and produced this project's first
+# successful grasp, and is not the file to edit blind.
+add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -69,6 +74,7 @@ ament_target_dependencies(m3_grasp
   rclcpp_action
   moveit_ros_planning_interface
   moveit_core
+  moveit_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs

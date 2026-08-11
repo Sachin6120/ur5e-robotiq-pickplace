@@ -3,14 +3,15 @@
 //
 // EVIDENCE THIS PRODUCES
 //   Approach to a pad-centre-corrected grasp target (reusing M2's proven
-//   two-stage joint+Cartesian pattern), a bounded gripper close-and-hold,
-//   and a grasp-success verdict from comparing the achieved joint angle
-//   against config/grasp_table.yaml — NOT from trusting the ROS action's
-//   own stalled:true result. See docs/HANDOFF_M3.md, "Pad-centre correction
-//   and grasp-success verification: design, not yet implemented" (now
-//   implemented, this file) and the section above it, "box-settle
-//   false-quiescence", for why stalled:true alone is not sufficient
-//   evidence of a real grasp.
+//   two-stage joint+Cartesian pattern) and a bounded gripper close-and-hold —
+//   NOT trusting the ROS action's own stalled:true result for the achieved
+//   position (see gripper_close_and_hold). See docs/HANDOFF_M3.md,
+//   "Pad-centre correction and grasp-success verification: design, not yet
+//   implemented" (now implemented, this file) and the section above it,
+//   "box-settle false-quiescence", for why stalled:true alone is not
+//   sufficient evidence of a real grasp. The grasp VERDICT itself —
+//   whether the object was actually carried — is not decided here at all;
+//   see "GRASP-SUCCESS VERIFICATION, NOT THE ACTION RESULT" below.
 //
 // WHAT THIS DELIBERATELY DOES NOT DO YET
 //   No lift, no retreat, no attachObject, no post-lift slip check. Those are
@@ -38,13 +39,24 @@
 //   grasp-success check below is the first live check of whether this
 //   correction actually improves anything.
 //
-// GRASP-SUCCESS VERIFICATION, NOT THE ACTION RESULT
+// GRASP-SUCCESS VERIFICATION IS NOT ANGLE-BASED
 //   After gripper_close_and_hold-equivalent logic settles on an achieved
 //   joint angle, that angle is compared against config/grasp_table.yaml's
 //   grip_angle_rad (interpolated for object.size[grasp_width_axis]) within
-//   grasp.grasp_tolerance_rad. Outside tolerance -> GRIPPER_GOAL_REJECTED,
-//   the cycle aborts rather than proceeding as if a successful attach were
-//   evidence of a successful grasp.
+//   grasp.grasp_tolerance_rad and logged — INFORMATIONAL ONLY. It used to
+//   abort the cycle (GRIPPER_GOAL_REJECTED) outside tolerance; that was
+//   removed. Reasoning: against a rigid object the joint physically cannot
+//   advance past geometric touch (DART will not allow real interpenetration),
+//   so squeeze is a force, not an angle, and no angle band — wide or narrow
+//   — can serve as a grasp verdict. A wide band (the one this file shipped
+//   with first) passes a bare-touch non-grasp as WITHIN TOLERANCE; a narrow
+//   one written to demand real squeeze (grasp.squeeze) would fail every
+//   real grasp too, including good ones, for the same underlying reason.
+//   Transport is attempted on every cycle that produced a real close sample
+//   regardless of this check (see attempted_transport below); the actual
+//   verdict — whether the object was carried — comes from Gazebo's own pose
+//   ground truth via scripts/lib/slip.py, same separation of concerns
+//   transport.hpp documents for attachObject.
 //
 // NOTHING IS HARDCODED
 //   Every threshold, offset and table value arrives as a ROS parameter from
@@ -72,6 +84,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -80,10 +93,14 @@
 #include <vector>
 
 #include "ur5e_pick_place/failure.hpp"
+#include "ur5e_pick_place/gz_topic_utils.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
+#include "ur5e_pick_place/transport.hpp"
 
 using ur5e_pick_place::Result;
 using ur5e_pick_place::to_string;
+using ur5e_pick_place::run_command;
+using ur5e_pick_place::parse_joint_position;
 using namespace std::chrono_literals;
 using GripperCommand = control_msgs::action::GripperCommand;
 
@@ -103,20 +120,6 @@ tf2::Matrix3x3 R_from_rpy(double roll, double pitch, double yaw)
 
 const tf2::Matrix3x3 kR_wrist3_to_flange = R_from_rpy(0.0, -M_PI_2, -M_PI_2);
 const tf2::Matrix3x3 kR_flange_to_tool0 = R_from_rpy(M_PI_2, 0.0, M_PI_2);
-
-std::string run_command(const std::string & cmd)
-{
-  std::array<char, 4096> buf;
-  std::string out;
-  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
-  if (!pipe) {
-    return out;
-  }
-  while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr) {
-    out += buf.data();
-  }
-  return out;
-}
 
 // Same parse as m2_cartesian_approach.cpp — see that file's header for why
 // this replaced a ros_gz_bridge TFMessage approach.
@@ -161,29 +164,10 @@ std::optional<tf2::Transform> parse_link_pose(const std::string & dump, const st
   return tf2::Transform(q, origin);
 }
 
-// Ground-truth JOINT position (not a link pose) for a named joint, from a
-// `gz topic -e` text dump of a gz.msgs.Model joint_state topic. Used only
-// as the TIMED_OUT_HELD fallback below, same role as gz_settle.sh's
-// gripper_close_and_hold(): the action client's own result future is the
-// primary source, this is what covers "the command call itself never
-// returned a Result before the bound expired."
-std::optional<double> parse_joint_position(const std::string & dump, const std::string & joint_name)
-{
-  const std::string name_needle = "name: \"" + joint_name + "\"";
-  auto name_pos = dump.find(name_needle);
-  if (name_pos == std::string::npos) {
-    return std::nullopt;
-  }
-  auto pos_key = dump.find("position:", name_pos);
-  // Bound the search to this joint's own block: stop at the next "joint {"
-  // or end of string, so a malformed/short dump can't accidentally read a
-  // neighboring joint's position field.
-  auto next_joint = dump.find("joint {", name_pos + name_needle.size());
-  if (pos_key == std::string::npos || (next_joint != std::string::npos && pos_key > next_joint)) {
-    return std::nullopt;
-  }
-  return std::strtod(dump.c_str() + pos_key + std::string("position:").size(), nullptr);
-}
+// run_command() and parse_joint_position() now live in gz_topic_utils.hpp,
+// shared with transport.cpp's own grasp-loss check (Stage 3, lift_transport_
+// place) rather than duplicated — used below (TIMED_OUT_HELD fallback) the
+// same way they always were.
 
 // Linear interpolation of grasp_table.yaml's (width_m, grip_angle_rad)
 // rows for `width`. Returns nullopt if width falls outside the measured
@@ -300,10 +284,38 @@ GripperCloseResult gripper_close_and_hold(
     out.kind = GripperCloseResult::Kind::TIMED_OUT_HELD;
   }
 
-  // Unconditional hold at wherever the joint actually ended up — this is
-  // the fix, not the fallback. Best-effort: a hold-call timeout here is
-  // logged but does not change the outcome already determined above.
-  auto hold_result = send_and_wait(out.achieved_position);
+  // Unconditional hold, re-commanding `target` (not `out.achieved_position`)
+  // — changed 2026-08-11. Re-commanding wherever the joint landed was the
+  // original fix (validated 2026-08-06, see the header comment above) for a
+  // real bug: the ROS action's own internal loop kept driving toward the
+  // ORIGINAL target forever after reporting done, with nothing capping it,
+  // and a stalled grasp left alone could eject the object it just grasped
+  // minutes later. That fix predates this file's lift/transport pipeline;
+  // nobody had reason to check whether "hold at achieved position" still
+  // held anything once real load (gravity, lift acceleration) was applied
+  // against a bounded, application-level hold rather than an uncapped
+  // low-level one.
+  //
+  // It does not. gz_ros2_control's POSITION command branch converts a
+  // position command into a velocity command every control cycle
+  // (gz_system.cpp, GazeboSimSystem::write, same mechanism
+  // stall_monitor.py's header documents): commanding the position the
+  // joint is ALREADY at drives that P-loop's error, and with it the
+  // commanded velocity/force, to ~0 — DART then applies no sustained
+  // constraint force to maintain closure. The grip goes slack the instant
+  // this hold is issued, which is exactly when the subsequent lift needs
+  // it not to. Re-commanding `target` (the original close goal, e.g. the
+  // joint's max bound) keeps the error — and the commanded velocity/effort
+  // — railed into the contact for as long as the object blocks it, the
+  // same way a real gripper keeps commanding closed rather than "stay
+  // exactly here." Trade-off: since `target` remains physically
+  // unreachable once contact is made, this call will generally also run
+  // out its own `cmd_timeout_s` bound before returning (same ~5s the
+  // initial close already spent), roughly doubling this function's own
+  // worst-case duration versus commanding the already-reached
+  // `achieved_position`. Accepted deliberately: a slower, real hold beats
+  // a fast, slack one.
+  auto hold_result = send_and_wait(target);
   out.have_hold_result = hold_result.has_value();
   if (!out.have_hold_result) {
     RCLCPP_WARN(
@@ -337,12 +349,17 @@ int main(int argc, char ** argv)
   // ---------------------------------------------------------------------
   std::string world_frame = "world";
   std::string grasp_frame_name = "grasp_frame";
+  std::string place_frame_name = "place_frame";
   std::string tool0_frame = "tool0";
   double standoff = 0.0;
+  double retreat = 0.0;
+  double slip_sample_dwell_s = 2.0;
+  double release_position_rad = 0.0;
   double tcp_offset = 0.0;
   double pad_centre_offset = 0.0;
   double tf_lookup_timeout_s = 2.0;
   double cartesian_fraction_min = 0.95;
+  double grasp_pose_error_max_m = 0.005;
   double planning_time_s = 5.0;
   int plan_attempts = 10;
   double vel_scale = 0.1;
@@ -367,15 +384,21 @@ int main(int argc, char ** argv)
   std::vector<double> grasp_table_grip_angles_rad;
   double grasp_tolerance_rad = 0.0235;
   double preclose_margin_rad = 0.05;
+  double grasp_loss_threshold_rad = 0.01;
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
+  node->get_parameter_or("place_frame_name", place_frame_name, place_frame_name);
   node->get_parameter_or("tool0_frame", tool0_frame, tool0_frame);
   node->get_parameter_or("standoff", standoff, standoff);
+  node->get_parameter_or("retreat", retreat, retreat);
+  node->get_parameter_or("slip_sample_dwell_s", slip_sample_dwell_s, slip_sample_dwell_s);
+  node->get_parameter_or("release_position_rad", release_position_rad, release_position_rad);
   node->get_parameter_or("tcp_offset", tcp_offset, tcp_offset);
   node->get_parameter_or("pad_centre_offset", pad_centre_offset, pad_centre_offset);
   node->get_parameter_or("tf_lookup_timeout_s", tf_lookup_timeout_s, tf_lookup_timeout_s);
   node->get_parameter_or("cartesian_fraction_min", cartesian_fraction_min, cartesian_fraction_min);
+  node->get_parameter_or("grasp_pose_error_max_m", grasp_pose_error_max_m, grasp_pose_error_max_m);
   node->get_parameter_or("planning_time_s", planning_time_s, planning_time_s);
   node->get_parameter_or("plan_attempts", plan_attempts, plan_attempts);
   node->get_parameter_or("velocity_scaling", vel_scale, vel_scale);
@@ -401,6 +424,8 @@ int main(int argc, char ** argv)
     "grasp_table_grip_angles_rad", grasp_table_grip_angles_rad, grasp_table_grip_angles_rad);
   node->get_parameter_or("grasp_tolerance_rad", grasp_tolerance_rad, grasp_tolerance_rad);
   node->get_parameter_or("preclose_margin_rad", preclose_margin_rad, preclose_margin_rad);
+  node->get_parameter_or(
+    "grasp_loss_threshold_rad", grasp_loss_threshold_rad, grasp_loss_threshold_rad);
 
   RCLCPP_INFO(
     logger, "GRASP MODE: %s",
@@ -413,6 +438,14 @@ int main(int argc, char ** argv)
       "CONFIG_ERROR: grasp.standoff must be > 0, got %.4f. Approach with zero "
       "standoff is not an approach.",
       standoff);
+    result = Result::CONFIG_ERROR;
+  }
+  if (ur5e_pick_place::ok(result) && retreat <= 0.0) {
+    RCLCPP_ERROR(
+      logger,
+      "CONFIG_ERROR: grasp.retreat must be > 0, got %.4f. A zero-distance "
+      "lift leaves the object at grasp height with nowhere to clear.",
+      retreat);
     result = Result::CONFIG_ERROR;
   }
   if (ur5e_pick_place::ok(result) && grasp_table_widths_m.empty()) {
@@ -559,6 +592,8 @@ int main(int argc, char ** argv)
   GripperCloseResult preclose_result;
   bool have_preclose_result = false;
   bool within_tolerance = false;
+  bool attempted_transport = false;
+  Result transport_result = Result::SUCCESS;
 
   if (ur5e_pick_place::ok(result) && got_grasp_tf) {
     moveit::planning_interface::MoveGroupInterface move_group(node, kPlanningGroup);
@@ -699,6 +734,61 @@ int main(int argc, char ** argv)
         executed = (exec_code == moveit::core::MoveItErrorCode::SUCCESS);
         if (executed) {
           RCLCPP_INFO(logger, "execution reported SUCCESS");
+
+          // ---------------------------------------------------------------
+          // Stage 2 verification. Execution reporting SUCCESS means the
+          // controller finished its trajectory, not that the arm is where it
+          // was told — M2 established these can disagree, which is why this
+          // comes from Gazebo and not TF. Checked HERE, before the close: the
+          // close sweeps the pads 7.8mm along the approach axis, so anything
+          // measured after it is measuring a different geometry than the one
+          // that was commanded, and this is the only moment the arm stands at
+          // the commanded grasp pose with nothing having moved since.
+          //
+          // A hard abort, not a log line: if the descent lands somewhere
+          // other than commanded and the node closes anyway, that cycle
+          // enters the statistics as a grasp that failed on contact — and it
+          // reads exactly like a friction problem instead of the positioning
+          // problem it actually was.
+          rclcpp::sleep_for(500ms);
+          if (auto tool0_gt = ground_truth_tool0()) {
+            tf2::Vector3 tcp_gt = tool0_gt->getOrigin() +
+              tool0_gt->getBasis() * tf2::Vector3(0, 0, corrected_offset);
+            achieved_tcp[0] = tcp_gt.x();
+            achieved_tcp[1] = tcp_gt.y();
+            achieved_tcp[2] = tcp_gt.z();
+            tcp_error_m = std::sqrt(
+              std::pow(achieved_tcp[0] - commanded_tcp[0], 2) +
+              std::pow(achieved_tcp[1] - commanded_tcp[1], 2) +
+              std::pow(achieved_tcp[2] - commanded_tcp[2], 2));
+            have_ground_truth = true;
+            RCLCPP_INFO(
+              logger,
+              "stage 2 ground truth: grasp_tcp (Gazebo, not TF) = [%.4f %.4f %.4f]  "
+              "tcp_error_m=%.4f (max %.4f)",
+              achieved_tcp[0], achieved_tcp[1], achieved_tcp[2], tcp_error_m,
+              grasp_pose_error_max_m);
+
+            if (tcp_error_m > grasp_pose_error_max_m) {
+              RCLCPP_ERROR(
+                logger,
+                "POSE_VERIFY_FAILURE: descent reported SUCCESS but ground truth "
+                "puts the TCP %.4f m from the commanded grasp pose (max %.4f). "
+                "Closing here would produce a cycle that reads as a friction "
+                "failure. Aborting before the close.",
+                tcp_error_m, grasp_pose_error_max_m);
+              result = Result::POSE_VERIFY_FAILURE;
+            }
+          } else {
+            RCLCPP_ERROR(
+              logger,
+              "no ground-truth pose found for '%s' via `gz topic -e -t %s` — is "
+              "the sim running? Cannot verify the descent landed where it was "
+              "commanded; treating this as unverified rather than trusting "
+              "stalled:true alone.",
+              gt_wrist3_link_name.c_str(), gz_pose_topic.c_str());
+            result = Result::POSE_VERIFY_FAILURE;
+          }
         } else {
           RCLCPP_ERROR(
             logger,
@@ -712,10 +802,11 @@ int main(int argc, char ** argv)
 
     // -----------------------------------------------------------------
     // Gripper close, hold, and verify — only once the arm has genuinely
-    // reached the corrected grasp target. Reuses gripper_client from the
-    // pre-close stage above (same action server, no need to reconnect).
+    // reached the corrected grasp target AND that has been verified against
+    // ground truth (Stage 2 verification above). Reuses gripper_client from
+    // the pre-close stage above (same action server, no need to reconnect).
     // -----------------------------------------------------------------
-    if (executed) {
+    if (executed && ur5e_pick_place::ok(result)) {
       // Command PAST what the object permits and let contact stop it —
       // same pattern as every measurement script in this project
       // (04/06/m0_verify.sh's C2), not a new heuristic. Closed position
@@ -746,60 +837,157 @@ int main(int argc, char ** argv)
           "ground truth could not be sampled");
         if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
       } else if (have_expected_grip_angle) {
-        // Grasp-success verification: compare against the table, not the
-        // action's own stalled:true/reached_goal fields. See file header.
+        // within_tolerance is INFORMATIONAL ONLY, logged for the CSV/summary
+        // and nothing else — it does not gate transport and does not set
+        // `result`. Against a rigid object the joint physically cannot
+        // advance past geometric touch (DART will not allow a mm of
+        // interpenetration per side), so no achieved-angle band can ever
+        // distinguish a real squeeze from the fingers merely resting at
+        // first contact — a wide tolerance passes a gap as a grasp, a tight
+        // one (e.g. gripper.squeeze) fails every real grasp including good
+        // ones. Angle cannot be the verdict either way. Whether the object
+        // was actually grasped is decided from Gazebo's own pose ground
+        // truth, by scripts/lib/slip.py, same separation of concerns
+        // transport.hpp already documents for attachObject.
         const double err = std::abs(grip.achieved_position - expected_grip_angle);
         within_tolerance = err <= grasp_tolerance_rad;
         RCLCPP_INFO(
           logger,
-          "grasp-success check: achieved=%.4f expected=%.4f (width=%.4fm) "
-          "|err|=%.4f tolerance=%.4f -> %s",
+          "grasp-success check (informational only, does not gate the cycle): "
+          "achieved=%.4f expected=%.4f (width=%.4fm) |err|=%.4f tolerance=%.4f -> %s",
           grip.achieved_position, expected_grip_angle, object_width_m, err,
           grasp_tolerance_rad, within_tolerance ? "WITHIN TOLERANCE" : "OUTSIDE TOLERANCE");
-        if (!within_tolerance) {
+      }
+    }
+
+    // -----------------------------------------------------------------
+    // Lift, transport, place, release, retreat — the legs M3's criterion
+    // names that this file did not have. Attempted whenever the close
+    // produced a real sample (grip.kind != UNKNOWN_NO_SAMPLE, checked
+    // above), regardless of within_tolerance — see the comment at that
+    // check for why achieved angle cannot be the gate. Running transport
+    // unconditionally lets Gazebo's own ground truth (slip.py) decide every
+    // cycle uniformly, including the ones angle would have wrongly
+    // dismissed or wrongly waved through.
+    // -----------------------------------------------------------------
+    if (ur5e_pick_place::ok(result)) {
+      attempted_transport = true;
+
+      // place_frame is published by static_scene_tf the same way grasp_frame
+      // is: world -> object_frame at object.place_pose, then the SAME
+      // approach_axis/gripper_roll rotation grasp_frame uses. Looked up here
+      // rather than recomputed, so the orientation math exists in exactly
+      // one place in this project.
+      bool got_place_tf = false;
+      tf2::Transform T_world_place;
+      {
+        auto t0 = std::chrono::steady_clock::now();
+        const auto deadline = t0 + std::chrono::duration<double>(tf_lookup_timeout_s);
+        std::string tf_error;
+        while (std::chrono::steady_clock::now() < deadline) {
+          if (tf_buffer->canTransform(world_frame, place_frame_name, tf2::TimePointZero, &tf_error)) {
+            auto stamped = tf_buffer->lookupTransform(world_frame, place_frame_name, tf2::TimePointZero);
+            tf2::fromMsg(stamped.transform, T_world_place);
+            got_place_tf = true;
+            break;
+          }
+          rclcpp::sleep_for(20ms);
+        }
+        if (!got_place_tf) {
           RCLCPP_ERROR(
             logger,
-            "GRIPPER_GOAL_REJECTED: achieved angle %.4f rad is %.4f rad from the "
-            "table's expected %.4f rad for a %.4fm object (tolerance %.4f) — "
-            "not treating this as a successful grasp, aborting the cycle.",
-            grip.achieved_position, err, expected_grip_angle, object_width_m,
-            grasp_tolerance_rad);
-          if (ur5e_pick_place::ok(result)) { result = Result::GRIPPER_GOAL_REJECTED; }
+            "TF_LOOKUP_TIMEOUT: could not resolve %s -> %s within %.1fs: %s. "
+            "static_scene_tf only publishes this if object.place_pose was "
+            "passed to it — check the launch file.",
+            world_frame.c_str(), place_frame_name.c_str(), tf_lookup_timeout_s,
+            tf_error.c_str());
+          transport_result = Result::TF_LOOKUP_TIMEOUT;
+          if (ur5e_pick_place::ok(result)) { result = transport_result; }
         }
+      }
+
+      if (got_place_tf) {
+        // Full gripper pose in the planning frame, composed the SAME way
+        // grasp_pose was above (T_world_grasp * T_tcp_tool0) — orientation
+        // included. A position-only place pose plans to an arbitrary wrist
+        // orientation and drops the object sideways; this is the one place
+        // flagged as likeliest to get wrong, so it is built identically to
+        // the already-verified grasp_pose rather than freshly invented.
+        tf2::Transform T_world_place_tool0 = T_world_place * T_tcp_tool0;
+        geometry_msgs::msg::Pose place_pose_msg;
+        tf2::toMsg(T_world_place_tool0, place_pose_msg);
+
+        // approach_axis "already resolved from object_frame into the
+        // planning frame", exactly as transport.hpp's contract requires:
+        // grasp_frame's own local Z axis, expressed in world, IS that
+        // resolved axis by construction (orientation_from_approach_axis in
+        // static_scene_tf.cpp puts local Z along approach_axis). Reusing it
+        // via the already-looked-up T_world_grasp avoids a second copy of
+        // the approach_axis parameter and the rotation math that builds it.
+        tf2::Vector3 world_z = T_world_grasp.getBasis() * tf2::Vector3(0, 0, 1);
+
+        ur5e_pick_place::TransportParams tp;
+        tp.approach_axis = {{world_z.x(), world_z.y(), world_z.z()}};
+        tp.lift_distance = retreat;
+        tp.standoff = standoff;
+        tp.place_pose = place_pose_msg;
+        tp.cartesian_fraction_min = cartesian_fraction_min;
+        tp.eef_step = eef_step;
+        tp.release_position_rad = release_position_rad;
+        tp.slip_sample_dwell_s = slip_sample_dwell_s;
+        tp.velocity_scaling = vel_scale;
+        tp.acceleration_scaling = acc_scale;
+        tp.cycle_index = 0;
+        tp.sim_instance = 0;
+        // Grasp-loss check (transport.hpp's Stage 3 note). Left at
+        // TransportParams' own defaults (expected_grip_angle=0.0, disabling
+        // the check) when the grasp table didn't resolve an expected angle
+        // for this object width — same guard have_expected_grip_angle
+        // already uses above for the informational within_tolerance check.
+        if (have_expected_grip_angle) {
+          tp.expected_grip_angle = expected_grip_angle;
+          tp.grasp_loss_threshold_rad = grasp_loss_threshold_rad;
+          tp.actuated_joint = actuated_joint;
+          tp.gz_js_topic = gz_js_topic;
+        }
+
+        // Reuses gripper_close_and_hold rather than a new send-only helper:
+        // "send toward this position, then unconditionally hold wherever it
+        // ended up" is exactly what a release needs too, not just a close.
+        // Any outcome that produced an achieved position (REACHED_GOAL,
+        // STALLED, TIMED_OUT_HELD) counts as a usable release; only
+        // UNKNOWN_NO_SAMPLE — no result AND ground truth unreadable — is a
+        // real failure, because it leaves the object's state unknown with
+        // the retreat still to come.
+        std::function<Result(double)> release_gripper =
+          [&](double rad) -> Result {
+            auto rel = gripper_close_and_hold(
+              gripper_client, rad, gripper_max_effort, gripper_command_timeout_s,
+              gz_js_topic, actuated_joint, logger);
+            RCLCPP_INFO(
+              logger, "release: %s in achieved=%.4f rad (target was %.4f)",
+              to_string(rel.kind), rel.achieved_position, rad);
+            if (rel.kind == GripperCloseResult::Kind::UNKNOWN_NO_SAMPLE) {
+              return Result::GRIPPER_GOAL_REJECTED;
+            }
+            return Result::SUCCESS;
+          };
+
+        transport_result = ur5e_pick_place::lift_transport_place(
+          node, move_group, tp, release_gripper);
+        if (ur5e_pick_place::ok(result)) { result = transport_result; }
       }
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Ground-truth TCP evidence, identical timing/method to M2.
-  // ---------------------------------------------------------------------
-  if (executed) {
-    rclcpp::sleep_for(500ms);
-    if (auto tool0_gt = ground_truth_tool0()) {
-      tf2::Vector3 tcp_gt = tool0_gt->getOrigin() +
-        tool0_gt->getBasis() * tf2::Vector3(0, 0, corrected_offset);
-      achieved_tcp[0] = tcp_gt.x();
-      achieved_tcp[1] = tcp_gt.y();
-      achieved_tcp[2] = tcp_gt.z();
-      tcp_error_m = std::sqrt(
-        std::pow(achieved_tcp[0] - commanded_tcp[0], 2) +
-        std::pow(achieved_tcp[1] - commanded_tcp[1], 2) +
-        std::pow(achieved_tcp[2] - commanded_tcp[2], 2));
-      have_ground_truth = true;
-      RCLCPP_INFO(
-        logger,
-        "ground-truth grasp_tcp (Gazebo, not TF): [%.4f %.4f %.4f]  "
-        "error vs commanded: %.4f m",
-        achieved_tcp[0], achieved_tcp[1], achieved_tcp[2], tcp_error_m);
-    } else {
-      RCLCPP_ERROR(
-        logger,
-        "no ground-truth pose found for '%s' via `gz topic -e -t %s` — is "
-        "the sim running? Evidence is commanded-only, not verified against "
-        "physical truth.",
-        gt_wrist3_link_name.c_str(), gz_pose_topic.c_str());
-    }
-  }
+  // Ground-truth TCP evidence (tcp_error_m, achieved_tcp, have_ground_truth)
+  // is now captured earlier, at Stage 2 verification — right after the
+  // descent and before the close, the only moment the arm stands at the
+  // commanded grasp pose with nothing having moved since. A second
+  // measurement here, after lift/transport/place, would be comparing the
+  // arm's post-cycle position against the pre-cycle grasp target and calling
+  // the (expected, large) difference an "error" — removed rather than kept
+  // as a second, now-meaningless number.
 
   // ---------------------------------------------------------------------
   // CSV evidence, written regardless of outcome.
@@ -811,7 +999,8 @@ int main(int argc, char ** argv)
              "commanded_x,commanded_y,commanded_z,"
              "achieved_x,achieved_y,achieved_z,tcp_error_m,have_ground_truth,"
              "gripper_result_kind,achieved_grip_angle_rad,expected_grip_angle_rad,"
-             "within_tolerance,preclose_result_kind,preclose_achieved_rad\n";
+             "within_tolerance,preclose_result_kind,preclose_achieved_rad,"
+             "attempted_transport,transport_result\n";
       csv << to_string(result) << ',' << achieved_fraction << ',' << (executed ? 1 : 0)
           << ',' << commanded_tcp[0] << ',' << commanded_tcp[1] << ',' << commanded_tcp[2]
           << ',' << achieved_tcp[0] << ',' << achieved_tcp[1] << ',' << achieved_tcp[2]
@@ -821,7 +1010,9 @@ int main(int argc, char ** argv)
           << ',' << (have_expected_grip_angle ? expected_grip_angle : -1.0)
           << ',' << (within_tolerance ? 1 : 0)
           << ',' << (have_preclose_result ? to_string(preclose_result.kind) : "N/A")
-          << ',' << (have_preclose_result ? preclose_result.achieved_position : -1.0) << '\n';
+          << ',' << (have_preclose_result ? preclose_result.achieved_position : -1.0)
+          << ',' << (attempted_transport ? 1 : 0)
+          << ',' << (attempted_transport ? to_string(transport_result) : "N/A") << '\n';
       RCLCPP_INFO(logger, "wrote evidence to %s", csv_path.c_str());
     } else {
       RCLCPP_ERROR(logger, "could not open %s for writing", csv_path.c_str());
@@ -832,7 +1023,8 @@ int main(int argc, char ** argv)
     rclcpp::get_logger("m3_grasp"),
     "RUN SUMMARY: milestone=M3 result=%s cartesian_fraction=%.4f executed=%s "
     "tcp_error_m=%.4f ground_truth=%s gripper_result=%s achieved_grip_angle=%.4f "
-    "expected_grip_angle=%.4f within_tolerance=%s preclose_result=%s preclose_achieved=%.4f",
+    "expected_grip_angle=%.4f within_tolerance=%s preclose_result=%s preclose_achieved=%.4f "
+    "attempted_transport=%s transport_result=%s",
     to_string(result), achieved_fraction, executed ? "yes" : "no", tcp_error_m,
     have_ground_truth ? "yes" : "no",
     have_grip_result ? to_string(grip.kind) : "N/A",
@@ -840,7 +1032,9 @@ int main(int argc, char ** argv)
     have_expected_grip_angle ? expected_grip_angle : -1.0,
     within_tolerance ? "yes" : "no",
     have_preclose_result ? to_string(preclose_result.kind) : "N/A",
-    have_preclose_result ? preclose_result.achieved_position : -1.0);
+    have_preclose_result ? preclose_result.achieved_position : -1.0,
+    attempted_transport ? "yes" : "no",
+    attempted_transport ? to_string(transport_result) : "N/A");
 
   executor.cancel();
   if (spinner.joinable()) { spinner.join(); }

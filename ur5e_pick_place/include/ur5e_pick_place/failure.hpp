@@ -25,7 +25,13 @@ enum class Result
   TF_LOOKUP_TIMEOUT,        // tf2 lookup exceeded tf_lookup_timeout_s
   GRIPPER_GOAL_REJECTED,    // gripper action rejected, or not reached in time
   SLIP_CHECK_FAILURE,       // post-lift slip exceeded post_lift_slip_max_m
-  CONFIG_ERROR              // required parameter missing or inconsistent
+  CONFIG_ERROR,             // required parameter missing or inconsistent
+  POSE_VERIFY_FAILURE,      // execution reported SUCCESS but ground truth
+                            // disagrees with the commanded pose
+  GRASP_LOST_DURING_LIFT    // actuated joint closed past
+                            // expected_grip_angle + grasp_loss_threshold_rad
+                            // during the lift leg -- the object left the
+                            // fingers under load; transport is not attempted
 };
 
 inline const char * to_string(Result r)
@@ -39,6 +45,8 @@ inline const char * to_string(Result r)
     case Result::GRIPPER_GOAL_REJECTED:  return "GRIPPER_GOAL_REJECTED";
     case Result::SLIP_CHECK_FAILURE:     return "SLIP_CHECK_FAILURE";
     case Result::CONFIG_ERROR:           return "CONFIG_ERROR";
+    case Result::POSE_VERIFY_FAILURE:    return "POSE_VERIFY_FAILURE";
+    case Result::GRASP_LOST_DURING_LIFT: return "GRASP_LOST_DURING_LIFT";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the

@@ -128,21 +128,29 @@ int main(int argc, char ** argv)
   std::string grasp_frame_name = "grasp_frame";
   std::string flange_frame = "tool0";
   std::string tcp_frame_name = "grasp_tcp";
+  std::string place_frame_name = "place_frame";
 
   std::vector<double> pick_pose;        // x y z roll pitch yaw
   std::vector<double> approach_axis;    // x y z, in object_frame
   double gripper_roll = 0.0;
   double tcp_offset = 0.0;
+  // place_pose is OPTIONAL, unlike pick_pose: static_scene_tf is shared by
+  // m2_cartesian_approach.launch.py (no place leg, never sets this) and
+  // m3_grasp.launch.py (does). Absent or malformed -> skip publishing
+  // place_frame rather than CONFIG_ERROR, so M2 is untouched.
+  std::vector<double> place_pose;       // x y z roll pitch yaw
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
   node->get_parameter_or("object_frame_name", object_frame_name, object_frame_name);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
   node->get_parameter_or("flange_frame", flange_frame, flange_frame);
   node->get_parameter_or("tcp_frame_name", tcp_frame_name, tcp_frame_name);
+  node->get_parameter_or("place_frame_name", place_frame_name, place_frame_name);
   node->get_parameter_or("pick_pose", pick_pose, pick_pose);
   node->get_parameter_or("approach_axis", approach_axis, approach_axis);
   node->get_parameter_or("gripper_roll", gripper_roll, gripper_roll);
   node->get_parameter_or("tcp_offset", tcp_offset, tcp_offset);
+  node->get_parameter_or("place_pose", place_pose, place_pose);
 
   if (pick_pose.size() != 6) {
     RCLCPP_ERROR(
@@ -187,16 +195,53 @@ int main(int argc, char ** argv)
   auto t_flange_tcp = make_transform(
     flange_frame, tcp_frame_name, 0.0, 0.0, tcp_offset, q_identity, now);
 
-  broadcaster->sendTransform({t_world_object, t_object_grasp, t_flange_tcp});
+  std::vector<geometry_msgs::msg::TransformStamped> transforms{
+    t_world_object, t_object_grasp, t_flange_tcp};
 
+  // world -> place_frame: SAME composition as world -> grasp_frame (world ->
+  // object_frame at pick_pose, THEN the approach_axis/gripper_roll rotation),
+  // just re-anchored at place_pose instead of pick_pose. This is the one
+  // piece flagged as the likeliest place to get wrong: a place target needs a
+  // full gripper pose, orientation included, built the same way the grasp
+  // pose is -- not a position-only pose that leaves the wrist orientation
+  // arbitrary and drops the object sideways. Published directly world ->
+  // place_frame (not object_frame -> place_frame with a second hop) because
+  // place_pose, like pick_pose, is expressed in world, not relative to the
+  // pick location.
+  bool published_place_frame = false;
+  if (!place_pose.empty()) {
+    if (place_pose.size() != 6) {
+      RCLCPP_ERROR(
+        logger,
+        "CONFIG_ERROR: place_pose must have 6 values (x y z roll pitch yaw) "
+        "if provided at all, got %zu — not publishing %s",
+        place_pose.size(), place_frame_name.c_str());
+    } else {
+      tf2::Quaternion q_place_object;
+      q_place_object.setRPY(place_pose[3], place_pose[4], place_pose[5]);
+      tf2::Quaternion q_place = q_place_object * q_grasp;
+      auto t_world_place = make_transform(
+        world_frame, place_frame_name, place_pose[0], place_pose[1], place_pose[2],
+        q_place, now);
+      transforms.push_back(t_world_place);
+      published_place_frame = true;
+    }
+  }
+
+  broadcaster->sendTransform(transforms);
+
+  const std::string place_frame_log = published_place_frame
+    ? (", " + world_frame + "->" + place_frame_name + " (place_pose)")
+    : std::string();
   RCLCPP_INFO(
     logger,
     "published static frames: %s->%s (pick_pose), %s->%s (approach_axis=[%.3f %.3f %.3f] "
-    "roll=%.3f), %s->%s (tcp_offset=%.4f)",
+    "roll=%.3f), %s->%s (tcp_offset=%.4f)%s",
     world_frame.c_str(), object_frame_name.c_str(),
     object_frame_name.c_str(), grasp_frame_name.c_str(),
     approach_axis[0], approach_axis[1], approach_axis[2], gripper_roll,
-    flange_frame.c_str(), tcp_frame_name.c_str(), tcp_offset);
+    flange_frame.c_str(), tcp_frame_name.c_str(), tcp_offset,
+    place_frame_log.c_str());
 
   rclcpp::spin(node);
   rclcpp::shutdown();

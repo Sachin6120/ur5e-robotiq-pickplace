@@ -45,6 +45,20 @@ def _load_scene_xacro_args_module():
     return module
 
 
+def _load_gripper_geometry_module():
+    # scripts/lib/gripper_geometry.py's closed-form pad kinematics, loaded the
+    # same way scene_xacro_args.py is above. release_position_rad is computed
+    # HERE rather than typed into scene.yaml by hand: the pads travel 13.5mm
+    # along the approach axis across the aperture range, so an arbitrary
+    # "open" angle is a vertical motion as well as a lateral one, with the
+    # object sitting on the table underneath the place descent.
+    path = os.path.expanduser("~/ur5e_pickplace/scripts/lib/gripper_geometry.py")
+    spec = importlib.util.spec_from_file_location("gripper_geometry", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _setup(context, *args, **kwargs):
     scene_file = LaunchConfiguration("scene_file").perform(context)
     grasp_table_file = LaunchConfiguration("grasp_table_file").perform(context)
@@ -57,6 +71,7 @@ def _setup(context, *args, **kwargs):
     try:
         frames = scene["frames"]
         object_pose = scene["object"]["pick_pose"]
+        place_pose_cfg = scene["object"]["place_pose"]
         object_size = scene["object"]["size"]
         grasp_width_axis = int(scene["object"]["grasp_width_axis"])
         grasp = scene["grasp"]
@@ -99,14 +114,33 @@ def _setup(context, *args, **kwargs):
         float(object_pose["x"]), float(object_pose["y"]), float(object_pose["z"]),
         float(object_pose["roll"]), float(object_pose["pitch"]), float(object_pose["yaw"]),
     ]
+    place_pose = [
+        float(place_pose_cfg["x"]), float(place_pose_cfg["y"]), float(place_pose_cfg["z"]),
+        float(place_pose_cfg["roll"]), float(place_pose_cfg["pitch"]), float(place_pose_cfg["yaw"]),
+    ]
     approach_axis = [float(v) for v in grasp["approach_axis"]]
     base_args = _load_scene_xacro_args_module().xacro_base_args(scene)
+
+    # RELEASE_CLEARANCE_M: added to the object's own width before solving for
+    # the release aperture, so the pads open clear of the object rather than
+    # stopping exactly at its width (which would still graze it going past on
+    # the retreat). Not in scene.yaml -- a fixed 10mm margin, same order of
+    # magnitude as the ~13.6mm the pads themselves move vertically across the
+    # aperture range, chosen here rather than measured because "how much
+    # clearance is enough" isn't a geometric fact to derive, it's a margin to
+    # pick.
+    RELEASE_CLEARANCE_M = 0.010
+    gripper_geometry = _load_gripper_geometry_module()
+    release_position_rad = gripper_geometry.theta_for_width(
+        object_width_m + RELEASE_CLEARANCE_M
+    )
 
     world_frame = frames["world"]
     flange_frame = frames["flange"]
     tcp_frame = frames["tcp"]
     object_frame_name = "object_frame"
     grasp_frame_name = "grasp_frame"
+    place_frame_name = "place_frame"
 
     # NOTE: static_scene_tf publishes tool0->grasp_tcp using tcp_offset
     # ALONE (correct for what that frame documents — see
@@ -126,9 +160,11 @@ def _setup(context, *args, **kwargs):
                 "world_frame": world_frame,
                 "object_frame_name": object_frame_name,
                 "grasp_frame_name": grasp_frame_name,
+                "place_frame_name": place_frame_name,
                 "flange_frame": flange_frame,
                 "tcp_frame_name": tcp_frame,
                 "pick_pose": pick_pose,
+                "place_pose": place_pose,
                 "approach_axis": approach_axis,
                 "gripper_roll": float(grasp["gripper_roll"]),
                 "tcp_offset": float(grasp["tcp_offset"]),
@@ -162,12 +198,17 @@ def _setup(context, *args, **kwargs):
                 "use_sim_time": True,
                 "world_frame": world_frame,
                 "grasp_frame_name": grasp_frame_name,
+                "place_frame_name": place_frame_name,
                 "tool0_frame": flange_frame,
                 "standoff": float(grasp["standoff"]),
+                "retreat": float(grasp["retreat"]),
+                "slip_sample_dwell_s": float(grasp["slip_sample_dwell_s"]),
+                "release_position_rad": release_position_rad,
                 "tcp_offset": float(grasp["tcp_offset"]),
                 "pad_centre_offset": float(grasp["pad_centre_offset"]),
                 "tf_lookup_timeout_s": float(thresholds["tf_lookup_timeout_s"]),
                 "cartesian_fraction_min": float(thresholds["cartesian_fraction_min"]),
+                "grasp_pose_error_max_m": float(thresholds["grasp_pose_error_max_m"]),
                 "planning_time_s": float(thresholds["planning_time_s"]),
                 "plan_attempts": int(thresholds["plan_attempts"]),
                 "velocity_scaling": 0.1,
@@ -192,6 +233,7 @@ def _setup(context, *args, **kwargs):
                 "grasp_table_grip_angles_rad": grasp_table_grip_angles_rad,
                 "grasp_tolerance_rad": float(grasp["grasp_tolerance_rad"]),
                 "preclose_margin_rad": float(grasp["preclose_margin_rad"]),
+                "grasp_loss_threshold_rad": float(grasp["grasp_loss_threshold_rad"]),
             },
         ],
     )

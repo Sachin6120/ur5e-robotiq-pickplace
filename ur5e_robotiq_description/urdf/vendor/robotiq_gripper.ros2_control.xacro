@@ -1,0 +1,128 @@
+<?xml version="1.0"?>
+<!-- Vendored copy of robotiq_description's own robotiq_gripper.ros2_control.xacro
+     (ros-jazzy-robotiq-description, an apt-installed system package, NOT
+     part of this project's git tree, so it can't be edited in place without
+     the change being invisible to version control and lost on any package
+     reinstall). Same reasoning as vendoring robotiq_2f_85_macro.urdf.xacro
+     itself: own the file, track the diff.
+
+     ONE CHANGE from upstream: the actuated joint
+     (robotiq_85_left_knuckle_joint) gains a `state_interface name="effort"`.
+     gz_system.cpp's read() computes effort from JointTransmittedWrench for
+     revolute joints and binds it whenever the interface is declared, so
+     this is the only line needed to make it observable on /joint_states.
+     Added 2026-08-11 to test a specific hypothesis: gripper_close_and_hold()
+     re-sends its hold at the joint's achieved position rather than the
+     original close target (see m3_grasp.cpp), which drives the P-loop's
+     position error toward zero and, with it, the commanded velocity/force,
+     meaning the grip may go slack the instant the hold is issued, exactly
+     when the lift needs it to hold. This interface turns that from an
+     inference (read the code, reason about the control law) into a
+     measurement (read the joint's own effort during the hold). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:macro name="robotiq_gripper_ros2_control" params="
+        name
+        prefix
+        sim_ignition:=false
+        sim_isaac:=false
+        use_fake_hardware:=false
+        fake_sensor_commands:=false
+        com_port:=/dev/ttyUSB0">
+
+        <ros2_control name="${name}" type="system">
+            <!-- Plugins -->
+            <hardware>
+                <xacro:if value="${sim_isaac}">
+                    <plugin>isaac_ros2_control/IsaacSystem</plugin>
+                    <param name="joint_commands_topic">/isaac_joint_commands</param>
+                    <param name="joint_states_topic">/isaac_joint_states</param>
+                </xacro:if>
+                <xacro:if value="${sim_ignition}">
+                    <plugin>ign_ros2_control/IgnitionSystem</plugin>
+                </xacro:if>
+                <xacro:if value="${use_fake_hardware}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                    <param name="fake_sensor_commands">${fake_sensor_commands}</param>
+                    <param name="state_following_offset">0.0</param>
+                </xacro:if>
+                <xacro:unless value="${use_fake_hardware or sim_ignition or sim_isaac}">
+                    <plugin>robotiq_driver/RobotiqGripperHardwareInterface</plugin>
+                    <param name="gripper_closed_position">0.7929</param>
+                    <param name="COM_port">${com_port}</param>
+                    <param name="gripper_speed_multiplier">1.0</param>
+                    <param name="gripper_force_multiplier">0.5</param>
+                </xacro:unless>
+            </hardware>
+
+            <!-- Joint interfaces -->
+            <!-- With Ignition or Hardware, they handle mimic joints, so we only need this command interface activated -->
+            <joint name="${prefix}robotiq_85_left_knuckle_joint">
+                <command_interface name="position" />
+                <state_interface name="position">
+                    <param name="initial_value">0.7929</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+                <state_interface name="effort"/>
+            </joint>
+            <!-- When simulating we need to include the rest of the gripper joints -->
+            <xacro:if value="${use_fake_hardware or sim_isaac or sim_ignition}">
+                <joint name="${prefix}robotiq_85_right_knuckle_joint">
+                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+                    <param name="multiplier">-1</param>
+                    <xacro:unless value="${sim_ignition}">
+                        <command_interface name="position"/>
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                    </xacro:unless>
+                </joint>
+                <joint name="${prefix}robotiq_85_left_inner_knuckle_joint">
+                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+                    <param name="multiplier">1</param>
+                    <xacro:unless value="${sim_ignition}">
+                        <command_interface name="position"/>
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                    </xacro:unless>
+                </joint>
+                <joint name="${prefix}robotiq_85_right_inner_knuckle_joint">
+                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+                    <param name="multiplier">-1</param>
+                    <xacro:unless value="${sim_ignition}">
+                        <command_interface name="position"/>
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                    </xacro:unless>
+                </joint>
+                <joint name="${prefix}robotiq_85_left_finger_tip_joint">
+                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+                    <param name="multiplier">-1</param>
+                    <xacro:unless value="${sim_ignition}">
+                        <command_interface name="position"/>
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                    </xacro:unless>
+                </joint>
+                <joint name="${prefix}robotiq_85_right_finger_tip_joint">
+                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+                    <param name="multiplier">1</param>
+                    <xacro:unless value="${sim_ignition}">
+                        <command_interface name="position"/>
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                    </xacro:unless>
+                </joint>
+            </xacro:if>
+
+            <!-- Only add this with fake hardware mode -->
+            <xacro:unless value="${sim_ignition or sim_isaac}">
+                <gpio name="reactivate_gripper">
+                    <command_interface name="reactivate_gripper_cmd" />
+                    <command_interface name="reactivate_gripper_response" />
+                </gpio>
+            </xacro:unless>
+
+        </ros2_control>
+    </xacro:macro>
+
+</robot>
