@@ -80,6 +80,22 @@ gz_assert_joint() {
 # 18 orphaned parameter_bridge processes running across one session (one per
 # prior launch, each still bridging /clock), which reproduced a 15+ minute
 # launch hang. See docs/HANDOFF_M3.md, "orphaned processes".
+#
+# static_scene_tf / m3_grasp added 2026-08-11: `pkill -9 -f
+# "m3_grasp.launch.py"` (in the M3 trial scripts) only ever matches the
+# `ros2 launch` parent's own argv, which contains that string -- neither
+# static_scene_tf's nor m3_grasp's own process command line does, so
+# neither was ever matched by any pattern this function had. SIGKILL on the
+# `ros2 launch` parent also cannot trigger its normal shutdown handoff to
+# children (SIGKILL cannot be caught), so on every single M3 cycle
+# static_scene_tf -- which has no self-termination logic, it runs until
+# killed -- was silently orphaned rather than torn down. Found live: 10
+# accumulated zombies after a 6-cycle sweep, dating back to before the
+# sweep started, each still holding its own DDS participant and ~35MB RSS.
+# m3_grasp itself usually self-terminates cleanly on its own (confirmed:
+# "process has finished cleanly" in every normal cycle) so was not
+# accumulating the same way, but the same pattern gap left it orphaned too
+# on the two cycles it hung instead of finishing.
 kill_sim() {
   local pattern="${1:-ur5e_robotiq_sim_control.launch.py}"
   pkill -9 -f "$pattern" 2>/dev/null
@@ -87,9 +103,11 @@ kill_sim() {
   pkill -9 -f "robot_state_publisher" 2>/dev/null
   pkill -9 -f "parameter_bridge" 2>/dev/null
   pkill -9 -f "controller_manager/spawner" 2>/dev/null
+  pkill -9 -f "static_scene_tf" 2>/dev/null
+  pkill -9 -f "lib/ur5e_pick_place/m3_grasp" 2>/dev/null
   sleep 2
   local leftover
-  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner" | grep -v grep)
+  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner|static_scene_tf|ur5e_pick_place/m3_grasp" | grep -v grep)
   if [[ -n "$leftover" ]]; then
     printf '  [WARN] kill_sim left processes running -- killing by PID directly:\n%s\n' "$leftover"
     printf '%s\n' "$leftover" | awk '{print $1}' | xargs -r kill -9 2>/dev/null
@@ -121,7 +139,7 @@ kill_sim() {
 # docs/HANDOFF_M3.md, "New, unrelated flakiness surfaced" (item 2).
 gz_assert_clean_slate() {
   local leftover
-  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner|move_group" | grep -v grep)
+  leftover=$(ps -eo pid,cmd | grep -E "gz sim|robot_state_publisher|parameter_bridge|controller_manager|spawner|move_group|static_scene_tf|ur5e_pick_place/m3_grasp" | grep -v grep)
   if [[ -n "$leftover" ]]; then
     printf '  [STOP] gz_assert_clean_slate: stray process(es) present -- refusing to call this launch fresh:\n%s\n' "$leftover" >&2
     return 1

@@ -29,7 +29,7 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | First SUCCESS on record (n=1, 90mm object). Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt |
+| M3 grasp node | Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. **2026-08-11: fingertip friction pass-through fixed (was silently defaulted, see below). Two independent 20-cycle sweeps, both post-fix: 14/20 and 13/20 PASS on Gazebo ground-truth slip (70%, 65% — consistent, no drift between runs). RESULT: FAIL against M3's zero-ejection criterion both times; all ejections land at ~350.4-350.9mm relative slip (the pick-to-place transport distance almost exactly — the object is being left at the grasp point, not slipping in transit). Mechanism NOT YET FOUND: six independent candidates checked against existing logs (gripper_result, tcp_error_m, pre-close object tilt, achieved_grip_angle replication, flange orientation at LIFT_DONE, controller-loop timing during the close) all ruled out — see "Two 20-cycle sweeps" below. Next step is instrumenting actuated-joint effort (not yet done); nothing already logged distinguishes a pass from a fail.** | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt, runs/m3_sweep20_*.csv |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -2903,6 +2903,256 @@ spec says to. Open with the pad-centre-corrected grasp target and the
 bounded gripper-close call (see Blocker 2 above), run cycles, and see what's
 actually left to explain before assuming it's friction.
 
+## 2026-08-11: friction pass-through fixed — the "friction may still matter for lift and transport slip" question above, now tested and confirmed true
+
+A GUI-cycle look at a `result=SUCCESS` run showed the object sitting exactly
+at its spawn pose after a reported successful transport: `achieved=0.4031
+rad` against a touch angle of `0.4029` — about 6 microns of interference per
+side, essentially zero squeeze, but within the `+-0.0235 rad` tolerance band
+(which spans `+-1.3mm` of aperture — wide enough to pass a gap as a grasp).
+Two live hypotheses: the fingers never squeezed at all, or they squeezed and
+slid. Joint effort during the hold would discriminate the two, but does
+not exist as a signal — see the effort-interface finding below. Checked the
+other two candidates instead.
+
+**Root cause: the fingertip pad friction block never reached the physics
+engine, and it was two independent defects, not one.**
+
+1. `robotiq_2f_85_macro.urdf.xacro`'s fingertip `<collision>` elements
+   carried `<surface><friction><ode><mu1>100000.0</mu1>...` directly inline.
+   `<surface>` is not part of the URDF schema libsdformat's URDF-to-SDF
+   converter recognizes when nested inside a plain `<collision>` — it is
+   silently dropped. Confirmed by reproducing the actual spawn pipeline
+   (`ur5e_robotiq_sim_control.launch.py` builds `robot_description` from
+   this same xacro and spawns it via `ros_gz_sim create -string`, which
+   parses the URDF through libsdformat) offline: `xacro
+   ur5e_robotiq.urdf.xacro | gz sdf -p` produced **zero** `<surface>`
+   elements anywhere in the converted SDF.
+2. Even wrapped correctly (`<gazebo reference="link_name">`, the extension
+   form the converter does keep), the tag names were still wrong: `mu1`,
+   `minDepth`, `maxVel` are Gazebo-classic names. Current SDFormat 1.11
+   (`/opt/ros/jazzy/opt/sdformat_vendor/share/sdformat14/1.11/surface.sdf`)
+   defines `mu`, `mu2`, `min_depth`, `max_vel` — `mu1` etc. round-trip as
+   unrecognized pass-through elements with a `not defined in SDF` warning,
+   never read by the physics engine. Both fixes verified together via
+   `gz sdf -p` before ever touching the sim: corrected form produces
+   `mu=100000`, `mu2=100000`, `min_depth=0.002`, `max_vel=0` on both
+   fingertip collisions, zero warnings.
+
+**Checked the object side too, since this is a bug class, not one typo**:
+`scripts/08_spawn_pick_object.sh` builds `pick_target`'s SDF directly as
+native SDF (`gz service -s .../create`, no URDF conversion involved at all)
+and already uses the correct `<mu>`/`<mu2>` tag names — clean, not affected.
+The defect was isolated to the vendored gripper xacro.
+
+**Fix**: moved the friction/contact block out of inline `<collision>` and
+into `<gazebo reference="${prefix}robotiq_85_{left,right}_finger_tip_link">`
+blocks with corrected tag names, in
+`ur5e_robotiq_description/urdf/vendor/robotiq_2f_85_macro.urdf.xacro`.
+
+**Also fixed while in there**: `m3_grasp.cpp`'s `within_tolerance` check
+used to abort the cycle (`GRIPPER_GOAL_REJECTED`) outside the angle band.
+Removed — against a rigid object the joint physically cannot advance past
+geometric touch (DART will not allow real interpenetration), so squeeze is
+a force, not an angle, and no band, wide or narrow, can serve as a verdict:
+a wide one (what shipped) passes a bare-touch non-grasp, a narrow one tuned
+to demand real squeeze (`gripper.squeeze`) would fail every real grasp too.
+`within_tolerance` is now logged only; transport is attempted on every
+cycle with a real close sample, and the actual verdict is Gazebo ground
+truth via `slip.py` — same separation of concerns `transport.hpp` already
+documented for `attachObject`.
+
+**Result**: 4 cycles run after the fix (1 solo + a 3-cycle sweep), all PASS
+on ground truth — slip 2.6mm / 1.8mm / 1.8mm / 2.8mm, all under the 5mm
+criterion, zero ejections. `achieved_grip_angle` stayed ~0.4029-0.4030 the
+whole time (unchanged, as expected — the geometry didn't change) while the
+outcome flipped from a false-positive angle-based SUCCESS to a real
+ground-truth PASS. This is exactly the open question this doc's own
+"Reframing M3" section above flagged as untested ("friction may still
+matter for lift and transport slip") — now tested, and confirmed true, but
+as a pass-through defect rather than a `mu`-value tuning question. n=4, not
+M3's 20-cycle criterion; that sweep has not been run yet.
+
+**Effort-state-interface finding, not needed THAT session, needed now** —
+see "process leak fixed, two 20-cycle sweeps" below, same day: six other
+candidate discriminators were checked and eliminated against the ejection
+pattern the friction fix left behind, and this is the one that's left.
+Went looking for actuated-joint effort during the hold as a genuine
+never-squeezed-vs-squeezed-and-slid discriminator, before the friction bug
+was found. `/joint_states` never carries it — confirmed both by reading
+`/opt/ros/jazzy/share/robotiq_description/urdf/robotiq_gripper.ros2_control.xacro`
+(only `position` and `velocity` `<state_interface>` elements declared for
+every gripper joint, no `effort`) and empirically, logging a full
+close-hold-lift-transport cycle live: 55,573 rows, 100% NaN. This also
+means the project's own "evidence from Gazebo state topics, never
+`/joint_states`" rule (see "Working methods" below) was never actually
+being violated by anything reaching for gripper effort — there was nothing
+there to reach for. `gz_system.cpp`'s `read()` computes effort from
+`JointTransmittedWrench` for revolute joints and binds it to the effort
+state interface whenever one is declared, so adding
+`<state_interface name="effort"/>` to that xacro would be sufficient — no
+further plumbing — if this discriminator is needed again for a different
+object/geometry where ground truth alone doesn't resolve which mechanism
+is at play.
+
+**Trial-script fix, found while running the above**: `docs/m3_run_full_cycle_trial_live.sh`'s
+`timeout 120 ros2 launch ... | tee` always returned 124 — `ros2 launch`
+never exits on its own (static_scene_tf and the rest of the launch tree
+keep running after `m3_grasp` itself reports `RUN SUMMARY` and exits), so
+every normal cycle hit the same 120s bound a genuine hang would. `trial_exit`
+in `11_m3_cycles.sh`'s CSV could not tell the two apart across a sweep, and
+every cycle paid ~70s of dead time waiting it out. Fixed: launch
+backgrounded, log tailed live to stdout (same live-streaming property the
+watcher needs for STAGE markers), polled for `RUN SUMMARY`, torn down the
+moment it appears. RC now means something: 0 = summary seen, 1 = bound hit
+with no summary (a real hang), 2 = the launch died on its own first (also
+real). Cycle time dropped from 199s to 122s/122s/92s over the 3-cycle sweep.
+
+## 2026-08-11 (same day, continued): process leak fixed, two 20-cycle sweeps, six candidate mechanisms ruled out, none found
+
+**Process leak, found and fixed before trusting any sweep.** `static_scene_tf`
+(spawned by every `m3_grasp.launch.py` invocation) was never being torn
+down. Its own command line contains neither `"m3_grasp.launch.py"` nor
+`"move_group"`, so it matched no pattern in `kill_sim()` or
+`gz_assert_clean_slate()`; and SIGKILL on the `ros2 launch` parent cannot
+trigger its normal shutdown handoff to children (SIGKILL cannot be
+caught). 10 zombies had accumulated by the time this was caught, dating
+back before the sweep that found them even started — each holding its own
+DDS participant indefinitely. `m3_grasp` itself usually self-terminates
+cleanly so wasn't accumulating the same way, but the same pattern gap
+orphaned it too on the two cycles it hung instead of finishing (both
+GUI-mode, see below). Fixed in `scripts/lib/gz_settle.sh`: both functions'
+patterns now include `static_scene_tf` and `ur5e_pick_place/m3_grasp`.
+Checked whether this explained the ejection pattern before assuming it did
+not matter: zombie count by cycle in the leaked sweep was 0/1/2/3/4/5,
+outcomes were PASS/FAIL/FAIL/PASS/FAIL/FAIL — no monotonic relationship,
+so probably not the ejection cause, but a real bug regardless and fixed
+either way.
+
+**GUI-mode hang, separate issue, not yet root-caused.** Running a cycle
+with `gazebo_gui:=true` hung twice in a row (once at "Execute request
+accepted" for the pre-grasp move, once before even that) while `gz sim
+gui` was measured at 675% CPU and the 10 static_scene_tf zombies were
+still alive. On a subsequent freshly-launched GUI session (zero leaked
+processes, GUI just started) a cycle ran and completed normally, watched
+live — object visibly transported from `pick_pose` to `place_pose`,
+confirmed on Gazebo's own pose topic afterward (`(0.452, 0.200, 0.772)`
+against a configured `place_pose` of `(0.450, 0.200)` — matched, not the
+`pick_pose` y of -0.150). So the hang correlates with resource pressure
+(leaked processes plus/or GUI rendering load) rather than being
+unconditional, but the exact trigger is still open; headless sweeps never
+hit it.
+
+**Two independent 20-cycle sweeps, post-friction-fix:**
+
+```
+sweep 1: 14/20 PASS (70%), 6 ejections, all ~350.4-350.9mm relative slip
+sweep 2: 13/20 PASS (65%), 7 ejections, same ~350.4-350.9mm band (minus
+         one distinct outlier, see below)
+```
+
+Both `RESULT: FAIL` against M3's zero-ejection criterion. Consistent
+failure rate and consistent ejection magnitude across two independent runs
+— not drifting, not a one-off. The ejection magnitude itself is the
+diagnostic: `pick_pose` y = -0.150, `place_pose` y = +0.200, so the
+transport distance is 0.350m on the nose. Five and six ejections
+respectively (11 of 13 total) land within 0.7mm of that exact number. This
+is not slip in transit — the object never leaves the grasp point at all;
+the flange completes the entire transport traverse and `slip_m` (measured
+relative to the flange) ends up reading almost exactly the flange's own
+displacement, because the object didn't move with it.
+
+**Two flagged outliers, kept separate rather than folded into the 11-cycle
+cluster:**
+- Sweep 1, cycle 5: 370mm, about 20mm past the ~350.5mm cluster — object
+  nudged before being abandoned, a different sub-case of the same general
+  failure.
+- Sweep 2, cycle 14: a different failure signature entirely.
+  `achieved_grip_angle=0.4186` (every other cycle across both sweeps is
+  0.4029-0.4046 — this is 0.014-0.016 rad further, an order of magnitude
+  outside every other sample), `gripper_result=STALLED` (the ROS action
+  itself reporting a stall, not the `TIMED_OUT_HELD` fallback path every
+  other cycle takes), and its pre-close object quaternion is machine-exact
+  zero in every component (`0.00000000` to 8 decimal places) where every
+  other cycle carries genuine settle jitter at the 1e-5 to 1e-6 level.
+  Three anomalies on one cycle. Plausibly a different contact event
+  entirely (a corner/edge catch, closing much further before stalling)
+  rather than the same "never really gripped" mechanism as the other ten.
+  Not yet investigated further.
+
+**Six candidate discriminators checked against existing logs before
+touching any interface, per-cycle, PASS vs FAIL:**
+
+1. `gripper_result` — NOT a discriminator. `TIMED_OUT_HELD` in essentially
+   every cycle regardless of outcome (only cycle 10/sweep-1 and cycle
+   4/sweep-2 are `STALLED`, and both are PASSes).
+2. `tcp_error_m` — NOT a discriminator. `0.0000` on all 40 cycles, no
+   variance to explain anything with.
+3. Object orientation at `LIFT_DONE` — a TAUTOLOGY, not a discriminator,
+   and the methodology lesson of this whole exercise (see below).
+   Initially looked like a huge, clean signal: pitch (`qy`) magnitude
+   separated PASS (~1e-4) from FAIL (~1e-7) by 100-1000x. Wrong reason:
+   `LIFT_DONE` samples the object AFTER the lift attempt. In a PASS cycle
+   it is airborne in the fingers, tilted by whatever the grip imposed; in
+   a FAIL cycle it is still sitting on the table exactly where it spawned,
+   never disturbed. That is not two settle behaviours, it is a held object
+   and an untouched one — the orientation difference follows from the
+   outcome alone. A correlation sampled downstream of the outcome will
+   separate cleanly and mean nothing; this one cost real time to catch
+   because it looked so strong.
+4. Object orientation BEFORE the close (the upstream, honest version of
+   #3) — NOT a discriminator. Added a `stage 2 ground truth`-triggered
+   sample to `scripts/11_m3_cycles.sh`'s `watch_markers()` (fires right
+   after the descent, before the close is ever commanded, object
+   undisturbed since spawn/settle) and re-ran the sweep. PASS and FAIL
+   tilt distributions fully overlap (PASS 0.0011-0.0067°, FAIL
+   0.0011-0.0084° excluding cycle 14). The object's initial state is not
+   the variable — rules out spawn/settle variance as the cause and points
+   at the close dynamics instead.
+5. `achieved_grip_angle` — DID NOT REPLICATE. Sweep 1 showed a clean-looking
+   split (PASS 0.4029-0.4031, FAIL 0.4030-0.4046, failures closing further
+   past touch). Sweep 2, independently: PASS 0.4029-0.4032, FAIL (excluding
+   cycle 14's outlier) 0.4030-0.4033 — the ranges now overlap almost
+   completely. An n=6 correlation that looked real did not survive a second
+   sweep. Recorded as a retracted finding, not a confirmed one.
+6. Flange (`wrist_3_link`) orientation at `LIFT_DONE` — NOT a
+   discriminator, and unlike the object's, not tautological: the arm
+   performs the same lift whether or not it is holding anything, so this
+   is upstream of the outcome, testing whether MoveIt was landing on a
+   different IK branch/wrist-roll cycle to cycle (which would produce
+   different pad-to-cube contact geometry while `tcp_error_m` — a
+   distance, blind to rotation — still reads 0.0000). It is not: `qx ≈ qy
+   ≈ 0.70710678` (the standard straight-down approach) on all 20 cycles of
+   sweep 2, `qz`/`qw` scattered at 1e-5 to 1e-7 with no PASS/FAIL grouping
+   (the largest deviation is a PASS, the second-largest is FAIL 14).
+   MoveIt is landing on essentially the same orientation every cycle.
+7. Controller-loop timing during the close window —
+   NOT a discriminator, and the instrument itself confirmed live rather
+   than assumed working. `stall_monitor.py` (wired into
+   `docs/m3_run_full_cycle_trial_live.sh` for the first time this
+   session — it existed but was never attached to any trial script before
+   now) recorded ZERO `/joint_states` cadence gaps >=20ms in the ~5.15s
+   window between the descent completing and the close resolving, on
+   EVERY one of 19 valid cycles in sweep 2, pass or fail. Confirmed the
+   monitor itself is not just silently idle: both sampled CSVs have
+   dozens to hundreds of gap rows elsewhere in the same cycle (startup,
+   planning), just none inside the close window. Timing jitter during the
+   close itself is ruled out as the mechanism, at 20ms+ granularity.
+
+**Net position:** every discriminator available from existing
+instrumentation has been checked and eliminated. The cause is not the
+object's spawn state, not MoveIt's IK branch choice, not controller-loop
+timing during the close, and not (on a second look) the achieved angle.
+Whatever separates the ~65-70% that hold from the ~30-35% that don't is
+happening in the close dynamics in a way none of position, velocity, or
+timing data currently captures. **Actuated-joint effort is the next and
+last cheap instrument available before this needs real physics-model
+changes** — `robotiq_gripper.ros2_control.xacro` declares no `effort`
+state interface (see the friction section above), and `gz_system.cpp`
+populates one from `JointTransmittedWrench` whenever it's declared, so
+this is a xacro line and a rebuild, not new plumbing. Not yet done as of
+this writing.
+
 ## Other M3 prerequisites (unchanged from prior session, still open)
 
 **clearance_map vs grip_map.** scene.yaml's `gripper.width_map` is specified
@@ -2926,8 +3176,13 @@ Closing from full-open ejects the object — measured, 2.19x closing rate is
 the difference between a grasp and a 363mm ejection. scene.yaml carries
 `gripper.preclose_heuristic` as a placeholder.
 
-**Friction must be re-derived, not copied.** Harmonic defaults to DART;
-ODE-era Gazebo Classic tuning advice does not transfer.
+**Friction must be re-derived, not copied — RESOLVED, 2026-08-11, see the
+section above.** Not a re-derivation question in the end: the vendored
+`mu1`/`minDepth`/`maxVel` block was Gazebo-classic syntax that never reached
+the physics engine at all (nested inline in URDF `<collision>`, dropped by
+the URDF->SDF converter; and using tag names SDFormat 1.11 doesn't define).
+Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
+`max_vel`), not by tuning a coefficient.
 
 ## Facts already established — do not re-derive
 

@@ -76,6 +76,57 @@
   package (`diff /opt/ros/jazzy/share/robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro
   ur5e_robotiq_description/urdf/vendor/robotiq_2f_85_macro.urdf.xacro`)
   and reapply the six OVERRIDE edits on top of whatever changed upstream.
+
+  SEVENTH OVERRIDE, 2026-08-11: effort 50 -> 13 on all six joints (the
+  master's real limit; followers matched to it for the same "no more
+  headroom than the master" reason as the six above, not re-derived).
+  50 was never a physical value, inherited from wherever this vendor
+  file's numbers originally came from, unexamined until instrumenting the
+  effort state interface (added this session, see
+  robotiq_gripper.ros2_control.xacro) made it measurable. DART enforces
+  a joint's effort limit as a hard actuator torque cap, confirmed live: a
+  measured hold-phase effort of 40 N*m, sitting right at the old 50 N*m
+  ceiling, not a lower value the mechanism settled on by itself. At the
+  ~55mm knuckle-to-pad-contact moment arm (from the same mesh geometry
+  that gave pad_centre_offset; +-20% uncertain, not +-3x), 40 N*m is
+  roughly 730 N of pad force, and a real 2F-85's rated max is 235 N
+  (`gripper_max_force:=235.0` in the upstream macro's own params). The
+  grip closing 5.4mm of aperture further during a single lift, against a
+  rigid 45mm cube that cannot compress, is that force: the object left,
+  it was not slipping.
+  235 N * 0.055m = ~13 N*m is the derived replacement, not tuned to a
+  result: holding a 0.15kg object at mu=1.0 needs 0.74 N of friction,
+  so there is roughly an order of magnitude of headroom below 13 even
+  before the moment-arm uncertainty above. If the object still leaves at
+  13, the ceiling is still too high, not wrong in kind.
+
+  EIGHTH OVERRIDE, 2026-08-11, same day: effort 13 -> 1.0. 13 N*m was
+  still wrong, confirmed live: a 20-cycle sweep at that ceiling scored
+  0/20, worse than the unphysical 50 N*m ceiling's 14/20, and the
+  post-lift joint reading clustered tightly (0.4443-0.4602 rad across 18
+  cycles) rather than scattering, a near-deterministic mechanism, not
+  noise. A rigid cube between two closing pads is an unstable
+  equilibrium; the 2F-85's own geometry biases the extrusion path, and
+  the effort trace showed why: pinned at the ceiling for ~1.5s while
+  position crept, then collapsed to ~0 as the object came free. Squeezing
+  harder against an unstable equilibrium pushes it out faster, which is
+  why 13 N*m did worse than 50, not better.
+  1.0 N*m is not another interpolation toward a still-unphysical number,
+  the actual required force is far below even 13's own derivation: pad
+  mu=100000 (see the friction pass-through fix elsewhere in this file)
+  means the real job is "maintain contact at all," not "grip hard," and
+  holding 0.15kg at mu=1.0 needs 0.74 N of friction, so a generous 10 N of
+  pad force is already 0.55 N*m through the ~55mm arm. 1.0 N*m is a large
+  step down (13x) rather than another incremental sweep, deliberately: at
+  13x a generous requirement there is enough room for a clear read
+  (effort coming off the ceiling = stable equilibrium found) instead of
+  another marginal, ambiguous result costing another 40-minute sweep.
+  If effort is STILL pinned at 1.0 and the object still leaves, that is a
+  structural finding, not a tuning one: position control on this joint
+  always rails the velocity command once commanded past touch (see
+  gripper_close_and_hold's hold-at-target fix), so effort will pin at
+  whatever the ceiling is regardless of its value, and the fix at that
+  point is an effort COMMAND interface, not a lower number.
 -->
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="robotiq_gripper">
     <xacro:macro name="robotiq_gripper" params="
@@ -91,7 +142,7 @@
         com_port:=/dev/ttyUSB0">
 
         <!-- ros2 control include -->
-        <xacro:include filename="$(find robotiq_description)/urdf/robotiq_gripper.ros2_control.xacro" />
+        <xacro:include filename="$(find ur5e_robotiq_description)/urdf/vendor/robotiq_gripper.ros2_control.xacro" />
         <!-- if we are simulating or directly communicating with the gripper we need a ros2 control instance -->
         <xacro:if value="${include_ros2_control}">
             <xacro:robotiq_gripper_ros2_control
@@ -239,24 +290,6 @@
                 <geometry>
                     <mesh filename="file://$(find robotiq_description)/meshes/collision/left_finger_tip.stl" />
                 </geometry>
-                <surface>
-                    <friction>
-                    <ode>
-                        <mu1>100000.0</mu1>
-                        <mu2>100000.0</mu2>
-                    </ode>
-                    </friction>
-                    <contact>
-                    <ode>
-                        <kp>1e+5</kp>
-                        <kd>1</kd>
-                        <soft_cfm>0</soft_cfm>
-                        <soft_erp>0.2</soft_erp>
-                        <minDepth>0.002</minDepth>
-                        <maxVel>0</maxVel>
-                    </ode>
-                    </contact>
-                </surface>
             </collision>
             <inertial>
                 <origin xyz="-0.01456706 -0.0008 0.01649701" rpy="0 0 0" />
@@ -264,6 +297,40 @@
                 <inertia ixx="1.048152e-05" iyy="1.197888e-05" izz="4.22784e-06" ixy="0.0" ixz="3.5232e-6" iyz="0.0" />
             </inertial>
         </link>
+
+        <!-- Fingertip friction/contact params live here, not inline in <collision>
+             above: a bare <surface> nested inside a URDF <collision> is not part of
+             the URDF schema libsdformat's URDF->SDF converter recognizes, and gets
+             silently dropped at spawn (confirmed via `gz sdf -p`: the inline form
+             produced zero <surface> elements anywhere in the converted SDF). This
+             <gazebo reference> extension form is the one the converter actually
+             keeps. Tag names are also SDFormat 1.11's current names, not the old
+             Gazebo-classic ones the inline block used (mu1 to mu, minDepth to
+             min_depth, maxVel to max_vel), verified via `gz sdf -p` producing zero
+             "not defined in SDF" warnings on this form, vs. one per old-style tag
+             name otherwise. -->
+        <gazebo reference="${prefix}robotiq_85_left_finger_tip_link">
+            <collision>
+                <surface>
+                    <friction>
+                        <ode>
+                            <mu>100000.0</mu>
+                            <mu2>100000.0</mu2>
+                        </ode>
+                    </friction>
+                    <contact>
+                        <ode>
+                            <kp>1e+5</kp>
+                            <kd>1</kd>
+                            <soft_cfm>0</soft_cfm>
+                            <soft_erp>0.2</soft_erp>
+                            <min_depth>0.002</min_depth>
+                            <max_vel>0</max_vel>
+                        </ode>
+                    </contact>
+                </surface>
+            </collision>
+        </gazebo>
 
         <link name="${prefix}robotiq_85_right_finger_tip_link">
             <visual>
@@ -275,24 +342,6 @@
                 <geometry>
                     <mesh filename="file://$(find robotiq_description)/meshes/collision/right_finger_tip.stl" />
                 </geometry>
-                <surface>
-                    <friction>
-                    <ode>
-                        <mu1>100000.0</mu1>
-                        <mu2>100000.0</mu2>
-                    </ode>
-                    </friction>
-                    <contact>
-                    <ode>
-                        <kp>1e+5</kp>
-                        <kd>1</kd>
-                        <soft_cfm>0</soft_cfm>
-                        <soft_erp>0.2</soft_erp>
-                        <minDepth>0.002</minDepth>
-                        <maxVel>0</maxVel>
-                    </ode>
-                    </contact>
-                </surface>
             </collision>
             <inertial>
                 <origin xyz="0.01456706 5e-05 0.01649701" rpy="0 0 0" />
@@ -300,6 +349,29 @@
                 <inertia ixx="1.048152e-05" iyy="1.197888e-05" izz="4.22784e-06" ixy="0.0" ixz="-3.5232e-06" iyz="0.0" />
             </inertial>
         </link>
+
+        <gazebo reference="${prefix}robotiq_85_right_finger_tip_link">
+            <collision>
+                <surface>
+                    <friction>
+                        <ode>
+                            <mu>100000.0</mu>
+                            <mu2>100000.0</mu2>
+                        </ode>
+                    </friction>
+                    <contact>
+                        <ode>
+                            <kp>1e+5</kp>
+                            <kd>1</kd>
+                            <soft_cfm>0</soft_cfm>
+                            <soft_erp>0.2</soft_erp>
+                            <min_depth>0.002</min_depth>
+                            <max_vel>0</max_vel>
+                        </ode>
+                    </contact>
+                </surface>
+            </collision>
+        </gazebo>
 
         <joint name="${prefix}robotiq_85_base_joint" type="fixed">
             <parent link="${parent}" />
@@ -313,7 +385,7 @@
             <axis xyz="0 -1 0" />
             <origin xyz="0.03060114 0.0 0.05490452" rpy="0 0 0" />
             <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header -->
-            <limit lower="0.0" upper="0.8" velocity="0.1" effort="50" />
+            <limit lower="0.0" upper="0.8" velocity="0.1" effort="1.0" />
         </joint>
 
         <joint name="${prefix}robotiq_85_right_knuckle_joint" type="revolute">
@@ -322,7 +394,7 @@
             <axis xyz="0 -1 0" />
             <origin xyz="-0.03060114 0.0 0.05490452" rpy="0 0 0" />
             <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header -->
-            <limit lower="-0.8" upper="0.0" velocity="0.1" effort="50" />
+            <limit lower="-0.8" upper="0.0" velocity="0.1" effort="1.0" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
         </joint>
 
@@ -347,10 +419,12 @@
                  gz_ros2_control's mimic correction runs at 500/s with no
                  gain factor and no ceiling of its own; a follower with no
                  <limit> can drag the master through the linkage. Matches
-                 the master's velocity (0.1) and effort (50) exactly: every
+                 the master's velocity (0.1) and effort (now 13, see
+                 SEVENTH OVERRIDE below; matched at whatever the master's
+                 own value is, not independently) exactly: every
                  multiplier here is +-1.0, so a correctly-tracking follower
                  needs no more than the master's own rate. -->
-            <limit velocity="0.1" effort="50" />
+            <limit velocity="0.1" effort="1.0" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
         </joint>
 
@@ -360,7 +434,7 @@
             <axis xyz="0 -1 0" />
             <origin xyz="-0.0127 0.0 0.06142" rpy="0 0 0" />
             <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="50" />
+            <limit velocity="0.1" effort="1.0" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
         </joint>
 
@@ -370,7 +444,7 @@
             <axis xyz="0 -1 0" />
             <origin xyz="0.00563134 0.0 0.04718515" rpy="0 0 0" />
             <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="50" />
+            <limit velocity="0.1" effort="1.0" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
         </joint>
 
@@ -380,7 +454,7 @@
             <axis xyz="0 -1 0" />
             <origin xyz="-0.00563134 0.0 0.04718515" rpy="0 0 0" />
             <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="50" />
+            <limit velocity="0.1" effort="1.0" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
         </joint>
     </xacro:macro>

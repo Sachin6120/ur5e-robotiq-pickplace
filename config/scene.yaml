@@ -138,6 +138,16 @@ grasp:
   retreat:       0.120              # post-grasp lift distance along -approach [m]
   gripper_roll:  0.0                # rotation about the approach axis [rad]
 
+  # Held stationary (on the node's own clock, not a wall sleep) after
+  # LIFT_DONE and TRANSPORT_DONE, so the M3 harness's windowed-quiescence
+  # sampler (scripts/lib/sample_pose.py) has an actual stationary window to
+  # take a settled slip-baseline/comparison pose in. Without this the node
+  # started planning the transport ~20ms after LIFT_DONE fired -- no window
+  # at all. 2.0s is comfortably longer than sample_pose.py's default
+  # window_s=1.0, with margin for the sim's real-time factor sagging under
+  # load rather than holding exactly 1.0.
+  slip_sample_dwell_s: 2.0
+
   # Distance from tool0 to the finger-pad contact midpoint, along tool0's
   # local Z ("front", ROS-Industrial convention) — the last open item from
   # M-1_reference_report.md §6. Measured live against Gazebo ground truth
@@ -281,6 +291,23 @@ grasp:
   # that final comparison to have something real to measure.
   grasp_tolerance_rad: 0.0235
 
+  # ADDED 2026-08-11, alongside the actuated-joint effort limit fix
+  # (ur5e_robotiq_description/urdf/vendor/robotiq_2f_85_macro.urdf.xacro,
+  # "SEVENTH OVERRIDE") and the grasp-loss check it motivated
+  # (transport.cpp, check_grasp_not_lost). Margin ABOVE grasp_table.yaml's
+  # expected_grip_angle before a post-lift joint reading counts as "the
+  # object left the fingers," not a tolerance around it -- the check is
+  # one-sided, same reasoning as m3_grasp.cpp's own within_tolerance
+  # retirement: past this angle the joint is closing into a gap, not
+  # squeezing.
+  # 0.01 rad chosen from this session's own data: every PASS and ordinary
+  # FAIL cycle across two 20-cycle sweeps landed within 0.0029 rad of
+  # touch (0.4029-0.4046 achieved against 0.4055 expected); the one
+  # cycle that was a genuinely different event read 0.4186, 0.0131 rad
+  # over. 0.01 rad sits between those with margin on both sides, not
+  # centred by construction.
+  grasp_loss_threshold_rad: 0.01
+
   # ADDED 2026-08-09: m3_grasp.cpp had no pre-close — the gripper stayed
   # fully open through the whole Cartesian descent, confirmed by grep
   # during the "what touches first" investigation. This was already a
@@ -378,6 +405,17 @@ thresholds:
   plan_attempts:          10
   planning_time_s:        5.0
   execute_timeout_s:      30.0
+
+  # Stage 2 verification (m3_grasp.cpp, right after the descent, before the
+  # close): max allowed distance between ground-truth grasp_tcp and the
+  # commanded grasp pose. Exceeding this aborts with POSE_VERIFY_FAILURE
+  # rather than closing on a mispositioned arm and having the cycle read as a
+  # friction failure. Started at 5mm: M2 measured tcp_error_m=0.0000 on this
+  # exact motion, so anything approaching the 5mm slip criterion is already a
+  # positioning problem, not noise -- and it's well inside both the 14mm
+  # lateral clearance at the pre-close aperture and the object's 22.5mm
+  # half-height, so it won't false-fire on geometry.
+  grasp_pose_error_max_m: 0.005
 
 # ---------------------------------------------------------------------------
 grasp_mode:
