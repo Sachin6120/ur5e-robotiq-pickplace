@@ -175,6 +175,62 @@ for name, want_mult in expected.items():
     else:
         ok(f"{name} -> mult {mult}")
 
+# --- velocity limits across the whole linkage -------------------------------
+# gz_ros2_control drives the mimic followers with a 500/s correction and no
+# gain factor -- ten times stiffer than the master's own 50/s P-loop (see
+# gz_system.cpp, write(), the mimic block at the end). A follower with no
+# <limit> has no ceiling on that correction, and the four inner-knuckle and
+# finger-tip joints shipped without one.
+#
+# Measured consequence before this was fixed: with no gripper goal active at
+# all, the master was dragged 0.0956 -> 0.2546 rad while its own controller
+# commanded full retreat, and showed a sample at 3.5x its own velocity clamp.
+# A joint cannot beat its clamp under its own command; the followers were
+# moving it.
+#
+# So every joint in the linkage must carry a velocity limit, and they must all
+# be equal -- every multiplier is +/-1.0, so a correctly-tracking follower
+# moves at exactly the master's rate. Equal limits mean a dragging follower can
+# move at most as fast as the master's retreat, which is the property that
+# lets the master fight to a draw. Any joint left unbounded gives that away.
+linkage = [
+    'robotiq_85_left_knuckle_joint',
+    'robotiq_85_right_knuckle_joint',
+    'robotiq_85_left_inner_knuckle_joint',
+    'robotiq_85_right_inner_knuckle_joint',
+    'robotiq_85_left_finger_tip_joint',
+    'robotiq_85_right_finger_tip_joint',
+]
+
+print("\n  linkage velocity limits:")
+vels = {}
+for want in linkage:
+    hit = [j for j in joints if j.get('name', '').endswith(want)]
+    if not hit:
+        bad(f"linkage joint not found: {want}")
+        continue
+    lim = hit[0].find('limit')
+    v = lim.get('velocity') if lim is not None else None
+    if v is None:
+        bad(
+            f"{want}: NO velocity limit. This joint is driven by the 500/s "
+            "mimic correction with no ceiling and can drag the master."
+        )
+        continue
+    vels[want] = float(v)
+    print(f"    {want:<44} velocity={v}")
+
+if len(vels) == len(linkage):
+    distinct = sorted(set(vels.values()))
+    if len(distinct) == 1:
+        ok(f"all 6 linkage joints share velocity limit {distinct[0]}")
+    else:
+        bad(
+            f"linkage velocity limits are not equal: {distinct}. The fastest "
+            "joint sets how hard the linkage can drag the master, so a split "
+            "here is the asymmetry, whichever side looks 'correct'."
+        )
+
 sys.exit(fail)
 PY
 [[ $? -ne 0 ]] && FAILED=1

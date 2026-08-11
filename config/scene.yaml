@@ -242,7 +242,24 @@ grasp:
   # width with the corrected settle window — known follow-up, deliberately
   # deferred). Until then this one re-confirmed anchor value is used for
   # every width, same treatment tcp_offset itself got before this update.
-  pad_centre_offset: 0.013433
+  #
+  # SUPERSEDED 2026-08-11: the 0.013433 figure above came from an object-
+  # drop-on-settle measurement — indirect, and folds in whatever compliance/
+  # seating happens at contact, not pure rigid pad geometry. Replaced with a
+  # direct measurement of the same quantity: scripts/lib/gripper_geometry.py
+  # parses left_finger_tip.stl (the exact mesh the URDF's own <collision>
+  # points at) and finds the pad face's z-centroid in the fingertip link's
+  # own frame — no live sim, no settle timing, no object needed at all.
+  # PAD_FACE_Z_CENTROID_M = 0.031573 m, an 18.14 mm gap from the old value,
+  # in the same neighbourhood as this project's own previously-flagged
+  # "~32mm magnitude residual still open" (pad-centre correction,
+  # 2026-08-09) — a candidate explanation for that residual, not yet
+  # confirmed as THE explanation. tcp_offset_m() in that module was
+  # cross-checked against every point in this file's own free-space table
+  # above (0.000/0.200/0.400/0.600/0.767 rad) before this value was trusted.
+  # Direction still not live-verified (see NOT YET LIVE-VERIFIED note above,
+  # which continues to apply) — this trial is that verification.
+  pad_centre_offset: 0.031573
 
   # Tolerance for the grasp-success check (M3): |achieved joint angle at
   # stall - grasp_table.yaml's grip_angle_rad, interpolated for this

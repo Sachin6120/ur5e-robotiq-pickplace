@@ -109,7 +109,9 @@
   <!-- Includes                                                              -->
   <!-- ===================================================================== -->
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
-  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <!-- LOCAL OVERRIDE, not the vendored package copy: knuckle joint
+       velocity limit dropped 0.5 to 0.1, see that file's own header for why. -->
+  <xacro:include filename="$(find ur5e_robotiq_description)/urdf/vendor/robotiq_2f_85_macro.urdf.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
 
   <!-- ===================================================================== -->

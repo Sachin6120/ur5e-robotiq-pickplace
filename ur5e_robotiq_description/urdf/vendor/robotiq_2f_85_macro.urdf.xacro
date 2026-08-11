@@ -1,0 +1,387 @@
+<?xml version="1.0"?>
+<!--
+  LOCAL OVERRIDE of robotiq_description's robotiq_2f_85_macro.urdf.xacro
+  (vendored from /opt/ros/jazzy/share/robotiq_description/urdf/, package
+  version installed 2026-08). Not edited in place there: that's a
+  system-installed package, out of this repo's control and not something
+  a workspace should patch underneath itself.
+
+  CHANGES from upstream, all tagged "OVERRIDE 2026-08-10", six total:
+  robotiq_85_left_knuckle_joint and robotiq_85_right_knuckle_joint's
+  <limit velocity="..."> dropped from 0.5 to 0.1. The other four linkage
+  joints (left/right_inner_knuckle, left/right_finger_tip) had NO <limit>
+  element at all upstream (confirmed by diff against the pristine
+  package file, not assumed) and each gained one at velocity=0.1,
+  effort=50, matching the master exactly. See the second WHY block below
+  for why all six must be equal, not just the two that already had limits.
+
+  WHY: gz_ros2_control's position command interface is not a position
+  loop. GazeboSimSystem::write() converts a position command into a
+  proportional VELOCITY command every control cycle
+  (target_vel = -position_proportional_gain * error, gain=0.1 confirmed
+  from this project's own sim logs, effective loop gain 0.1*500Hz=50/s)
+  and writes that to Gazebo as JointVelocityCmd. Gazebo holds a
+  velocity, never a position, for this joint. If the ros2_control loop
+  stalls for any reason, the LAST WRITTEN VELOCITY persists and the joint
+  keeps moving open-loop at whatever rate was last commanded, saturated
+  at this <limit>, until the loop resumes. Overshoot = velocity times
+  stall_duration. Two live m3_grasp trials showed the pre-close command
+  (target 0.1055rad) travel to 0.52 to 0.56rad before correcting, a
+  0.42 to 0.46rad excursion, consistent with a real but as-yet-unmeasured
+  loop stall (see docs/m3_trace_goal_traffic.py,
+  docs/m3_run_context_overshoot_test*.sh, scripts/stall_monitor.py).
+
+  This override does not fix the stall itself; the cause is still being
+  measured (scripts/stall_monitor.py, deployed passively going forward).
+  It reduces the CONSEQUENCE by construction: overshoot is linear in
+  velocity, so a 900ms stall now costs 0.09rad instead of 0.45rad,
+  below grip_angle, harmless in free space, at the cost of the pre-close
+  stroke taking about 5x longer (about 0.2s to about 1.0s for a 0.1rad
+  travel), which nothing in this project's timeouts is tight against.
+  Also directly serves the earlier-established ejection finding (closing
+  rate is what turned a grasp into a 363mm ejection, 2.19x being the
+  difference): the same lever, pointed at by two separate findings.
+
+  SECOND WHY, for the four newly-limited followers: GazeboSimSystem's
+  mimic-joint branch (bottom of write()) computes
+  velocity_sp = -1.0 * position_error * update_rate against the follower's
+  MEASURED position vs. the master's, with no gain factor: an effective
+  500/s correction, ten times stiffer than the master's own 50/s P-loop,
+  and previously no velocity ceiling of its own on four of the five
+  followers. Measured consequence before this fix: with NO gripper goal
+  active at all (mid Cartesian-descent, ~2s gap between the pre-close hold
+  succeeding and the final-close goal being sent), the master was dragged
+  0.0956 -> 0.2546rad while its own controller commanded full retreat
+  toward 0.0956, and one sample read -0.3551rad/s, 3.5x the master's OWN
+  velocity clamp at the time (0.1). A joint cannot exceed its own clamp
+  under its own command; something else was moving it. The velocity value
+  chosen (0.1) is not a margin, it is exactly the master's: every
+  multiplier in this file is +-1.0, so a correctly-tracking follower needs
+  no more than the master's rate, and equal limits mean a dragging
+  follower can move at most as fast as the master's own retreat, letting
+  the master's P-loop fight to a draw instead of losing outright. Any
+  follower left with more headroom than the master keeps the drag's edge.
+  Effort matched to the master's 50 for the same physical reason (same
+  linkage); this is a second new constraint alongside velocity and is not
+  assumed to contribute zero: if a later measurement shows less than
+  proportional shrinkage in the drag, raising follower effort first is how
+  the two constraints get separated, not by guessing.
+
+  Trade of this fix: a follower that falls behind can never catch up while
+  the master is moving (equal top speed, no headroom to close a gap).
+  Watch for accumulating tracking error in six-joint traces going forward:
+  something to measure, not to silently pre-compensate for.
+
+  To pick up upstream changes: re-diff this file against the installed
+  package (`diff /opt/ros/jazzy/share/robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro
+  ur5e_robotiq_description/urdf/vendor/robotiq_2f_85_macro.urdf.xacro`)
+  and reapply the six OVERRIDE edits on top of whatever changed upstream.
+-->
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="robotiq_gripper">
+    <xacro:macro name="robotiq_gripper" params="
+        name
+        prefix
+        parent
+        *origin
+        sim_ignition:=false
+        sim_isaac:=false
+        use_fake_hardware:=false
+        fake_sensor_commands:=false
+        include_ros2_control:=true
+        com_port:=/dev/ttyUSB0">
+
+        <!-- ros2 control include -->
+        <xacro:include filename="$(find robotiq_description)/urdf/robotiq_gripper.ros2_control.xacro" />
+        <!-- if we are simulating or directly communicating with the gripper we need a ros2 control instance -->
+        <xacro:if value="${include_ros2_control}">
+            <xacro:robotiq_gripper_ros2_control
+                name="${name}" prefix="${prefix}"
+                sim_ignition="${sim_ignition}"
+                sim_isaac="${sim_isaac}"
+                use_fake_hardware="${use_fake_hardware}"
+                fake_sensor_commands="${fake_sensor_commands}"
+                com_port="${com_port}"/>
+        </xacro:if>
+
+        <link name="${prefix}robotiq_85_base_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/robotiq_base.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/robotiq_base.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0.0 2.274e-05 0.03232288" rpy="0 0 0" />
+                <mass value="6.6320197e-01" />
+                <inertia ixx="5.1617816e-04" iyy="5.8802208e-04" izz="3.9462776e-04" ixy="2.936e-8" ixz="0.0" iyz="-3.2296e-7" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_left_knuckle_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/left_knuckle.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/left_knuckle.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0.01213197 0.0002 -0.00058647" rpy="0 0 0" />
+                <mass value="1.384773208e-02" />
+                <inertia ixx="3.5232e-7" iyy="2.31944e-6" izz="2.23136e-6" ixy="0.0" ixz="1.1744e-7" iyz="0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_right_knuckle_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/right_knuckle.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/right_knuckle.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="-0.01213197 0.0002 -0.00058647" rpy="0 0 0" />
+                <mass value="1.384773208e-02" />
+                <inertia ixx="3.5232e-7" iyy="2.31944e-6" izz="2.23136e-6" ixy="0.0" ixz="-1.1744e-7" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_left_finger_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/left_finger.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/left_finger.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0.00346899 -0.00079447 0.01867121" rpy="0 0 0" />
+                <mass value="4.260376752e-02" />
+                <inertia ixx="1.385792000000000e-05" iyy="1.183208e-05" izz="5.19672e-06" ixy="0.0" ixz="-2.17264e-06" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_right_finger_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/right_finger.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/right_finger.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="-0.00346899 -5.53e-06 0.01867121" rpy="0 0 0" />
+                <mass value="4.260376752000000e-02" />
+                <inertia ixx="1.385792e-05" iyy="1.183208e-05" izz="5.19672e-06" ixy="0.0" ixz="2.17264e-06" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_left_inner_knuckle_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/left_inner_knuckle.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/left_inner_knuckle.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0.01897699 0.00015001 0.02247101" rpy="0 0 0" />
+                <mass value="2.969376448e-02" />
+                <inertia ixx="9.57136e-06" iyy="8.69056e-06" izz="8.19144e-06" ixy="0.0" ixz="-3.93424e-06" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_right_inner_knuckle_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/right_inner_knuckle.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/right_inner_knuckle.stl" />
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="-0.01926824 5.001e-05 0.02222178" rpy="0 0 0" />
+                <mass value="2.969376448e-02" />
+                <inertia ixx="9.42456e-06" iyy="8.69056e-06" izz="8.33824e-06" ixy="0.0" ixz="3.9636e-06" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_left_finger_tip_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/left_finger_tip.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/left_finger_tip.stl" />
+                </geometry>
+                <surface>
+                    <friction>
+                    <ode>
+                        <mu1>100000.0</mu1>
+                        <mu2>100000.0</mu2>
+                    </ode>
+                    </friction>
+                    <contact>
+                    <ode>
+                        <kp>1e+5</kp>
+                        <kd>1</kd>
+                        <soft_cfm>0</soft_cfm>
+                        <soft_erp>0.2</soft_erp>
+                        <minDepth>0.002</minDepth>
+                        <maxVel>0</maxVel>
+                    </ode>
+                    </contact>
+                </surface>
+            </collision>
+            <inertial>
+                <origin xyz="-0.01456706 -0.0008 0.01649701" rpy="0 0 0" />
+                <mass value="4.268588744e-02" />
+                <inertia ixx="1.048152e-05" iyy="1.197888e-05" izz="4.22784e-06" ixy="0.0" ixz="3.5232e-6" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <link name="${prefix}robotiq_85_right_finger_tip_link">
+            <visual>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/visual/right_finger_tip.dae" />
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <mesh filename="file://$(find robotiq_description)/meshes/collision/right_finger_tip.stl" />
+                </geometry>
+                <surface>
+                    <friction>
+                    <ode>
+                        <mu1>100000.0</mu1>
+                        <mu2>100000.0</mu2>
+                    </ode>
+                    </friction>
+                    <contact>
+                    <ode>
+                        <kp>1e+5</kp>
+                        <kd>1</kd>
+                        <soft_cfm>0</soft_cfm>
+                        <soft_erp>0.2</soft_erp>
+                        <minDepth>0.002</minDepth>
+                        <maxVel>0</maxVel>
+                    </ode>
+                    </contact>
+                </surface>
+            </collision>
+            <inertial>
+                <origin xyz="0.01456706 5e-05 0.01649701" rpy="0 0 0" />
+                <mass value="4.268588744e-02" />
+                <inertia ixx="1.048152e-05" iyy="1.197888e-05" izz="4.22784e-06" ixy="0.0" ixz="-3.5232e-06" iyz="0.0" />
+            </inertial>
+        </link>
+
+        <joint name="${prefix}robotiq_85_base_joint" type="fixed">
+            <parent link="${parent}" />
+            <child link="${prefix}robotiq_85_base_link" />
+            <xacro:insert_block name="origin" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_left_knuckle_joint" type="revolute">
+            <parent link="${prefix}robotiq_85_base_link" />
+            <child link="${prefix}robotiq_85_left_knuckle_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="0.03060114 0.0 0.05490452" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header -->
+            <limit lower="0.0" upper="0.8" velocity="0.1" effort="50" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_right_knuckle_joint" type="revolute">
+            <parent link="${prefix}robotiq_85_base_link" />
+            <child link="${prefix}robotiq_85_right_knuckle_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="-0.03060114 0.0 0.05490452" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header -->
+            <limit lower="-0.8" upper="0.0" velocity="0.1" effort="50" />
+            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_left_finger_joint" type="fixed">
+            <parent link="${prefix}robotiq_85_left_knuckle_link" />
+            <child link="${prefix}robotiq_85_left_finger_link" />
+            <origin xyz="0.03152616 0.0 -0.00376347" rpy="0 0 0" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_right_finger_joint" type="fixed">
+            <parent link="${prefix}robotiq_85_right_knuckle_link" />
+            <child link="${prefix}robotiq_85_right_finger_link" />
+            <origin xyz="-0.03152616 0.0 -0.00376347" rpy="0 0 0" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_left_inner_knuckle_joint" type="continuous">
+            <parent link="${prefix}robotiq_85_base_link" />
+            <child link="${prefix}robotiq_85_left_inner_knuckle_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="0.0127 0.0 0.06142" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header:
+                 gz_ros2_control's mimic correction runs at 500/s with no
+                 gain factor and no ceiling of its own; a follower with no
+                 <limit> can drag the master through the linkage. Matches
+                 the master's velocity (0.1) and effort (50) exactly: every
+                 multiplier here is +-1.0, so a correctly-tracking follower
+                 needs no more than the master's own rate. -->
+            <limit velocity="0.1" effort="50" />
+            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_right_inner_knuckle_joint" type="continuous">
+            <parent link="${prefix}robotiq_85_base_link" />
+            <child link="${prefix}robotiq_85_right_inner_knuckle_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="-0.0127 0.0 0.06142" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
+            <limit velocity="0.1" effort="50" />
+            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_left_finger_tip_joint" type="continuous">
+            <parent link="${prefix}robotiq_85_left_finger_link" />
+            <child link="${prefix}robotiq_85_left_finger_tip_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="0.00563134 0.0 0.04718515" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
+            <limit velocity="0.1" effort="50" />
+            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
+        </joint>
+
+        <joint name="${prefix}robotiq_85_right_finger_tip_joint" type="continuous">
+            <parent link="${prefix}robotiq_85_right_finger_link" />
+            <child link="${prefix}robotiq_85_right_finger_tip_link" />
+            <axis xyz="0 -1 0" />
+            <origin xyz="-0.00563134 0.0 0.04718515" rpy="0 0 0" />
+            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
+            <limit velocity="0.1" effort="50" />
+            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
+        </joint>
+    </xacro:macro>
+</robot>
