@@ -88,7 +88,13 @@ def _setup(context, *args, **kwargs):
         float(object_pose["roll"]), float(object_pose["pitch"]), float(object_pose["yaw"]),
     ]
     approach_axis = [float(v) for v in grasp["approach_axis"]]
-    base_args = _load_scene_xacro_args_module().xacro_base_args(scene)
+    scene_xacro_args = _load_scene_xacro_args_module()
+    base_args = scene_xacro_args.xacro_base_args(scene)
+    # fingertip_grasp_theta (robotiq_2f_85_macro.urdf.xacro's TENTH
+    # OVERRIDE): same reasoning as base_xyz/base_rpy immediately above --
+    # this node's own locally-loaded robot model must match the sim's
+    # spawned gripper geometry.
+    gripper_args = scene_xacro_args.xacro_gripper_args(scene)
 
     world_frame = frames["world"]
     flange_frame = frames["flange"]
@@ -128,7 +134,7 @@ def _setup(context, *args, **kwargs):
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
         )
-        .robot_description(mappings=base_args)
+        .robot_description(mappings={**base_args, **gripper_args})
         .to_moveit_configs()
     )
 

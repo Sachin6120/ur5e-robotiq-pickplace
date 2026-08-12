@@ -80,6 +80,17 @@
   <xacro:arg name="base_xyz" default="0 0 0"/>
   <xacro:arg name="base_rpy" default="0 0 0"/>
 
+  <!-- Fixed-fingertip angle, radians. See robotiq_2f_85_macro.urdf.xacro's
+       TENTH OVERRIDE for why both fingertip joints became fixed instead of
+       continuously mimic-tracking, and config/scene_xacro_args.py's
+       xacro_gripper_args() for the derivation
+       (theta_for_width(object.size[grasp_width_axis])). OBJECT-SIZE-SPECIFIC:
+       changing config/scene.yaml's object.size without re-deriving this value
+       leaves the pad tilted at the wrong angle at grasp, silently. The
+       default below matches the object this project has used all session
+       (45mm cube); do not rely on it for a different object. -->
+  <xacro:arg name="fingertip_grasp_theta" default="0.4029"/>
+
   <!-- Controller parameter file handed to the gz_ros2_control system plugin. -->
   <xacro:arg name="controllers_file"
              default="$(find ur5e_robotiq_description)/config/controllers.yaml"/>
@@ -169,7 +180,8 @@
     sim_isaac="false"
     use_fake_hardware="false"
     fake_sensor_commands="false"
-    include_ros2_control="true">
+    include_ros2_control="true"
+    fingertip_grasp_theta="$(arg fingertip_grasp_theta)">
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:robotiq_gripper>
 
@@ -217,6 +229,29 @@
     <plugin filename="gz_ros2_control-system"
             name="gz_ros2_control::GazeboSimROS2ControlPlugin">
       <parameters>$(arg controllers_file)</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- JointCmdProbe, diagnostic-only, 2026-08-12, docs/gz_joint_cmd_probe/.
+       Reads JointVelocityCmd directly from the ECM (PreUpdate, after
+       gz_ros2_control writes it, and PostUpdate, after physics runs) to
+       settle what three rounds of /joint_states reconstruction could not:
+       whether right_finger_tip_joint's command is live-but-misindexed or
+       stale-and-unrefreshed. MUST stay declared after gz_ros2_control's own
+       <plugin> block above: gz-sim runs PreUpdate in SDF declaration
+       order within a phase, and reversed order makes a live command look
+       stale. See JointCmdProbe.cc's header for the full reasoning. Requires
+       GZ_SIM_SYSTEM_PLUGIN_PATH to include docs/gz_joint_cmd_probe/build at
+       launch time, or gz-sim will fail to find the plugin at spawn. -->
+  <gazebo>
+    <plugin filename="JointCmdProbe" name="gz::sim::systems::JointCmdProbe">
+      <joint>robotiq_85_left_knuckle_joint</joint>
+      <joint>robotiq_85_right_knuckle_joint</joint>
+      <joint>robotiq_85_left_finger_tip_joint</joint>
+      <joint>robotiq_85_right_finger_tip_joint</joint>
+      <joint>robotiq_85_left_inner_knuckle_joint</joint>
+      <joint>robotiq_85_right_inner_knuckle_joint</joint>
+      <output>/tmp/joint_cmd_probe.csv</output>
     </plugin>
   </gazebo>
 

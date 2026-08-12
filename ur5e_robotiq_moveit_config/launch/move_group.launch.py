@@ -37,11 +37,19 @@ def generate_launch_description():
     scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
     with open(scene_file, "r") as fh:
         scene = yaml.safe_load(fh)
-    base_args = _load_scene_xacro_args_module().xacro_base_args(scene)
+    scene_xacro_args = _load_scene_xacro_args_module()
+    base_args = scene_xacro_args.xacro_base_args(scene)
+    # fingertip_grasp_theta (see robotiq_2f_85_macro.urdf.xacro's TENTH
+    # OVERRIDE): needed here for the same reason base_xyz/base_rpy are --
+    # without it, move_group's own robot model regenerates from the xacro's
+    # default fingertip angle instead of the one the sim actually spawned
+    # with, and a planning scene collision check against a differently-tilted
+    # pad is checking against a gripper that isn't the one running.
+    gripper_args = scene_xacro_args.xacro_gripper_args(scene)
 
     moveit_config = (
         MoveItConfigsBuilder("ur5e_robotiq", package_name="ur5e_robotiq_moveit_config")
-        .robot_description(mappings=base_args)
+        .robot_description(mappings={**base_args, **gripper_args})
         .to_moveit_configs()
     )
     move_group_ld = generate_move_group_launch(moveit_config)

@@ -6,19 +6,36 @@
      reinstall). Same reasoning as vendoring robotiq_2f_85_macro.urdf.xacro
      itself: own the file, track the diff.
 
-     ONE CHANGE from upstream: the actuated joint
+     CHANGE 1 from upstream, 2026-08-11: the actuated joint
      (robotiq_85_left_knuckle_joint) gains a `state_interface name="effort"`.
      gz_system.cpp's read() computes effort from JointTransmittedWrench for
      revolute joints and binds it whenever the interface is declared, so
      this is the only line needed to make it observable on /joint_states.
-     Added 2026-08-11 to test a specific hypothesis: gripper_close_and_hold()
+     Added to test a specific hypothesis: gripper_close_and_hold()
      re-sends its hold at the joint's achieved position rather than the
      original close target (see m3_grasp.cpp), which drives the P-loop's
      position error toward zero and, with it, the commanded velocity/force,
      meaning the grip may go slack the instant the hold is issued, exactly
      when the lift needs it to hold. This interface turns that from an
      inference (read the code, reason about the control law) into a
-     measurement (read the joint's own effort during the hold). -->
+     measurement (read the joint's own effort during the hold).
+
+     CHANGE 2 from upstream, 2026-08-12: the actuated joint also gains a
+     `command_interface name="effort"`, alongside (not replacing) the
+     existing position command interface. Confirmed live and derived from
+     the control law: a velocity-servo position controller against a rigid
+     constraint always commands maximum velocity for any non-zero position
+     error, so the commanded value only sets extrusion RATE, never force:
+     it can give bounded extrusion + slack, or sustained force + unbounded
+     extrusion, never sustained force with bounded extrusion, which is what
+     a grasp needs. No effort ceiling on the position interface fixes that;
+     the control law itself is wrong for the hold phase. Position control
+     stays for the close (Stage 2), which reaches touch at 0.4029-0.4038rad
+     across ~60 live cycles, the most reliable behavior in this project,
+     and effort control is for the hold phase only, via a second controller
+     switched in with perform_command_mode_switch. See
+     docs/HANDOFF_M3.md and the pad-force xacro header in
+     robotiq_2f_85_macro.urdf.xacro for the full derivation. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
     <xacro:macro name="robotiq_gripper_ros2_control" params="
@@ -59,6 +76,7 @@
             <!-- With Ignition or Hardware, they handle mimic joints, so we only need this command interface activated -->
             <joint name="${prefix}robotiq_85_left_knuckle_joint">
                 <command_interface name="position" />
+                <command_interface name="effort" />
                 <state_interface name="position">
                     <param name="initial_value">0.7929</param>
                 </state_interface>
@@ -75,6 +93,20 @@
                         <state_interface name="position"/>
                         <state_interface name="velocity"/>
                     </xacro:unless>
+                    <!-- CHANGE 3 from upstream, 2026-08-12: state-only interfaces added
+                         for sim_ignition too. A mimic-tagged joint cannot carry a
+                         command_interface (ros2_control rejects it), but it can carry
+                         state_interfaces, and without any declared here this joint
+                         never appeared in /joint_states at all (confirmed live: a
+                         2-minute capture against it got 0 rows while the master's
+                         59831). Needed to check HANDOFF_M3.md's "right_knuckle
+                         diverges ~0.027-0.033rad from its multiplier under load"
+                         note directly instead of only through the master's trace. -->
+                    <xacro:if value="${sim_ignition}">
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                        <state_interface name="effort"/>
+                    </xacro:if>
                 </joint>
                 <joint name="${prefix}robotiq_85_left_inner_knuckle_joint">
                     <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
@@ -84,6 +116,17 @@
                         <state_interface name="position"/>
                         <state_interface name="velocity"/>
                     </xacro:unless>
+                    <!-- CHANGE 3, see right_knuckle_joint above. Added 2026-08-12 to
+                         test the joint_index-1 mimicked-index hypothesis: this is
+                         array index 2 in hardware_info.joints (order:
+                         left_knuckle=0, right_knuckle=1, left_inner_knuckle=2,
+                         right_inner_knuckle=3, left_finger_tip=4,
+                         right_finger_tip=5). -->
+                    <xacro:if value="${sim_ignition}">
+                        <state_interface name="position"/>
+                        <state_interface name="velocity"/>
+                        <state_interface name="effort"/>
+                    </xacro:if>
                 </joint>
                 <joint name="${prefix}robotiq_85_right_inner_knuckle_joint">
                     <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
@@ -93,25 +136,26 @@
                         <state_interface name="position"/>
                         <state_interface name="velocity"/>
                     </xacro:unless>
-                </joint>
-                <joint name="${prefix}robotiq_85_left_finger_tip_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">-1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
+                    <!-- CHANGE 3, see right_knuckle_joint above. Array index 3. -->
+                    <xacro:if value="${sim_ignition}">
                         <state_interface name="position"/>
                         <state_interface name="velocity"/>
-                    </xacro:unless>
+                        <state_interface name="effort"/>
+                    </xacro:if>
                 </joint>
-                <joint name="${prefix}robotiq_85_right_finger_tip_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
+                <!-- CHANGE 5 from upstream, 2026-08-12: left_finger_tip_joint and
+                     right_finger_tip_joint REMOVED from this block entirely.
+                     TENTH OVERRIDE in robotiq_2f_85_macro.urdf.xacro changed both
+                     from continuous+mimic to type="fixed": a fixed joint has
+                     zero DOF and carries no ros2_control interfaces of any kind,
+                     command or state. See that file's TENTH OVERRIDE comment for
+                     the full reasoning (docs/gz_joint_cmd_probe/ traced the
+                     fingertip runaway to dartsim's contact-force resolution
+                     overriding a correctly-computed mimic command; removing the
+                     DOF removes what that resolution had to act on). CHANGE 3/4
+                     above (state interfaces, mimic-reference fix) are dead code
+                     for these two joints now, kept in git history but not
+                     resurrected here. -->
             </xacro:if>
 
             <!-- Only add this with fake hardware mode -->

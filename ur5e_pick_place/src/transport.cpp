@@ -45,6 +45,7 @@
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
 #include <cmath>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -54,14 +55,21 @@ namespace ur5e_pick_place
 namespace
 {
 
+// touch_file, when non-empty, is created (or truncated if it already
+// exists) as a side effect -- a robust, filesystem-level alternative to a
+// caller parsing this function's RCLCPP_INFO line out of live stdout. See
+// TransportParams::marker_file_prefix for why this exists.
 void mark(
   const rclcpp::Node::SharedPtr & node, int stage, const char * name,
-  const TransportParams & p)
+  const TransportParams & p, const std::string & touch_file = "")
 {
   RCLCPP_INFO(
     node->get_logger(), "M3 STAGE %d %s cycle=%d sim=%d t=%.6f",
     stage, name, p.cycle_index, p.sim_instance,
     node->get_clock()->now().seconds());
+  if (!touch_file.empty()) {
+    std::ofstream(touch_file, std::ios::trunc).close();
+  }
 }
 
 // Hold still so the harness has a stationary window to take a settled pose in.
@@ -206,7 +214,9 @@ Result lift_transport_place(
   double frac = 0.0;
   Result r = cartesian_translate(node, arm, up, p.lift_distance, p, "lift", &frac);
   if (!ok(r)) { return r; }
-  mark(node, 3, "LIFT_DONE", p);
+  mark(
+    node, 3, "LIFT_DONE", p,
+    p.marker_file_prefix.empty() ? "" : p.marker_file_prefix + ".liftdone_ready");
 
   // Grasp-loss check, before the dwell: no reason to spend the dwell window
   // (or the transport/place/descend legs after it) on a cycle that's
@@ -274,7 +284,9 @@ Result lift_transport_place(
       "EXECUTE_FAILURE: transport plan existed but execution failed.");
     return Result::EXECUTE_FAILURE;
   }
-  mark(node, 4, "TRANSPORT_DONE", p);
+  mark(
+    node, 4, "TRANSPORT_DONE", p,
+    p.marker_file_prefix.empty() ? "" : p.marker_file_prefix + ".transportdone_ready");
   dwell(node, p.slip_sample_dwell_s, "slip comparison sample");
 
   // --- Stage 5: descend to place ------------------------------------------

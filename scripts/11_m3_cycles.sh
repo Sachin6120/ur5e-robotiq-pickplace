@@ -97,64 +97,67 @@ if [[ -z "$TRIAL_CMD" ]]; then
 fi
 
 RUNDIR="$(dirname "$OUT")"; mkdir -p "$RUNDIR"
-printf 'cycle,sim_instance,trial_exit,grasp_result,gripper_result,'\
+# attempt_status: RAN (m3_grasp actually launched, reached RUN SUMMARY or
+# TRANSPORT_DONE) or GATE_BEFORE_FAIL (died on a precondition before
+# m3_grasp ever ran -- retried, not counted toward CYCLES, but the row is
+# never dropped). cycle is empty for a GATE_BEFORE_FAIL row (no completed
+# cycle to number); attempt is the raw, always-incrementing attempt count
+# both row types share, for reconstructing exactly what happened in order.
+printf 'attempt_status,cycle,attempt,trial_exit,grasp_result,gripper_result,'\
 'achieved_grip_angle,tcp_error_m,slip_m,slip_verdict,ejected,'\
 'lift_fraction,cycle_wall_s,log\n' > "$OUT"
 
 # ---------------------------------------------------------------------------
-# Watcher. Tails a cycle log; on each slip marker, takes a settled sample.
-# Runs in the background for the life of one cycle.
-# ---------------------------------------------------------------------------
+# Watcher. Polls for filesystem marker files touched by transport.cpp /
+# m3_grasp.cpp; on each slip marker, takes a settled sample. Runs in the
+# background for the life of one cycle.
+#
+# REPLACED 2026-08-12: was `tail -n +1 -F "$log" | while read line; case
+# "$line" in ...`, parsing live stdout for "M3 STAGE 3 LIFT_DONE" etc.
+# Confirmed live, three separate sweep cycles: that mechanism can fail
+# silently under this harness's own process tree (bash -c wrapping a script
+# that itself backgrounds `ros2 launch` and a forwarding `tail -F`) -- the
+# watcher's live tail saw nothing past the point the grasp launch even
+# started, in every one of three cycles, despite the exact same lines
+# appearing correctly in the completed log file afterward, and despite an
+# isolated reproduction of the same bash -c / nesting pattern working fine
+# standalone. Root cause not pinned down further (see docs/HANDOFF_M3.md);
+# a filesystem write is immune to the entire class of pipe/stdout-buffering
+# problem this sits in, which is the actual fix rather than continuing to
+# chase the exact interaction. The "stage 2 ground truth"/.preclose sample
+# the old watcher also took is dropped here, deliberately: nothing below
+# ever reads .preclose back (only .baseline/.after feed the slip verdict),
+# so it was already dead weight, not a signal this rewrite needs to
+# preserve.
 watch_markers() {
-  local log="$1" pre="$2"
-  tail -n +1 -F "$log" 2>/dev/null | while IFS= read -r line; do
-    case "$line" in
-      *"stage 2 ground truth"*)
-        # Fires right after the descent, before the close is ever
-        # commanded -- the object has been resting since spawn/settle
-        # (section 3, well before this) and nothing has touched it yet.
-        # This is the UPSTREAM sample: whatever orientation the object
-        # carries here is independent of the cycle's own outcome, unlike
-        # a post-LIFT_DONE sample, which is downstream of the verdict
-        # (an object still on the table at LIFT_DONE vs one airborne in
-        # the fingers are two different physical situations, not two
-        # settle behaviours -- confirmed live 2026-08-11, see
-        # HANDOFF_M3.md).
-        python3 "$LIB/sample_pose.py" --topic "$POSE_TOPIC" \
-          --entities "$OBJECT" > "${pre}.preclose" 2>"${pre}.preclose.err"
-        echo "$?" > "${pre}.preclose.rc"
-        ;;
-      *"M3 STAGE 3 LIFT_DONE"*)
-        python3 "$LIB/sample_pose.py" --topic "$POSE_TOPIC" \
-          --entities "$FLANGE" "$OBJECT" > "${pre}.baseline" 2>"${pre}.baseline.err"
-        echo "$?" > "${pre}.baseline.rc"
-        ;;
-      *"M3 STAGE 4 TRANSPORT_DONE"*)
-        python3 "$LIB/sample_pose.py" --topic "$POSE_TOPIC" \
-          --entities "$FLANGE" "$OBJECT" > "${pre}.after" 2>"${pre}.after.err"
-        echo "$?" > "${pre}.after.rc"
-        break
-        ;;
-      *"RUN SUMMARY"*)
-        # Added 2026-08-11, alongside transport.cpp's grasp-loss check
-        # (check_grasp_not_lost, Stage 3): a cycle that aborts before ever
-        # reaching transport (GRASP_LOST_DURING_LIFT, or any other early
-        # typed failure) never emits TRANSPORT_DONE, so the case above
-        # never fires and this loop would otherwise tail forever until
-        # MARKER_TIMEOUT (240s default) killed it from outside -- turning
-        # every cycle the new check was built to make FASTER into one of
-        # the slowest in the sweep. RUN SUMMARY is m3_grasp's own last
-        # line on every path, success or typed failure, so it's a safe
-        # unconditional exit here: a normal cycle already broke out on
-        # TRANSPORT_DONE above, before RUN SUMMARY is ever logged, so this
-        # case only ever fires for the abort path. No .after sample to
-        # take -- there is nothing to sample, the object left before
-        # transport was attempted -- so brc/arc below correctly resolve to
-        # NO_SAMPLE for this cycle, and it's counted as a FAIL, which is
-        # what it is.
-        break
-        ;;
-    esac
+  local pre="$1"
+  local start_ts baseline_done=0
+  start_ts=$(date +%s)
+  while true; do
+    if [[ "$baseline_done" -eq 0 && -f "${pre}.liftdone_ready" ]]; then
+      python3 "$LIB/sample_pose.py" --topic "$POSE_TOPIC" \
+        --entities "$FLANGE" "$OBJECT" > "${pre}.baseline" 2>"${pre}.baseline.err"
+      echo "$?" > "${pre}.baseline.rc"
+      baseline_done=1
+    fi
+    if [[ -f "${pre}.transportdone_ready" ]]; then
+      python3 "$LIB/sample_pose.py" --topic "$POSE_TOPIC" \
+        --entities "$FLANGE" "$OBJECT" > "${pre}.after" 2>"${pre}.after.err"
+      echo "$?" > "${pre}.after.rc"
+      break
+    fi
+    if [[ -f "${pre}.run_summary_ready" ]]; then
+      # m3_grasp's own last write on every path, success or typed failure --
+      # matches the old watcher's "RUN SUMMARY seen, stop waiting" fast exit
+      # for a cycle that aborted before TRANSPORT_DONE (e.g.
+      # GRASP_LOST_DURING_LIFT). No .after sample to take; brc/arc below
+      # correctly resolve to NO_SAMPLE, counted as a FAIL, which is what it is.
+      break
+    fi
+    if [[ $(( $(date +%s) - start_ts )) -ge "$MARKER_TIMEOUT" ]]; then
+      break
+    fi
+    sleep 0.2
   done
 }
 
@@ -162,41 +165,49 @@ field() {  # field <file> <entity>  -> the 7 pose numbers
   awk -v e="$2" '$1==e { $1=""; print substr($0,2); exit }' "$1" 2>/dev/null
 }
 
-pass=0; fail=0; eject=0; started=0
+pass=0; fail=0; eject=0; completed=0; attempt=0
+# Retry-until-CYCLES-actually-run, added 2026-08-12. Gate-before (and every
+# other precondition die() below it -- contaminated system, controllers
+# never active, move_group never appearing, object spawn failure) fires
+# BEFORE m3_grasp is ever invoked. It cannot know the outcome, so retrying
+# past it is not cherry-picking -- cherry-picking is selecting AFTER the
+# result is known, which this is not. What would be wrong is silently
+# reinterpreting a pre-fixed criterion after seeing a result; this does the
+# opposite: the criterion (18/20 slip PASS, zero ejections) is now applied
+# to 20 cycles that actually reached m3_grasp, full stop, and every attempt
+# -- including every retried one -- still lands in $OUT, never deleted.
+# MAX_ATTEMPTS is a safety cap, not part of the criterion: if the sim is
+# genuinely broken (not just occasionally racy), this stops the sweep from
+# looping forever instead of surfacing that.
+MAX_ATTEMPTS=$(( CYCLES * 4 ))
+preflight_fails=0
 
-for (( c=1; c<=CYCLES; c++ )); do
-  started=$((started+1))
-  PRE="$RUNDIR/cycle_$(printf '%03d' "$c")"
+while (( completed < CYCLES )); do
+  attempt=$((attempt+1))
+  if (( attempt > MAX_ATTEMPTS )); then
+    echo "  [STOP] $MAX_ATTEMPTS attempts made, only $completed/$CYCLES cycles" \
+         "actually ran -- this is not occasional raciness, something is" \
+         "structurally broken. Not retrying further."
+    break
+  fi
+  # PRE is keyed by ATTEMPT, not by completed-cycle-count -- every attempt
+  # gets its own never-reused prefix, so the staleness bug the old
+  # cycle_NNN-reused-across-runs naming required an explicit rm -f guard
+  # against (2026-08-11) cannot recur here by construction.
+  PRE="$RUNDIR/attempt_$(printf '%03d' "$attempt")"
   LOG="${PRE}.log"
   : > "$LOG"
-  # Clear any pose samples left over from a PREVIOUS run that used this same
-  # cycle number -- $PRE is reused across every invocation of this script,
-  # nothing here is timestamped. Found live 2026-08-11: a cycle that aborts
-  # before TRANSPORT_DONE (GRASP_LOST_DURING_LIFT, see check_grasp_not_lost)
-  # never writes a fresh .after, and without this the stale .after/.after.rc
-  # from an unrelated sweep an hour earlier was silently read as this
-  # cycle's own sample -- reported PASS with a slip number that was
-  # someone else's, on a cycle that never got anywhere near transport. Only
-  # became likely to bite once early-abort cycles existed in numbers; the
-  # staleness risk itself predates that and applied to any cycle that
-  # failed before Stage 4, just rarely enough before now to go unnoticed.
-  rm -f "${PRE}.preclose" "${PRE}.preclose.err" "${PRE}.preclose.rc" \
-        "${PRE}.baseline" "${PRE}.baseline.err" "${PRE}.baseline.rc" \
-        "${PRE}.after" "${PRE}.after.err" "${PRE}.after.rc"
 
-  echo "═══ cycle $c/$CYCLES  (sim instance $c) ═══"
+  echo "═══ attempt $attempt (completed $completed/$CYCLES so far) ═══"
   t0=$(date +%s)
 
-  watch_markers "$LOG" "$PRE" &
+  watch_markers "$PRE" &
   WATCHER=$!
 
-  M3_CYCLE="$c" M3_SIM_INSTANCE="$c" \
+  M3_CYCLE="$((completed+1))" M3_SIM_INSTANCE="$attempt" M3_MARKER_PREFIX="$PRE" \
     bash -c "$TRIAL_CMD" > "$LOG" 2>&1
   rc=$?
 
-  # The watcher exits on TRANSPORT_DONE. If the cycle failed before that it is
-  # still tailing, so bound it rather than hanging the whole sweep on one bad
-  # cycle.
   ( sleep "$MARKER_TIMEOUT"; kill "$WATCHER" 2>/dev/null ) &
   KILLER=$!
   wait "$WATCHER" 2>/dev/null
@@ -204,6 +215,25 @@ for (( c=1; c<=CYCLES; c++ )); do
   pkill -P "$WATCHER" 2>/dev/null
 
   t1=$(date +%s)
+
+  # --- pre-flight failure? m3_grasp never ran, so there is nothing to score
+  # as a grasp outcome -- retry, do not count toward CYCLES, but the row
+  # still goes in $OUT with attempt_status=GATE_BEFORE_FAIL, never dropped.
+  if grep -q '\[STOP\]' "$LOG" && ! grep -q "RUN SUMMARY" "$LOG"; then
+    preflight_fails=$((preflight_fails+1))
+    # die() messages are free text and can contain commas (e.g. "restart and
+    # retry, do not proceed") -- unlike the tightly-controlled enum fields
+    # elsewhere in this CSV, this one needs sanitizing or it silently
+    # corrupts the field alignment for every column after it.
+    reason=$(grep -m1 '\[STOP\]' "$LOG" | sed -E 's/^[[:space:]]*\[STOP\][[:space:]]*//' | tr ',' ';')
+    printf 'GATE_BEFORE_FAIL,,%d,%d,%s,,,,,,,,%d,%s\n' \
+      "$attempt" "$rc" "${reason:0:80}" "$((t1-t0))" "$LOG" >> "$OUT"
+    echo "  [PREFLIGHT FAIL] $reason -- retrying, not counted toward $CYCLES ($((t1-t0))s)"
+    continue
+  fi
+
+  completed=$((completed+1))
+  c="$completed"
 
   # --- pull what the node reported -----------------------------------------
   grasp_result=$(grep -o 'result=[A-Z_]*' "$LOG" | head -1 | cut -d= -f2)
@@ -244,26 +274,33 @@ for (( c=1; c<=CYCLES; c++ )); do
                "a FAIL, not skipped. See ${PRE}.baseline.err / .after.err" ;;
   esac
 
-  printf '%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s\n' \
-    "$c" "$c" "$rc" "${grasp_result:-NONE}" "${grip_result:-NONE}" \
+  printf 'RAN,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s\n' \
+    "$c" "$attempt" "$rc" "${grasp_result:-NONE}" "${grip_result:-NONE}" \
     "${grip_angle:-}" "${tcp_err:-}" "${slip:-}" "$verdict" "$ejected" \
     "${lift_frac:-}" "$((t1-t0))" "$LOG" >> "$OUT"
 
-  echo "  exit=$rc result=${grasp_result:-NONE} slip=${slip:-none} $verdict" \
+  echo "  cycle $c/$CYCLES: exit=$rc result=${grasp_result:-NONE} slip=${slip:-none} $verdict" \
        "($((t1-t0))s)"
 done
 
 # ---------------------------------------------------------------------------
-need_pass=$(( (started * 9 + 9) / 10 ))    # >= 90%, i.e. 18 of 20
+started="$completed"
+need_pass=$(( (CYCLES * 9 + 9) / 10 ))    # >= 90% of the REQUESTED count, i.e. 18 of 20 -- fixed to CYCLES, not $started, so a MAX_ATTEMPTS abort below cannot silently shrink the denominator into an easier bar.
 echo
 echo "═══ M3 SWEEP SUMMARY ═══"
-echo "  cycles started : $started   (none discarded)"
+echo "  cycles completed : $started / $CYCLES requested   ($attempt total attempts," \
+     "$preflight_fails preflight-failed and retried -- every attempt is in $OUT)"
 echo "  slip PASS      : $pass"
 echo "  slip FAIL      : $fail"
 echo "  ejections      : $eject"
-echo "  criterion      : >= $need_pass of $started under ${SLIP_MAX} m, zero ejections"
+echo "  criterion      : >= $need_pass of $CYCLES under ${SLIP_MAX} m, zero ejections"
 
-if [[ "$eject" -gt 0 ]]; then
+if [[ "$started" -lt "$CYCLES" ]]; then
+  echo "  RESULT: ABORTED — only $started/$CYCLES cycles ever ran ($attempt attempts" \
+       "made, MAX_ATTEMPTS=$MAX_ATTEMPTS reached). Not a criterion evaluation:" \
+       "the sim could not stay up long enough to even ATTEMPT $CYCLES cycles."
+  exit 1
+elif [[ "$eject" -gt 0 ]]; then
   echo "  RESULT: FAIL — the criterion allows zero ejections."
   exit 1
 elif [[ "$pass" -ge "$need_pass" ]]; then

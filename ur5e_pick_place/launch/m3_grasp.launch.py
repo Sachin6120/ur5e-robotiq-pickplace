@@ -64,6 +64,7 @@ def _setup(context, *args, **kwargs):
     grasp_table_file = LaunchConfiguration("grasp_table_file").perform(context)
     csv_path = LaunchConfiguration("csv_path").perform(context)
     world = LaunchConfiguration("world").perform(context)
+    marker_file_prefix = LaunchConfiguration("marker_file_prefix").perform(context)
 
     scene = _load_yaml(scene_file, "scene.yaml")
     grasp_table = _load_yaml(grasp_table_file, "grasp_table.yaml")
@@ -119,7 +120,13 @@ def _setup(context, *args, **kwargs):
         float(place_pose_cfg["roll"]), float(place_pose_cfg["pitch"]), float(place_pose_cfg["yaw"]),
     ]
     approach_axis = [float(v) for v in grasp["approach_axis"]]
-    base_args = _load_scene_xacro_args_module().xacro_base_args(scene)
+    scene_xacro_args = _load_scene_xacro_args_module()
+    base_args = scene_xacro_args.xacro_base_args(scene)
+    # fingertip_grasp_theta (robotiq_2f_85_macro.urdf.xacro's TENTH
+    # OVERRIDE): this node's own robot model must match the sim's spawned
+    # gripper geometry, same reasoning as base_xyz/base_rpy immediately
+    # above.
+    gripper_args = scene_xacro_args.xacro_gripper_args(scene)
 
     # RELEASE_CLEARANCE_M: added to the object's own width before solving for
     # the release aperture, so the pads open clear of the object rather than
@@ -178,7 +185,7 @@ def _setup(context, *args, **kwargs):
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
         )
-        .robot_description(mappings=base_args)
+        .robot_description(mappings={**base_args, **gripper_args})
         .to_moveit_configs()
     )
 
@@ -203,6 +210,7 @@ def _setup(context, *args, **kwargs):
                 "standoff": float(grasp["standoff"]),
                 "retreat": float(grasp["retreat"]),
                 "slip_sample_dwell_s": float(grasp["slip_sample_dwell_s"]),
+                "marker_file_prefix": marker_file_prefix,
                 "release_position_rad": release_position_rad,
                 "tcp_offset": float(grasp["tcp_offset"]),
                 "pad_centre_offset": float(grasp["pad_centre_offset"]),
@@ -265,6 +273,17 @@ def generate_launch_description():
                 "world",
                 default_value="empty",
                 description="Gazebo world name, used to build the pose/info and joint_state topic paths.",
+            ),
+            DeclareLaunchArgument(
+                "marker_file_prefix",
+                default_value="",
+                description="Empty (default) disables it. When set, LIFT_DONE/"
+                "TRANSPORT_DONE additionally touch <prefix>.liftdone_ready / "
+                "<prefix>.transportdone_ready -- see transport.hpp's "
+                "TransportParams::marker_file_prefix for why: a filesystem-write "
+                "signal for scripts/11_m3_cycles.sh's sweep watcher, robust to "
+                "the live-stdout-parsing failure confirmed under the sweep "
+                "harness's nested bash -c / backgrounded-tail process tree.",
             ),
             OpaqueFunction(function=_setup),
         ]

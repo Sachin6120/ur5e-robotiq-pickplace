@@ -145,6 +145,24 @@ struct TransportParams
   double grasp_loss_threshold_rad = 0.0;
   std::string actuated_joint;
   std::string gz_js_topic;
+
+  // Empty (default) disables this entirely -- normal single-cycle usage never
+  // sets it. Added 2026-08-12: scripts/11_m3_cycles.sh's watcher parses
+  // stdout for "M3 STAGE 3 LIFT_DONE"/"M3 STAGE 4 TRANSPORT_DONE" to know
+  // when to sample Gazebo's pose topic. Confirmed live that this can fail
+  // silently under the sweep harness's nested bash -c / backgrounded-tail
+  // process tree -- three consecutive swept cycles all reported
+  // result=SUCCESS while the watcher's own live tail saw nothing past the
+  // point m3_grasp's launch even started, despite the same lines appearing
+  // correctly in the completed log file afterward and an isolated
+  // reproduction of the same nesting pattern working fine. Root cause not
+  // pinned down further; a filesystem write is immune to the entire class of
+  // pipe/stdout-buffering problem this sits in, so that is the fix rather
+  // than continuing to chase the exact interaction. When non-empty, LIFT_DONE
+  // and TRANSPORT_DONE additionally touch "<prefix>.liftdone_ready" /
+  // "<prefix>.transportdone_ready" -- the harness polls for file existence
+  // instead of parsing a live stream.
+  std::string marker_file_prefix;
 };
 
 // Runs lift -> transport -> place -> release -> retreat.
