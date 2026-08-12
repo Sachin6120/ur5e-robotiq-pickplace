@@ -1,0 +1,10 @@
+[INFO] [1786527606.235454545] [stall_monitor]: stall_monitor: topic=/joint_states out=docs/m3_cyclelive_stalls_20260812_113952_14404.csv min_gap=20ms heartbeat=30s
+[INFO] [1786527606.235768642] [stall_monitor]: gaps are HEADER-STAMP (sim time) deltas; wall column is arrival time and exists only to separate loop stalls from monitor lag
+[WARN] [1786527607.868584020] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527608.662194090] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527608.664243886] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527608.666374388] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527620.405061336] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527628.576189511] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786527632.273522599] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[stall_monitor] messages=26722 gaps_logged=7 max_sim_gap_ms=9.0 implied_max_overshoot_rad=0.005
