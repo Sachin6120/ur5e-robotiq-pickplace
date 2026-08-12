@@ -3,8 +3,6 @@
 From a fresh WSL2 Ubuntu 24.04 to a recon log in hand. Everything below runs
 inside the WSL terminal, not PowerShell.
 
----
-
 ## Step 0 — confirm you're on Noble
 
 ```bash
@@ -13,8 +11,6 @@ lsb_release -a
 
 Must say `24.04` / `noble`. If it says 22.04 you have the wrong WSL distro
 installed; see "Wrong Ubuntu version" at the bottom.
-
----
 
 ## Step 1 — create the project folder in the Linux filesystem
 
@@ -35,8 +31,6 @@ cd ~/ur5e_pickplace
 
 `~` is the real ext4 filesystem inside the WSL VM. Use it.
 
----
-
 ## Step 2 — get the project files in
 
 If the files are on the Windows side, WSL sees `C:\` as `/mnt/c`:
@@ -56,8 +50,6 @@ step 3 entirely:
 git clone <remote> ~/ur5e_pickplace
 ```
 
----
-
 ## Step 3 — make the scripts executable and check line endings
 
 ```bash
@@ -71,8 +63,6 @@ file scripts/*.sh          # want "ASCII text", NOT "with CRLF line terminators"
 sed -i 's/\r$//' scripts/*.sh config/*.yaml     # harmless if already clean
 ```
 
----
-
 ## Step 4 — git init
 
 ```bash
@@ -81,8 +71,6 @@ git init
 git add -A
 git commit -m "M-1 kit: reference report, scene config, recon and M0 verification"
 ```
-
----
 
 ## Step 5 — install the stack
 
@@ -93,8 +81,8 @@ bash scripts/02_bootstrap_noble.sh 2>&1 | tee bootstrap_$(date +%Y%m%d_%H%M%S).l
 Expect 20–40 minutes and several sudo prompts. Exit code 0 means verified; any
 `[FAIL]` line means stop and read it.
 
-**If colcon build gets OOM-killed** — WSL2 defaults to a memory cap that a
-parallel MoveIt build can exceed. Either limit parallelism:
+WSL2 defaults to a memory cap that a parallel MoveIt build can exceed, so
+colcon can get OOM-killed. Either limit parallelism:
 
 ```bash
 colcon build --symlink-install --parallel-workers 2
@@ -109,8 +97,6 @@ processors=8
 ```
 
 then `wsl --shutdown` from PowerShell and reopen the terminal.
-
----
 
 ## Step 6 — Gazebo rendering smoke test (WSL-specific)
 
@@ -156,11 +142,9 @@ gz sim -s <world>          # server only, no GUI
 
 Headless sidesteps WSL rendering entirely and runs considerably faster, which
 matters when M3 and M5 each want 20 consecutive cycles. Use the GUI when you
-need to *see* something, and take screenshots from a GUI run — but note in the
-log which run a screenshot came from, since the spec requires a screenshot and
-its claims to be reconcilable against the same run.
-
----
+need to *see* something, and take screenshots from a GUI run. Note in the log
+which run a screenshot came from, since the spec requires a screenshot and its
+claims to be reconcilable against the same run.
 
 ## Step 7 — arm-only sanity check
 
@@ -176,8 +160,6 @@ You want RViz with a UR5e and a working MoveIt planning session. **If this
 doesn't come up, stop here.** The problem is upstream of anything this project
 adds, and every later milestone would inherit it.
 
----
-
 ## Step 8 — recon
 
 ```bash
@@ -189,13 +171,11 @@ bash scripts/00_recon.sh 2>&1 | tee docs/recon_$(date +%Y%m%d_%H%M%S).log
 
 Read-only: installs nothing, launches no simulation.
 
-It answers the five open questions in `docs/M-1_reference_report.md` §6 — the
-UR macro signature, the robotiq package source, the flange frame and mount
+It answers the five open questions in `docs/M-1_reference_report.md` §6: the UR
+macro signature, the robotiq package source, the flange frame and mount
 transform, the actuated gripper joint's real limits, and the five mimic
 multipliers. The URDF merge is written from those observed values rather than
 from the donor repo's README.
-
----
 
 ## Troubleshooting
 
@@ -207,7 +187,7 @@ wsl --install -d Ubuntu-24.04
 wsl -l -v                  # confirm VERSION 2, not 1
 ```
 
-WSL **1** will not work — it has no real kernel, and Gazebo's physics and
+WSL **1** will not work: it has no real kernel, and Gazebo's physics and
 networking assumptions break. Use `wsl --set-version Ubuntu-24.04 2` if needed.
 
 **`ros2` not found in a new terminal.** The bootstrap appends the setup line to
