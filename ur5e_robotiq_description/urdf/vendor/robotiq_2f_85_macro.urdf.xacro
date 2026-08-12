@@ -127,6 +127,43 @@
   gripper_close_and_hold's hold-at-target fix), so effort will pin at
   whatever the ceiling is regardless of its value, and the fix at that
   point is an effort COMMAND interface, not a lower number.
+
+  NINTH OVERRIDE, 2026-08-12: effort 1.0 -> 50 on the five FOLLOWERS only
+  (right_knuckle, left/right_inner_knuckle, left/right_finger_tip). The
+  master (left_knuckle_joint) stays at 1.0. SEVENTH/EIGHTH above matched
+  every joint to the master's own effort value on a "no more headroom
+  than the master" argument that is correct for VELOCITY (a dragging
+  follower should not be able to outrun the master) but wrong for EFFORT:
+  the master's effort ceiling sizes GRIP FORCE (the 235N -> 13 N*m ->
+  1.0 N*m chain above, all reasoning about pad-to-object contact force).
+  A follower's effort ceiling sizes something unrelated: whether the
+  linkage HOLDS ITS SHAPE under the pad's reaction torque. Collapsing
+  both into one number was wrong; this override separates them.
+
+  Why this is load-bearing here specifically, not just theoretically:
+  the real 2F-85's four-bar linkage is a CLOSED loop in hardware (the
+  inner knuckle ties back to the fingertip link). URDF cannot express
+  closed kinematic loops, so this macro leaves both inner-knuckle
+  branches dangling: e.g. left_inner_knuckle_joint connects
+  base_link to left_inner_knuckle_link and stops; nothing closes the
+  loop back to the fingertip. So in this simulation, unlike on real
+  hardware, the finger's SHAPE is held together entirely by the mimic
+  servos, not by a mechanical constraint. Weaken those actuators and the
+  finger deforms under contact load: measured live 2026-08-12
+  (docs/HANDOFF_M3.md, "right_finger_tip runaway"): both fingertip
+  joints diverged continuously under load (up to ~0.20-0.32rad) while
+  tracking their mimic target exactly in free space, with effort well
+  below the 1.0 ceiling the whole time: a weak-actuator signature, not
+  a railed one. On real hardware the closed linkage would hold that
+  geometry regardless of drive strength; in this open-tree
+  approximation, follower effort IS the thing holding gripper shape
+  together, so it must be sized for that job, not inherited from the
+  grip-force derivation above. See docs/HANDOFF_M3.md for whether
+  raising it (this override) resolves the divergence or not: if it
+  does, the followers were under-actuated and the fix holds; if it
+  doesn't, the mechanism is not actuator strength (DART's constraint
+  resolution or something in how a mimic joint is stepped) and this
+  override should be treated as ruled out, not reverted blind.
 -->
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="robotiq_gripper">
     <xacro:macro name="robotiq_gripper" params="
@@ -139,7 +176,8 @@
         use_fake_hardware:=false
         fake_sensor_commands:=false
         include_ros2_control:=true
-        com_port:=/dev/ttyUSB0">
+        com_port:=/dev/ttyUSB0
+        fingertip_grasp_theta:=0.4029">
 
         <!-- ros2 control include -->
         <xacro:include filename="$(find ur5e_robotiq_description)/urdf/vendor/robotiq_gripper.ros2_control.xacro" />
@@ -393,8 +431,13 @@
             <child link="${prefix}robotiq_85_right_knuckle_link" />
             <axis xyz="0 -1 0" />
             <origin xyz="-0.03060114 0.0 0.05490452" rpy="0 0 0" />
-            <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header -->
-            <limit lower="-0.8" upper="0.0" velocity="0.1" effort="1.0" />
+            <!-- OVERRIDE 2026-08-10: velocity 0.5 -> 0.1, see file header.
+                 OVERRIDE 2026-08-12: effort 1.0 -> 50, see NINTH OVERRIDE
+                 in the file header. This joint's effort limit is not a
+                 grip-force parameter; it's the actuator strength holding the
+                 linkage's SHAPE against contact reaction, and follower
+                 effort has nothing to do with the master's effort. -->
+            <limit lower="-0.8" upper="0.0" velocity="0.1" effort="50" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
         </joint>
 
@@ -423,8 +466,9 @@
                  SEVENTH OVERRIDE below; matched at whatever the master's
                  own value is, not independently) exactly: every
                  multiplier here is +-1.0, so a correctly-tracking follower
-                 needs no more than the master's own rate. -->
-            <limit velocity="0.1" effort="1.0" />
+                 needs no more than the master's own rate.
+                 OVERRIDE 2026-08-12: effort 1.0 -> 50, see NINTH OVERRIDE. -->
+            <limit velocity="0.1" effort="50" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
         </joint>
 
@@ -433,29 +477,94 @@
             <child link="${prefix}robotiq_85_right_inner_knuckle_link" />
             <axis xyz="0 -1 0" />
             <origin xyz="-0.0127 0.0 0.06142" rpy="0 0 0" />
-            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="1.0" />
+            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header.
+                 OVERRIDE 2026-08-12: effort 1.0 -> 50, see NINTH OVERRIDE. -->
+            <limit velocity="0.1" effort="50" />
             <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
         </joint>
 
-        <joint name="${prefix}robotiq_85_left_finger_tip_joint" type="continuous">
+        <!-- TENTH OVERRIDE, 2026-08-12: both fingertip joints changed from
+             continuous+mimic to FIXED, at a computed angle. Supersedes the
+             mimic-reference fix immediately above (kept in the file history,
+             not reverted): that fix was correct in its own right (a joint
+             should reference its own parent, not a cross-chain joint) but
+             was tested against a falsifiable prediction and failed: it did
+             not stop the divergence. Neither did raising follower effort to
+             50 N*m (NINTH OVERRIDE). Both were closed by direct measurement,
+             not superseded by argument.
+
+             ROOT CAUSE, confirmed via docs/gz_joint_cmd_probe/ (a gz-sim
+             System plugin reading JointVelocityCmd straight from the ECM,
+             built specifically because reconstructing the command from
+             /joint_states could not distinguish "correctly computed but
+             misapplied" from "wrong index": see docs/HANDOFF_M3.md,
+             "ROUND 4, RESOLVED"): gz_ros2_control's mimic loop was NEVER
+             broken. During the actual runaway, the computed command tracked
+             its correctly-configured reference almost exactly (0.24% mean
+             relative error, unclamped, growing from -1.48 to -129.6 rad/s
+             in lockstep with the true position error). The joint's MEASURED
+             velocity stayed pinned at +0.1 rad/s, the OPPOSITE sign from
+             the command, for 97.5% of the runaway window. Not clamping
+             (clamping preserves sign). The divergence is entirely
+             downstream, in how dartsim resolves a velocity-servoed mimic
+             joint against contact + lift dynamics under load, almost
+             certainly a constraint-priority effect, where dartsim's LCP
+             solver lets contact/kinematic constraints override a velocity
+             motor's soft target regardless of available effort (consistent
+             with the NINTH OVERRIDE's 50x effort increase changing nothing).
+
+             THE FIX: remove the DOF the divergence needs. A fixed joint has
+             no JointVelocityCmd for dartsim's contact resolution to
+             override, because it isn't independently simulated at all:
+             the pad becomes rigidly welded to the finger link, exactly as
+             the real 2F-85's closed four-bar linkage holds it, regardless
+             of contact load. This does not fix the underlying dartsim
+             behavior (still not understood at the constraint-solver level);
+             it removes the one place in this model where that behavior had
+             a joint to act on.
+
+             THE ANGLE is not zero: it is chosen so the pad is exactly
+             parallel to the gripper axis (net tilt zero) AT THE CURRENT
+             OBJECT'S GRASP ANGLE, not at every angle: the continuous
+             mimic's parallel-jaw property held at every theta; this
+             fixed-angle replacement trades that generality for immunity to
+             the runaway, and is correct only for the object scene.yaml
+             currently describes. fingertip_grasp_theta is DERIVED, never
+             hand-typed: config/scene_xacro_args.py's xacro_gripper_args()
+             computes theta_for_width(object.size[grasp_width_axis]) via
+             scripts/lib/gripper_geometry.py and passes it as this xacro
+             arg. Changing object.size without re-deriving this angle
+             produces a pad tilted at the WRONG angle at grasp, silently.
+
+             THE SIGN, left vs right: both joints share axis="0 -1 0", the
+             same convention gripper_geometry.py's tip_origin() encodes
+             (rotation by angle a about this axis equals rotation by -a
+             about standard +Y, i.e. URDF <origin rpy="0 p 0"> needs p=-a
+             to reproduce it). left_finger_tip_joint's OLD mimic value at
+             the grasp angle was multiplier(-1) * fingertip_grasp_theta =
+             -fingertip_grasp_theta, so its fixed origin needs pitch
+             -(-fingertip_grasp_theta) = +fingertip_grasp_theta.
+             right_finger_tip_joint's OLD mimic (post mimic-reference-fix)
+             was relative to right_knuckle_joint (itself at
+             -fingertip_grasp_theta at grasp) via multiplier(-1), giving
+             +fingertip_grasp_theta, so ITS fixed origin needs pitch
+             -(+fingertip_grasp_theta) = -fingertip_grasp_theta, the
+             mirror of the left side, matching the physical left/right
+             symmetry of the linkage. Verify by measurement, not by trusting
+             this derivation: docs/m3_run_effort_hold_trial.sh's loggers
+             should show exactly zero fingertip divergence now, since a
+             fixed joint cannot diverge by definition. If they show anything
+             nonzero, the sign above is the first thing to re-check. -->
+        <joint name="${prefix}robotiq_85_left_finger_tip_joint" type="fixed">
             <parent link="${prefix}robotiq_85_left_finger_link" />
             <child link="${prefix}robotiq_85_left_finger_tip_link" />
-            <axis xyz="0 -1 0" />
-            <origin xyz="0.00563134 0.0 0.04718515" rpy="0 0 0" />
-            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="1.0" />
-            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" multiplier="-1" />
+            <origin xyz="0.00563134 0.0 0.04718515" rpy="0 ${fingertip_grasp_theta} 0" />
         </joint>
 
-        <joint name="${prefix}robotiq_85_right_finger_tip_joint" type="continuous">
+        <joint name="${prefix}robotiq_85_right_finger_tip_joint" type="fixed">
             <parent link="${prefix}robotiq_85_right_finger_link" />
             <child link="${prefix}robotiq_85_right_finger_tip_link" />
-            <axis xyz="0 -1 0" />
-            <origin xyz="-0.00563134 0.0 0.04718515" rpy="0 0 0" />
-            <!-- OVERRIDE 2026-08-10: added, was unlimited. See file header. -->
-            <limit velocity="0.1" effort="1.0" />
-            <mimic joint="${prefix}robotiq_85_left_knuckle_joint" />
+            <origin xyz="-0.00563134 0.0 0.04718515" rpy="0 ${-fingertip_grasp_theta} 0" />
         </joint>
     </xacro:macro>
 </robot>

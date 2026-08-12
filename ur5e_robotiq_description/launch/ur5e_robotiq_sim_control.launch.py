@@ -134,6 +134,7 @@ def launch_setup(context, *args, **kwargs):
     gripper_rotation = LaunchConfiguration("gripper_rotation")
     base_xyz = LaunchConfiguration("base_xyz")
     base_rpy = LaunchConfiguration("base_rpy")
+    fingertip_grasp_theta = LaunchConfiguration("fingertip_grasp_theta")
     controllers_file = LaunchConfiguration("controllers_file")
     description_file = LaunchConfiguration("description_file")
     model_name = LaunchConfiguration("model_name")
@@ -185,6 +186,9 @@ def launch_setup(context, *args, **kwargs):
             "base_rpy:='",
             base_rpy,
             "' ",
+            "fingertip_grasp_theta:=",
+            fingertip_grasp_theta,
+            " ",
             "controllers_file:=",
             controllers_file,
         ]
@@ -340,6 +344,23 @@ def launch_setup(context, *args, **kwargs):
     return actions
 
 
+def _default_gripper_args(scene):
+    # Same shape as _default_base_args below, mirrored deliberately rather
+    # than merged into it: this derives fingertip_grasp_theta (see
+    # config/scene_xacro_args.py's xacro_gripper_args() and
+    # robotiq_2f_85_macro.urdf.xacro's TENTH OVERRIDE), a fully independent
+    # xacro arg from base_xyz/base_rpy, from the same scene.yaml.
+    if not scene or "object" not in scene:
+        return {"fingertip_grasp_theta": "0.4029"}
+    import importlib.util
+
+    args_module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    spec = importlib.util.spec_from_file_location("scene_xacro_args", args_module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.xacro_gripper_args(scene)
+
+
 def _default_base_args(scene):
     # CORRECTED (M2): base_xyz/base_rpy used to default to "0 0 0"
     # unconditionally, independent of scene.yaml. That was invisible right up
@@ -367,7 +388,9 @@ def _default_base_args(scene):
 
 
 def generate_launch_description():
-    default_base_args = _default_base_args(_load_scene())
+    scene = _load_scene()
+    default_base_args = _default_base_args(scene)
+    default_gripper_args = _default_gripper_args(scene)
     declared_arguments = [
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("tf_prefix", default_value=""),
@@ -375,6 +398,13 @@ def generate_launch_description():
         DeclareLaunchArgument("gripper_rotation", default_value="0.0"),
         DeclareLaunchArgument("base_xyz", default_value=default_base_args["base_xyz"]),
         DeclareLaunchArgument("base_rpy", default_value=default_base_args["base_rpy"]),
+        DeclareLaunchArgument(
+            "fingertip_grasp_theta",
+            default_value=default_gripper_args["fingertip_grasp_theta"],
+            description="Fixed-fingertip angle (radians), derived from "
+            "scene.yaml's object.size via gripper_geometry.theta_for_width(). "
+            "See robotiq_2f_85_macro.urdf.xacro's TENTH OVERRIDE.",
+        ),
         DeclareLaunchArgument(
             "model_name",
             default_value="ur5e_robotiq",

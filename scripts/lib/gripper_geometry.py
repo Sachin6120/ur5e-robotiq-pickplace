@@ -177,6 +177,79 @@ def aperture_m(theta):
     return 2.0 * (tip_origin(theta)[0] - PAD_INSET_M)
 
 
+def aperture_m_fixed_tip(theta, theta_grasp, pad_z):
+    """Clear distance between the two pad faces under the TENTH OVERRIDE
+    fixed-fingertip model (robotiq_2f_85_macro.urdf.xacro, 2026-08-12),
+    metres. aperture_m() assumes the continuous-mimic parallel-jaw property
+    (net tip orientation is IDENTITY at every theta) -- that stopped being
+    true when both fingertip joints became fixed at a computed angle
+    instead of continuously tracking. This is exact ONLY at theta ==
+    theta_grasp (net tilt zero there by construction, matching
+    aperture_m(theta_grasp) independent of pad_z -- asserted below, not
+    just claimed); everywhere else the pad is tilted and a flat face no
+    longer has a single X-coordinate, so the caller must pick a pad_z (use
+    PAD_FACE_Z_MIN_M/PAD_FACE_Z_CENTROID_M/PAD_FACE_Z_MAX_M for the range
+    across the pad's own vertical extent, or PAD_FACE_Z_CENTROID_M alone
+    for the nominal contact height).
+
+    DERIVATION, and why it needed a mesh measurement, not just algebra:
+    the natural first guess -- reuse tip_origin() for the right side via
+    theta -> -theta and negate the result -- silently produces the WRONG
+    sign for the pad's local offset once you check it against aperture_m()
+    itself (which is validated against the 85mm published stroke to 1
+    micron): the two disagree by a full 2*PAD_INSET_M unless the right
+    pad's local offset is +PAD_INSET_M, not -PAD_INSET_M like the left.
+    Rather than trust either algebra path, right_finger_tip.stl was
+    measured directly the same way PAD_INSET_M was: its 93-vertex pad-face
+    cluster sits at local x=+0.025259 (left's is at x=-0.025259, exact
+    negation) with IDENTICAL z_centroid and z_range to left's -- confirmed
+    a true mirror through the gripper's centreline (X=0), not assumed.
+
+    With that settled: right_finger_tip_joint's own fixed rotation
+    (multiplier -1 relative to right_knuckle_joint, which is itself at
+    -theta) puts its net tip orientation at -theta + theta_grasp -- the
+    exact negation of the left side's (theta - theta_grasp), matching the
+    physical left/right symmetry of the linkage. cos of that net angle is
+    therefore identical on both sides (cosine is even) and its PAD_INSET_M
+    contribution cancels out of the aperture difference entirely, at every
+    theta -- only the pad_z (sine, odd) term survives asymmetrically. That
+    is why this formula does not need the right pad's inset as a separate
+    term: it already cancelled.
+
+    NOT INDEPENDENTLY CONFIRMED: this function's numbers away from
+    theta_grasp have NOT been cross-checked against another derivation of
+    the same quantity. Verify against a live measurement
+    (docs/m3_run_effort_hold_trial.sh) before trusting a pre-close
+    clearance claim built on this number alone.
+    """
+    net_left = theta - theta_grasp
+    return 2.0 * (
+        tip_origin(theta)[0]
+        - PAD_INSET_M * math.cos(net_left)
+        - pad_z * math.sin(net_left)
+    )
+
+
+def _assert_fixed_tip_matches_at_grasp():
+    # The one property any correct fixed-tip formula MUST have: net tilt is
+    # zero by construction at theta == theta_grasp, so aperture_m_fixed_tip
+    # must equal aperture_m() there exactly, independent of pad_z (the
+    # pad_z term carries a sin(net_left) factor that is exactly zero at
+    # this angle). Assert it rather than trusting the derivation above.
+    for theta_grasp in (0.13, 0.3940, 0.4029, 0.7929):
+        want = aperture_m(theta_grasp)
+        for pad_z in (0.0, 0.013015, 0.031573, 0.051019, 0.09):
+            got = aperture_m_fixed_tip(theta_grasp, theta_grasp, pad_z)
+            assert abs(got - want) < 1e-12, (
+                f"fixed-tip model disagrees with the continuous model AT the "
+                f"design point theta_grasp={theta_grasp}, pad_z={pad_z}: "
+                f"{got} != {want}"
+            )
+
+
+_assert_fixed_tip_matches_at_grasp()
+
+
 def _solve_theta_pads_meet(tol=1e-12):
     """Where aperture_m(theta) == 0, solved rather than assumed.
 

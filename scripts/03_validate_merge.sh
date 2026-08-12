@@ -139,12 +139,18 @@ else:
                 "scene.yaml squeeze is in rad and assumes that range")
 
 # --- mimic joints -----------------------------------------------------------
+# left_finger_tip_joint / right_finger_tip_joint REMOVED from this set
+# 2026-08-12 (TENTH OVERRIDE, robotiq_2f_85_macro.urdf.xacro): both changed
+# from continuous+mimic to type="fixed" after docs/gz_joint_cmd_probe/ traced
+# a fingertip runaway to dartsim overriding a correctly-computed mimic
+# command under contact load -- a fixed joint has no DOF for that to act on.
+# recon originally observed 5; 3 is now correct, deliberately, not a
+# loosened check. See docs/HANDOFF_M3.md's "ROUND 4, RESOLVED" and the
+# TENTH OVERRIDE comment for the full reasoning.
 expected = {
     'robotiq_85_right_knuckle_joint':       -1.0,
     'robotiq_85_left_inner_knuckle_joint':   1.0,
     'robotiq_85_right_inner_knuckle_joint': -1.0,
-    'robotiq_85_left_finger_tip_joint':     -1.0,
-    'robotiq_85_right_finger_tip_joint':     1.0,
 }
 mimics = {}
 for j in joints:
@@ -153,14 +159,28 @@ for j in joints:
         mimics[j.get('name')] = (m.get('joint'), float(m.get('multiplier', 1.0)),
                                  float(m.get('offset', 0.0)))
 
-print(f"\n  mimic joints found: {len(mimics)} (recon observed 5)")
+print(f"\n  mimic joints found: {len(mimics)} (3 expected as of 2026-08-12; "
+      f"recon originally observed 5, see TENTH OVERRIDE)")
 for n, (src, mult, off) in sorted(mimics.items()):
     print(f"    {n:<40} -> {src}  mult={mult}  off={off}")
 
-if len(mimics) != 5:
-    bad(f"expected 5 mimic joints, found {len(mimics)}")
+if len(mimics) != 3:
+    bad(f"expected 3 mimic joints, found {len(mimics)}")
 else:
-    ok("5 mimic joints present")
+    ok("3 mimic joints present")
+
+# The two fixed-fingertip joints must exist as FIXED, not simply be absent
+# (absent would also mean "gripper macro failed to expand" for other links --
+# this check is specific to catching "still continuous+mimic" regressions).
+for fixed_name in ('robotiq_85_left_finger_tip_joint', 'robotiq_85_right_finger_tip_joint'):
+    hit = [j for j in joints if j.get('name', '').endswith(fixed_name)]
+    if not hit:
+        bad(f"fixed fingertip joint missing entirely: {fixed_name}")
+    elif hit[0].get('type') != 'fixed':
+        bad(f"{fixed_name} is type={hit[0].get('type')!r}, expected 'fixed' "
+            "(TENTH OVERRIDE regression -- back to continuous+mimic?)")
+    else:
+        ok(f"{fixed_name} is fixed")
 
 for name, want_mult in expected.items():
     hit = [k for k in mimics if k.endswith(name)]
@@ -193,13 +213,16 @@ for name, want_mult in expected.items():
 # moves at exactly the master's rate. Equal limits mean a dragging follower can
 # move at most as fast as the master's retreat, which is the property that
 # lets the master fight to a draw. Any joint left unbounded gives that away.
+#
+# left_finger_tip_joint / right_finger_tip_joint REMOVED from this list
+# 2026-08-12 (TENTH OVERRIDE): now type="fixed", zero DOF, no <limit> at
+# all -- checking for one here would be checking for something that
+# correctly does not exist, not a regression.
 linkage = [
     'robotiq_85_left_knuckle_joint',
     'robotiq_85_right_knuckle_joint',
     'robotiq_85_left_inner_knuckle_joint',
     'robotiq_85_right_inner_knuckle_joint',
-    'robotiq_85_left_finger_tip_joint',
-    'robotiq_85_right_finger_tip_joint',
 ]
 
 print("\n  linkage velocity limits:")
@@ -223,7 +246,7 @@ for want in linkage:
 if len(vels) == len(linkage):
     distinct = sorted(set(vels.values()))
     if len(distinct) == 1:
-        ok(f"all 6 linkage joints share velocity limit {distinct[0]}")
+        ok(f"all {len(linkage)} linkage joints share velocity limit {distinct[0]}")
     else:
         bad(
             f"linkage velocity limits are not equal: {distinct}. The fastest "
@@ -301,7 +324,9 @@ for b in root.findall('ros2_control'):
 if not fail:
     print("  [PASS] no mimic joint exposes a command interface")
 print(f"\n  reminder: the gripper planning group and gripper controller must each")
-print(f"  claim exactly one joint — {master} — and none of the 5 followers.")
+print(f"  claim exactly one joint — {master} — and none of its mimic followers")
+print(f"  (3 as of 2026-08-12: right_knuckle, left/right_inner_knuckle -- the two")
+print(f"  fingertip joints are fixed now, not followers, see TENTH OVERRIDE).")
 sys.exit(fail)
 PY
 [[ $? -ne 0 ]] && FAILED=1

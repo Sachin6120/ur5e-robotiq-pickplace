@@ -385,6 +385,10 @@ int main(int argc, char ** argv)
   double grasp_tolerance_rad = 0.0235;
   double preclose_margin_rad = 0.05;
   double grasp_loss_threshold_rad = 0.01;
+  // Empty (default) disables it. See TransportParams::marker_file_prefix
+  // for why this exists -- 2026-08-12, a robust alternative to
+  // scripts/11_m3_cycles.sh's watcher parsing live stdout for stage markers.
+  std::string marker_file_prefix;
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
@@ -393,6 +397,7 @@ int main(int argc, char ** argv)
   node->get_parameter_or("standoff", standoff, standoff);
   node->get_parameter_or("retreat", retreat, retreat);
   node->get_parameter_or("slip_sample_dwell_s", slip_sample_dwell_s, slip_sample_dwell_s);
+  node->get_parameter_or("marker_file_prefix", marker_file_prefix, marker_file_prefix);
   node->get_parameter_or("release_position_rad", release_position_rad, release_position_rad);
   node->get_parameter_or("tcp_offset", tcp_offset, tcp_offset);
   node->get_parameter_or("pad_centre_offset", pad_centre_offset, pad_centre_offset);
@@ -939,6 +944,7 @@ int main(int argc, char ** argv)
         tp.acceleration_scaling = acc_scale;
         tp.cycle_index = 0;
         tp.sim_instance = 0;
+        tp.marker_file_prefix = marker_file_prefix;
         // Grasp-loss check (transport.hpp's Stage 3 note). Left at
         // TransportParams' own defaults (expected_grip_angle=0.0, disabling
         // the check) when the grasp table didn't resolve an expected angle
@@ -1035,6 +1041,17 @@ int main(int argc, char ** argv)
     have_preclose_result ? preclose_result.achieved_position : -1.0,
     attempted_transport ? "yes" : "no",
     attempted_transport ? to_string(transport_result) : "N/A");
+
+  // Marker-file signal, mirroring transport.cpp's LIFT_DONE/TRANSPORT_DONE
+  // touches (TransportParams::marker_file_prefix). Written LAST, after
+  // every path through this function -- success or any typed failure --
+  // so scripts/11_m3_cycles.sh's poll-based watcher can break out promptly
+  // on an aborted cycle (one that never reaches TRANSPORT_DONE) instead of
+  // polling for the full MARKER_TIMEOUT, matching the old stdout-based
+  // watcher's "RUN SUMMARY seen, stop waiting" behavior.
+  if (!marker_file_prefix.empty()) {
+    std::ofstream(marker_file_prefix + ".run_summary_ready", std::ios::trunc).close();
+  }
 
   executor.cancel();
   if (spinner.joinable()) { spinner.join(); }
