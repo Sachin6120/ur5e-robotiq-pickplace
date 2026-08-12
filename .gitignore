@@ -8,3 +8,21 @@ probe_out/
 grasp_table_out/
 m0_evidence/
 m3_grasp_*.csv
+
+# ------------------------------------------------------------
+# Runtime / experiment output
+# ------------------------------------------------------------
+
+runs/
+
+docs/*.log
+docs/*.csv
+docs/*.txt
+
+docs/gz_joint_cmd_probe/build/
+
+docs/__pycache__/
+docs/**/*.pyc
+
+docs/m3_shots_*/
+docs/m3_guicycle_shots_*/
