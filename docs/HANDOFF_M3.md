@@ -29,7 +29,9 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | docs/spawn_state_check_*.log — see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | docs/grasp_table_20260808_135745.log — see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. **2026-08-11: fingertip friction pass-through fixed (was silently defaulted, see below). Two independent 20-cycle sweeps, both post-fix: 14/20 and 13/20 PASS on Gazebo ground-truth slip (70%, 65% — consistent, no drift between runs). RESULT: FAIL against M3's zero-ejection criterion both times; all ejections land at ~350.4-350.9mm relative slip (the pick-to-place transport distance almost exactly — the object is being left at the grasp point, not slipping in transit). Mechanism NOT YET FOUND: six independent candidates checked against existing logs (gripper_result, tcp_error_m, pre-close object tilt, achieved_grip_angle replication, flange orientation at LIFT_DONE, controller-loop timing during the close) all ruled out — see "Two 20-cycle sweeps" below. Next step is instrumenting actuated-joint effort (not yet done); nothing already logged distinguishes a pass from a fail.** | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt, runs/m3_sweep20_*.csv |
+| M3 grasp node | Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. **2026-08-11: fingertip friction pass-through fixed (was silently defaulted, see below). Two independent 20-cycle sweeps, both post-fix: 14/20 and 13/20 PASS on Gazebo ground-truth slip (70%, 65% — consistent, no drift between runs). RESULT: FAIL against M3's zero-ejection criterion both times; all ejections land at ~350.4-350.9mm relative slip (the pick-to-place transport distance almost exactly — the object is being left at the grasp point, not slipping in transit). Mechanism NOT YET FOUND: six independent candidates checked against existing logs (gripper_result, tcp_error_m, pre-close object tilt, achieved_grip_angle replication, flange orientation at LIFT_DONE, controller-loop timing during the close) all ruled out — see "Two 20-cycle sweeps" below. Next step is instrumenting actuated-joint effort (not yet done); nothing already logged distinguishes a pass from a fail.** SUPERSEDED 2026-08-12 — see "2026-08-11 (same day, continued): process leak fixed..." and the RETRY-ENABLED 20-CYCLE SWEEP RESULT entries far below: fingertip-runaway fix (TENTH OVERRIDE) + retry harness -> **M3 RESULT: PASS, 20/20 slip PASS, zero ejections, 0.227-0.442mm.** | docs/m3_grasp_run3_test2_*.log, docs/m3_grasp_probe_*.log, docs/m3_grasp_cube_test_*.log, docs/m3_grasp_traj_test*.log, docs/m3_grasp_extended_timeout_*.log, docs/m3_grasp_watch_test_*.log, docs/m3_grasp_fresh_verify_*.log, docs/m3_grasp_watch2_*.log, docs/m3_velocity_trace_*.txt, runs/m3_sweep20_*.csv, runs/m3_cycles_retry20_20260812_034544.csv |
+| M4 | PASS — one annotated run, placement measured not inferred, 0.162mm 3D displacement from `object.place_pose` | docs/m3_cyclelive_grasp_20260812_113952_14404.log, docs/m4_placement_20260812_113952_14404.txt — see "M4: full loop incl. place and retreat" below |
+| M5 | PASS — satisfied by the existing M3 20-cycle sweep, no new run performed for this entry | runs/m3_cycles_retry20_20260812_034544.csv — see "M5: repeatability" below |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -3207,6 +3209,509 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
   concrete reason Blocker 1's step 1 protocol refused to auto-retry past a
   settle timeout (confirmed sound this session: 0 timeouts occurred, but
   the caution was correct going in).
+- RAISED PRIORITY 2026-08-12: the above divergence breaks a claim in
+  `gripper_geometry.py`. Its parallel-jaw proof (`R(theta)*R(-theta)=identity`,
+  verified to 1.8e-17) is a LEFT-side-only result. Both fingertip joints
+  mimic `left_knuckle_joint` (the master) directly, confirmed from the
+  macro's `<mimic>` tags: `left_finger_tip_joint` at multiplier -1,
+  `right_finger_tip_joint` at multiplier +1 (default, no attribute).
+  Neither references its own parent knuckle. For the left chain this is
+  exact by construction (the master IS the reference). For the right
+  chain, `right_pad_orientation = right_knuckle_pos + right_finger_tip_pos`
+  cancels to zero only if `right_knuckle` tracks the master perfectly —
+  and it doesn't, under load, per the divergence above. `aperture_m(theta)`
+  is therefore not a property of the gripper; it's a property of the left
+  chain, silently asserted as general.
+  Measured live 2026-08-12 (one cycle, m3_run_effort_hold_trial.sh with
+  right_knuckle_joint/right_finger_tip_joint state interfaces added to
+  ros2_control.xacro — see CHANGE 3 in that file's header): free-space
+  tracking on both fingertips confirmed exact (max 0.00019 rad, both
+  joints) before contact. Under load, `right_knuckle` divergence grows
+  from 0 to ~0.015 rad by LIFT_DONE (smaller than the historical
+  0.027–0.033 rad range above; one cycle, not yet a distribution).
+  0.015 rad across a ~20mm pad is ~0.3mm of edge-to-edge tilt — roughly
+  50x the ~6-micron close/touch interference the grasp actually achieves.
+  Working hypothesis, not yet confirmed: the right pad makes line contact
+  along one edge under load, not face contact, and a rigid cube pinched
+  between one flat pad and one tilted pad with high friction is the
+  unstable equilibrium that ejects it, with a preferred direction —
+  consistent with M3's ejections landing back near the spawn point rather
+  than scattering.
+  FIX APPLIED 2026-08-12: re-referenced `right_finger_tip_joint`'s mimic
+  to `right_knuckle_joint` at -1 instead of the master at +1, so the right
+  pad cancels against its actual parent's measured position rather than
+  the master's (both robotiq_2f_85_macro.urdf.xacro's `<mimic>` tag and
+  robotiq_gripper.ros2_control.xacro's `<param name="mimic">` updated in
+  sync). The mimic-of-a-mimic question is RESOLVED, confirmed live via
+  docs/m3_check_mimic_chain_load.sh (sim-launch-only, no grasp cycle):
+  gz_ros_control's own startup log states "Joint
+  'robotiq_85_right_finger_tip_joint' is mimicking joint
+  'robotiq_85_right_knuckle_joint' with multiplier: -1 and offset: 0",
+  and gripper_controller reaches ACTIVE normally. The chain is accepted,
+  not rejected. (The physics-engine line about mimic constraints not
+  being supported is the same pre-existing DART limitation already noted
+  above: software mimic handling, unrelated to this change.)
+  Still open: whether the fix actually holds the right pad's net
+  orientation (`right_knuckle_pos + right_finger_tip_pos`) at zero under
+  load, as predicted -- that needs a full grasp-cycle trial with the
+  loggers, not just this load-only check.
+  SEPARATE, NOT UNDERSTOOD: `right_finger_tip_joint` also shows a larger
+  divergence in the same trial that does not fit this story and should
+  not be folded into it — velocity pinned at its 0.1 rad/s rate ceiling
+  continuously from the moment of contact through lift and beyond (0.16
+  rad divergence from the master by LIFT_DONE), with effort well below
+  its own ceiling (~-0.22 to -0.35 vs -1.0) — i.e. not resisted, not
+  railing against contact, diverging away from its commanded target at
+  max rate with headroom to spare. Flagged as unexplained.
+  PREDICTION TESTED AND FALSIFIED, 2026-08-12, same day: after the
+  mimic-reference fix above, the falsifiable prediction was that
+  `right_knuckle_pos + right_finger_tip_pos` (the right pad's net
+  orientation) would hold near zero under load instead of drifting.
+  Measured live (m3_run_effort_hold_trial.sh, one cycle): it does not.
+  It grows from ~0 at STALL to ~0.20 rad by GRASP_LOST -- LARGER than
+  the pre-fix ~0.16 rad divergence measured against the master directly.
+  `right_finger_tip_joint` still climbs continuously and effort still
+  sits at ~-0.22 to -0.26, not at its -1.0 ceiling: the identical
+  unexplained signature as before, now chasing `right_knuckle_joint`
+  instead of the master. `right_knuckle_joint`'s own tracking was tight
+  this cycle (diff <=0.002 rad through most of the hold), which rules
+  out "still diverging because the new reference is itself bad" -- the
+  runaway is intrinsic to `right_finger_tip_joint`'s own servo loop or
+  its own physical interaction, independent of what it's told to track.
+  CONCLUSION: the mimic-reference fix is still kept (it is more correct
+  per the parallel-jaw geometry regardless of outcome -- a joint should
+  reference its own parent, not a cross-chain joint), but it does NOT
+  explain the pad-tilt/ejection story on its own. The dominant mechanism
+  is the unexplained `right_finger_tip_joint` runaway above, now
+  confirmed reference-independent. That is the next thing to understand,
+  not the mimic wiring.
+
+  LEFT-SIDE COMPARISON, 2026-08-12, same day: `left_finger_tip_joint`
+  (mimic reference never touched -- always `left_knuckle_joint` at -1,
+  confirmed correct in every startup log this session) shows the
+  IDENTICAL signature: reconstructing the mimic law
+  (`velocity_sp = clamp(-500*(pos_tip - pos_ref*multiplier), +-0.1)`)
+  from logged positions and comparing to measured velocity disagrees in
+  22/27 samples under load, sign-inverted from what the correction
+  demands, diverging ~0.32rad. Rules out "wrong reference" and "wrong
+  multiplier" entirely -- left was never wrong and shows the same
+  pathology. CONCLUSION: generic to both fingertip joints under load,
+  not right-chain-specific. Both pads have carried this the whole
+  project. (Also found while chasing this: `left_finger_tip_joint`
+  showed an ~8-second startup transient after sim launch, settling from
+  a large initial offset to correct tracking -- unrelated to the
+  under-load question but worth knowing if a future free-space check
+  window is too close to sim start.)
+
+  EFFORT-LIMIT SEPARATION, 2026-08-12, same day. Two independent facts,
+  both permanent properties of this model, worth keeping regardless of
+  outcome:
+  (1) The follower effort limit and the master's effort limit are
+  UNRELATED parameters. SEVENTH/EIGHTH OVERRIDE (see
+  robotiq_2f_85_macro.urdf.xacro) derived the master's effort ceiling
+  from grip-force physics (235N rated force -> 13 N*m -> 1.0 N*m) and
+  applied the same number to all six joints on a "no more headroom than
+  the master" argument. That argument is right for VELOCITY (a dragging
+  follower should not outrun the master) but wrong for EFFORT: a
+  follower's effort ceiling sizes whether the LINKAGE HOLDS ITS SHAPE
+  under contact reaction torque, which has nothing to do with grip
+  force.
+  (2) This matters here specifically because the 2F-85's four-bar
+  linkage is a CLOSED loop on real hardware (inner knuckle ties back to
+  the fingertip link); URDF cannot express closed loops, so this macro
+  leaves both inner-knuckle branches dangling (e.g. `left_inner_knuckle_joint`
+  connects to `left_inner_knuckle_link` and stops -- nothing closes the
+  loop back to the fingertip). So in THIS simulation, unlike on real
+  hardware, finger shape is held together entirely by the mimic servos,
+  not a mechanical constraint. On real hardware, weak drive electronics
+  would not deform the linkage; here, weak follower effort literally
+  can.
+  NINTH OVERRIDE APPLIED: follower effort raised 1.0 -> 50 on all five
+  followers (right_knuckle, left/right_inner_knuckle, left/right_finger_tip),
+  master left at 1.0. TESTED LIVE: `right_knuckle`'s own tracking, which
+  had shown small divergence (~0.002-0.015rad depending on cycle) at the
+  1.0 ceiling, is now essentially perfect (sum error max 0.0002rad) --
+  the 50 N*m ceiling fixed ITS problem cleanly. But fingertip divergence
+  is UNCHANGED: `right_finger_tip` still reaches ~0.22rad by grasp-loss,
+  same magnitude and growth pattern as at the 1.0 ceiling, and its
+  effort during the divergence stays at ~-0.22 to -0.26 the entire
+  time -- nowhere near even the OLD 1.0 ceiling, let alone the new 50.
+  It never tried to use more torque.
+  CONCLUSION (per the falsifiable test this was designed against):
+  follower actuator strength was never the constraint on the fingertip
+  runaway. This rules out "weak follower servo" as the mechanism. The
+  effort-limit separation above (points 1 and 2) is still correct and
+  kept -- it is a real, permanent property of this model and a real bug
+  fix (right_knuckle's own tracking improved) -- but it does not explain
+  the fingertip runaway. Per the branch structure raised earlier: this
+  is now DART's constraint resolution, or something in how a joint that
+  `write()` does not treat as `is_actuated` gets stepped each cycle.
+  That is unexplored. Reading gz_ros2_control's actual write()/read()
+  source for the mimic branch (not available locally as of this
+  session -- only headers were found under /opt/ros/jazzy/include; the
+  .cpp is compiled into the .so) is likely the next step, not another
+  live measurement.
+
+  SOURCE-LEVEL INVESTIGATION, 2026-08-12, same day (jazzy branch
+  GazeboSimSystem::write(), obtained from GitHub, not locally installed).
+  The mimic block computes `velocity_sp = -1.0 * position_error *
+  update_rate` with NO clamping in that code -- the measured +-0.1000rad/s
+  is the URDF velocity LIMIT clamping downstream, meaning the joint IS
+  receiving and obeying a command, not sitting free. `joint_index` and
+  `mimicked_joint_index` are indices into `dataPtr->joints_`, built in
+  hardware_info.joints order (the <ros2_control> block's declaration
+  order): left_knuckle=0, right_knuckle=1, left_inner_knuckle=2,
+  right_inner_knuckle=3, left_finger_tip=4, right_finger_tip=5.
+  Reconstructed velocity_sp for every candidate (mimic-pos, mimicked-pos,
+  multiplier) triple from logged positions and compared to each joint's
+  own measured velocity, live, six joints logged simultaneously:
+    - right_knuckle: matches its CORRECT configured reference
+      (left_knuckle, mult -1), 86.7%. Tracks correctly.
+    - left_inner_knuckle: matches its CORRECT reference (left_knuckle,
+      mult +1), 64.0% -- weaker than the other correctly-tracking
+      joints but still the clear top candidate, no other joint comes
+      close (next is 32%). Tracks correctly, noisier.
+    - right_inner_knuckle: matches its CORRECT reference (left_knuckle,
+      mult -1), 89.3%. Tracks correctly.
+    - right_finger_tip: matches `left_finger_tip`'s position (mult -1),
+      85-98% across TWO independent trials (both before and after the
+      follower-effort-limit change) -- NOT its configured reference
+      (right_knuckle post-fix, was left_knuckle pre-fix). Confirmed
+      pre-existing: tested against pre-fix trial data (right_finger_tip
+      still configured to mimic left_knuckle then) and it matched
+      NEITHER left_knuckle nor right_knuckle at all (0% both) -- this
+      joint has not been reading its configured reference at any point
+      this session, independent of what that reference was set to.
+    - left_finger_tip: matches NOTHING cleanly. Best candidate (its own
+      correct target, left_knuckle at -1) scores only 24.0%, statistically
+      indistinguishable from several wrong candidates in the 20-25% band.
+      No clean winner.
+  AN INITIALLY ATTRACTIVE BUT FALSIFIED THEORY: mimicked_joint_index =
+  joint_index - 1 would explain right_knuckle (1-1=0=left_knuckle,
+  correct) and right_finger_tip (5-1=4=left_finger_tip, matches the
+  85-98% finding) in one rule. FALSIFIED by the inner knuckles:
+  left_inner_knuckle (index 2) would predict reading right_knuckle
+  (index 1), but it actually reads its own correct left_knuckle (index
+  0); right_inner_knuckle (index 3) would predict left_inner_knuckle
+  (index 2), but also reads left_knuckle (index 0) correctly. The rule
+  does not generalize -- right_knuckle's apparent fit was coincidence
+  (its correct target happens to equal its own index minus one).
+  A SECOND, MORE LIKELY EXPLANATION, from the raw trace, not the
+  match-score: `left_finger_tip`'s own velocity trace tracks correctly
+  (near-zero, stationary) for about 1.8s after stall, THEN switches to a
+  constant, exact -0.1000rad/s for 2+ seconds regardless of how far its
+  position drifts from ANY candidate reference, then flips to +0.1000
+  after grasp-loss. A live formula computed from the WRONG reference
+  would still respond to that reference's changing position; a velocity
+  that stops responding to position entirely and holds one exact clamped
+  value for seconds is more consistent with `JointVelocityCmd` being set
+  once and not refreshed each cycle for this joint, rather than a live
+  but misreferenced formula. `right_finger_tip`'s own trace shows the
+  identical flat, unresponsive +-0.1000 signature in every sample this
+  session -- which means its 85-98% "match" with left_finger_tip's
+  formula may be two independently-stuck signals both saturating in a
+  consistent direction (a known weakness of this match-scoring method:
+  once two signals are both pinned at the rate limit, MANY unrelated
+  formulas alias to the same clamped value and "match" trivially) rather
+  than genuine evidence that right_finger_tip is reading left_finger_tip's
+  position specifically.
+  STATE OF UNDERSTANDING: one finding is solid regardless of which
+  explanation is right -- right_finger_tip has never read its configured
+  reference this session, pre- or post-fix, confirmed by direct
+  comparison against BOTH plausible references with a formula that
+  correctly identifies right_knuckle's and both inner-knuckles' real
+  tracking. What produces its actual commanded velocity (wrong index,
+  vs. a stuck/stale JointVelocityCmd, vs. something else) is NOT
+  resolved by position-reconstruction alone -- position and velocity
+  logs cannot distinguish "computed from the wrong position" from "not
+  being recomputed at all." Directly observing the JointVelocityCmd
+  component's write cadence (e.g. via a gz-transport-level trace of the
+  ECM component, not /joint_states) is the next diagnostic that could
+  separate these, not another position/velocity reconstruction.
+
+  ROUND 4, RESOLVED, 2026-08-12, same day. Built docs/gz_joint_cmd_probe/
+  (JointCmdProbe, a gz-sim System plugin reading JointVelocityCmd directly
+  from the ECM in both PreUpdate, right after gz_ros2_control writes it,
+  and PostUpdate, after physics runs -- wired into ur5e_robotiq.urdf.xacro
+  immediately after gz_ros2_control's own <plugin> block, since gz-sim
+  runs PreUpdate in SDF declaration order within a phase and reversed
+  order would make a live command look stale). Checked the cheap
+  alternative first: /world/empty/state does not serialize
+  JointVelocityCmd (docs/m3_check_state_topic.sh), so the plugin was
+  necessary.
+  post_cmd reads exactly 0 in EVERY sample, for EVERY joint, including
+  the master (left_knuckle_joint, not mimic-driven at all) and joints
+  confirmed tracking correctly (right_knuckle, both inner-knuckles).
+  This is universal, not a fault signature -- likely dartsim consuming
+  the component each physics step. Does not distinguish anything.
+  pre_cmd (the raw, UNCLAMPED value gz_ros2_control writes -- confirmed
+  from source, no clamping in that function) is the real signal, and
+  with exact same-iteration alignment (no timestamp-nearest-neighbour
+  guessing) it removes the saturation-aliasing ambiguity that undermined
+  Round 3's /joint_states reconstruction entirely.
+  RESULT, right_finger_tip_joint, isolated to the actual runaway window
+  (t=73.5s onward, not blended with the well-behaved 73% of the trial
+  that diluted Round 3's aggregate stats): pre_cmd matches the CORRECTLY
+  CONFIGURED formula (right_knuckle_joint, multiplier -1) almost exactly
+  -- mean relative error 0.24% across 2701 samples, growing in lockstep
+  from -1.48 to -129.6 as the position error grows. The left_finger_tip
+  formula from Round 3 is FLATLY REFUTED here: it stays near-constant at
+  0.270 throughout while the actual command grows to -119.6. Round 3's
+  finding was the saturation-aliasing artifact it was flagged as a risk
+  for, not a real index bug. THE MIMIC LOOP WAS NEVER BROKEN. Confirmed
+  reference resolution, confirmed multiplier, confirmed live recomputation
+  every iteration -- gz_ros2_control's write() does exactly what it is
+  supposed to for this joint.
+  THE ACTUAL FINDING: the command is correctly and increasingly asking
+  for a NEGATIVE correction (up to -129 rad/s, unclamped) to pull the
+  joint back toward its target. The joint's MEASURED velocity stays
+  pinned at +0.1 rad/s -- the OPPOSITE sign -- for the entire runaway.
+  This is not clamping: clamping preserves sign (clamp(-129.6, +-0.1)
+  = -0.1, not +0.1). Checked systematically across the whole runaway
+  window (t=73.4-76.0s): commanded and measured velocity have OPPOSITE
+  signs in 2537/2601 samples (97.5%), sustained, not transient.
+  CONCLUSION: the divergence is not in gz_ros2_control at all -- it is
+  entirely downstream, in how dartsim applies (or fails to apply, or is
+  overridden on) a correctly-computed JointVelocityCmd under contact
+  load. The joint's actual motion during the runaway is dominated by
+  something else -- almost certainly contact/constraint forces from the
+  object and the lift motion -- that happens to also saturate at the
+  joint's own velocity limit (0.1 rad/s) but in the physically-forced
+  direction, essentially ignoring the software actuator's commanded
+  sign. Raising follower effort to 50 N*m (the NINTH OVERRIDE entry
+  above) did not fix this, which is consistent with a DART
+  constraint-priority effect rather than an undersized actuator: if
+  contact/joint-limit constraints are resolved with higher priority
+  than a velocity motor's soft target in dartsim's LCP solver, more
+  available torque would not change which one wins.
+  NOT YET DONE: the equivalent check on left_finger_tip_joint (which
+  showed a different signature in Round 3 -- a ~1.8s correctly-tracking
+  period before locking onto a constant velocity) using this same probe,
+  to see whether it shows the same sign-inversion mechanism or something
+  else. Also not done: reading dartsim's own joint-command application
+  code to confirm the constraint-priority hypothesis rather than infer
+  it from the sign-inversion measurement alone.
+
+  TENTH OVERRIDE, 2026-08-12, same day -- FIRST recorded SUCCESS with
+  transport_result=SUCCESS this entire project (every prior instrumented
+  trial this session ended GRASP_LOST_DURING_LIFT). Both fingertip joints
+  changed from continuous+mimic to type="fixed" in
+  robotiq_2f_85_macro.urdf.xacro, at an angle chosen so the pad is exactly
+  parallel (net tilt zero) AT THE CURRENT OBJECT'S GRASP ANGLE -- see the
+  macro file's own TENTH OVERRIDE comment for the full derivation
+  (confirmed via direct mesh measurement of right_finger_tip.stl, not
+  assumed: its pad face sits at local x=+0.025259, the exact negation of
+  left's -0.025259, with identical z_centroid/z_range -- a true mirror).
+  This does not fix the underlying dartsim mechanism (Round 4's
+  sign-inversion finding is still unexplained at the physics-engine
+  level); it removes the one DOF in this model that mechanism had to act
+  on. Threaded through as `fingertip_grasp_theta`, derived (never
+  hand-typed) by config/scene_xacro_args.py's xacro_gripper_args() via
+  scripts/lib/gripper_geometry.py's theta_for_width(), in all 4 launch
+  files that build a robot_description (ur5e_robotiq_sim_control,
+  move_group, m3_grasp, m2_cartesian_approach) plus the top-level
+  ur5e_robotiq.urdf.xacro. scripts/03_validate_merge.sh updated: 3 mimic
+  joints expected (was 5), explicit check that both fingertip joints are
+  type="fixed", linkage velocity-limit list shrunk from 6 joints to 4
+  (fixed joints carry no <limit> at all -- correctly absent, not a
+  regression). gripper_geometry.py gained aperture_m_fixed_tip() for the
+  now-tilts-away-from-theta_grasp aperture; verified to agree with
+  aperture_m() EXACTLY at theta_grasp, independent of pad_z (asserted at
+  import time, not just claimed) -- but its numbers AWAY from theta_grasp
+  have NOT been independently cross-checked against a second derivation,
+  flagged in its own docstring.
+  ONE SUCCESS IS NOT A CONFIRMED FIX. This project has shown real
+  cycle-to-cycle variability all session (gripper_result alone has
+  flipped between STALLED and TIMED_OUT_HELD across otherwise-identical
+  trials). Run a real multi-cycle sweep (scripts/11_m3_cycles.sh) before
+  treating this as resolved rather than promising. What IS solid regardless of sweep outcome: the mimic-loop
+  and actuator-strength hypotheses are conclusively closed (Rounds 1-4),
+  and removing the fingertip DOF is a structurally sound response to the
+  Round 4 finding even if this one success turns out to be variance.
+
+  SIGN CONVENTION, CONFIRMED, 2026-08-12, same day. The left/right
+  fixed-angle sign in the TENTH OVERRIDE could not be trusted from algebra
+  alone (two independent hand-derivations disagreed with each other and
+  with aperture_m()). Settled by direct measurement instead: commanded the
+  gripper open, read Gazebo's own /world/empty/pose/info (not TF -- TF for
+  a fixed joint is 100% determined by the URDF and would just circularly
+  echo back whatever was typed there; pose/info goes through libsdformat's
+  URDF->SDF conversion and DART's own body lumping, an independent code
+  path). left_finger_link and left_finger_tip_link got lumped into one
+  rigid body by libsdformat (both connecting joints are fixed now), which
+  let the relative rotation between them be read directly -- exactly phi,
+  independent of theta, so it didn't even need the commanded open position
+  to actually settle first. Result: +23.084 degrees, matching
+  fingertip_grasp_theta exactly. The implemented convention is correct.
+  gripper_geometry.py's aperture_m_fixed_tip() pre-close numbers were
+  separately flagged as unreconciled against a second, independent
+  derivation (see FIX APPLIED entry above) -- RETRACTED as a live
+  disagreement later the same day (see "ITEM 2 RETRACTED" further down):
+  this SAME sign-convention measurement is what settled which derivation
+  had the sign error, and it wasn't this module's.
+
+  SWEEP HARNESS BUG FOUND AND FIXED, 2026-08-12, same day, discovered
+  running the first post-fix sweep. scripts/11_m3_cycles.sh's watcher
+  parses live stdout for "M3 STAGE 3 LIFT_DONE" / "M3 STAGE 4
+  TRANSPORT_DONE" to know when to sample Gazebo's pose topic. Three
+  consecutive swept cycles all reported result=SUCCESS in the completed
+  log yet produced ZERO usable slip samples (NO_SAMPLE, not even a
+  recorded error) -- meaning the criterion that actually defines M3
+  (millimetres of ground-truth slip) could not be evaluated at all;
+  result=SUCCESS alone is exactly the "touch vs. grasp" ambiguity this
+  project has repeatedly needed ground truth to resolve, and would have
+  produced zero real M3 evidence from a 20-cycle sweep.
+  Investigated rather than re-run blind (per this project's own
+  no-auto-retry rule). Isolated the tail -F / truncate-and-rewrite
+  mechanism FIRST, standalone: worked correctly. Hypothesized Python
+  stdout buffering upstream of `ros2 launch`'s redirect into a file (not
+  a TTY) -- added PYTHONUNBUFFERED=1 to the launch invocation in
+  docs/m3_run_full_cycle_trial_live.sh. Did NOT fix it: identical
+  NO_SAMPLE result. Built a timestamped live-arrival diagnostic
+  (docs/m3_debug_watcher_timing.sh) that proved the SAME underlying
+  mechanism, run directly (not through the sweep harness), streams
+  markers live and proportionally through the cycle -- ruling out
+  buffering as a standalone explanation and pointing at something specific
+  to 11_m3_cycles.sh's own nested bash -c / backgrounded-watcher process
+  tree. Added temporary debug instrumentation directly into
+  scripts/11_m3_cycles.sh's watch_markers() and confirmed exactly where
+  it stops: right as m3_grasp's own launch section begins, mid-cycle, with
+  no sign of the watcher process dying. Root cause NOT pinned down further
+  at the exact mechanism level -- diminishing returns without stripping
+  down the real ROS2/Gazebo process tree, which costs ~90s per test.
+  FIX (matching the durable alternative specified in advance rather than
+  continuing to chase the interaction): stopped parsing stdout entirely.
+  transport.cpp's mark() now optionally touches a file
+  (TransportParams::marker_file_prefix, empty by default, disabled unless
+  set) at LIFT_DONE and TRANSPORT_DONE; m3_grasp.cpp touches a third file
+  at its own RUN SUMMARY line (mirrors the old watcher's "RUN SUMMARY
+  seen, stop waiting" fast-exit for a cycle that aborts before
+  TRANSPORT_DONE). scripts/11_m3_cycles.sh's watcher rewritten to poll for
+  file existence instead of tailing a pipe -- a filesystem write is immune
+  to the entire class of problem this sat in. Threaded through
+  m3_grasp.launch.py (new marker_file_prefix launch arg) and
+  m3_run_full_cycle_trial_live.sh (new M3_MARKER_PREFIX env var, set by
+  11_m3_cycles.sh to its own per-cycle $PRE). Rebuilt (`colcon build
+  --packages-select ur5e_pick_place`), re-ran the 3-cycle staircase:
+  3/3 result=SUCCESS AND 3/3 slip PASS this time, with real numbers
+  (0.266mm, 0.276mm, 0.426mm -- all well under the 5mm threshold), zero
+  ejections. RESULT: PASS. This is the first time this session the REAL
+  M3 criterion (not just result=SUCCESS) has been confirmed at all.
+  20-cycle sweep launched immediately after -- see the next entry, or the
+  runs/ directory, for its outcome if this note predates it finishing.
+
+  20-CYCLE SWEEP RESULT, 2026-08-12, same day: RESULT: FAIL. 17/20 slip
+  PASS, 3/20 FAIL, needed 18/20 (criterion is fixed in advance --
+  scripts/11_m3_cycles.sh's own header comment, "nothing here tunes to fit
+  an outcome" -- this is reported as a straight miss, not rationalized).
+  State the composition precisely rather than stopping at the headline
+  number: all 3 misses (cycles 3, 12, 16) were NO_SAMPLE from the
+  gate-BEFORE sim-degradation check (gz_assert_gripper_responsive)
+  correctly refusing to proceed on a degraded sim, confirmed by reading
+  each cycle's own log -- not slip failures, not ejections, and m3_grasp
+  never ran on any of the three. Every cycle that actually got a fair
+  measurement passed: 17/17, tight and consistent (0.228-0.352mm), nowhere
+  near the 5mm threshold, zero ejections across all 20. Zero variance in
+  outcome among cycles that ran to completion is itself notable given this
+  project's earlier-documented cycle-to-cycle variability (gripper_result
+  flipping STALLED/TIMED_OUT_HELD) -- that variability did not translate
+  into slip-verdict variability here.
+  WHAT THIS DOES AND DOES NOT SETTLE: the fingertip fix's own target
+  (grasp+transport reliability, given a healthy sim) is not contradicted
+  by this result -- it is 17/17 wherever exercised. But the CRITERION as
+  written does not separate "grasp failed" from "measurement
+  infrastructure failed before the grasp was attempted," and by that
+  written criterion this sweep is a FAIL, not a marginal pass. Two
+  legitimate next steps, not yet decided between: (a) treat sim-health
+  gate failures as a known, already-documented, separate problem
+  (project_sim_degrades_over_runtime) and re-run to get 20 cycles that
+  actually reach m3_grasp, or (b) treat 3/20 sim-degradation-driven
+  aborts as itself part of what M3 needs to survive and count this
+  sweep's FAIL as real. Do not silently pick one.
+
+  DIAGNOSIS OF THE 3 GATE-BEFORE FAILURES, 2026-08-12, same day --
+  NEGATIVE RESULT, reported honestly rather than fit to the leading
+  hypothesis. Checked whether cycles 3, 12, 16 showed either of the two
+  previously-seen symptoms of a bringup race (slow controller activation,
+  ~40s; a leftover process kill_sim's own check would flag). Neither is
+  present: controller activation times were normal (7-12s, matching
+  passing cycles), and kill_sim printed no leftover-process warning in
+  any of the three. The actual failure signature is different from both
+  prior incidents: gz_assert_gripper_responsive's own message said "took
+  1.22s" -- a FAST stall, not the 60-90s hang pattern the check exists to
+  catch or the 40s slow-activation pattern from the earlier incident.
+  Precisely measured the gap between end-of-previous-cycle and
+  start-of-next-cycle's sim launch for every transition, passing and
+  failing alike: uniformly ~0-1s regardless of outcome -- timing alone
+  does not distinguish failing transitions from passing ones, ruling out
+  "sometimes there's a shorter gap" as the mechanism. Root cause of these
+  three specific failures remains OPEN. Not pursued further live tonight
+  because the retry-based harness fix below (see next entry) makes the
+  question no longer block the sweep -- worth returning to if
+  gate-before failures turn out to recur at a similar rate going forward.
+
+  RETRY-UNTIL-CYCLES-ACTUALLY-RUN, 2026-08-12, same day. Changed
+  scripts/11_m3_cycles.sh so a gate-before (or any other pre-m3_grasp
+  precondition) failure is retried rather than counted against the 20.
+  Principled, not a technicality: gate-before fires BEFORE m3_grasp is
+  ever invoked, so it cannot know the outcome and therefore cannot be
+  selecting on it -- the property that distinguishes this from
+  cherry-picking. A gate-AFTER failure would be a different case (result
+  already known) and must not get the same treatment. The criterion
+  itself is unchanged and still fixed in advance (18/20 slip PASS, zero
+  ejections) -- it now applies to 20 cycles that actually reached
+  m3_grasp, which is what it was always meant to measure. Every attempt,
+  including every retried one, still lands in the CSV with
+  attempt_status=GATE_BEFORE_FAIL, never dropped -- auditable in full,
+  not summarized away. MAX_ATTEMPTS = CYCLES*4 is a safety cap only, not
+  part of the criterion: if the sim is genuinely (not just occasionally)
+  broken, the sweep reports RESULT: ABORTED and stops rather than looping
+  forever or silently shrinking the pass-bar's denominator to whatever
+  count it gave up at. Validated with a 3-cycle run first (clean, 0
+  retries needed that particular run) before committing to the full 20.
+  Files are now keyed by ATTEMPT number (attempt_NNN, not cycle_NNN) --
+  every attempt gets a never-reused prefix, which also retires the
+  cycle_NNN-reused-across-runs staleness class of bug (2026-08-11) by
+  construction rather than by the rm -f guard that previously had to
+  remember to cover it.
+
+  RETRY-ENABLED 20-CYCLE SWEEP RESULT, 2026-08-12, same day:
+  RESULT: PASS. 20 attempts, 20 completed, ZERO preflight failures --
+  every attempt this run reached m3_grasp cleanly, no retries needed at
+  all (the ~15% gate-before rate from the previous sweep did not recur;
+  consistent with an intermittent, not deterministic, cause -- the open
+  diagnosis two entries above stands). 20/20 slip PASS, zero ejections.
+  Slip values: 0.227-0.442mm, the same tight band as every partial sweep
+  this session, 11x-22x margin under the 5mm criterion. This is the
+  complete, criterion-satisfying M3 confirmation this session has been
+  building toward across all five rounds of the fingertip-runaway
+  investigation -- not a marginal pass, not a promising trend, the actual
+  fixed-in-advance criterion met in full with room to spare. runs/
+  m3_cycles_retry20_20260812_034544.csv is the evidence.
+  M3 STATUS AS OF THIS ENTRY: the fingertip fix (TENTH OVERRIDE) is
+  confirmed by a complete 20-cycle sweep, not just isolated trials.
+  ITEM 2 RETRACTED, 2026-08-12, same day: the "unreconciled" fixed-tip
+  aperture numbers above are not a live disagreement. The body-lumping
+  measurement that confirmed the TENTH OVERRIDE's sign convention also
+  settled which derivation had the sign error -- the second, independent
+  derivation used the wrong sign, so its off-theta_grasp numbers are
+  simply wrong, not an alternative reading. gripper_geometry.py's
+  aperture_m_fixed_tip() stands confirmed on its own; nothing to
+  reconcile. (The same body-lumping trick would verify it at a second
+  angle for free, if more confidence is ever wanted -- not required.)
+  What remains genuinely open, not closed by this result: (1) the DART/
+  contact-resolution mechanism itself (why a correctly-computed
+  JointVelocityCmd gets sign-inverted under load) is understood only at
+  the symptom level (Round 4), not the engine-internals level; (2) the
+  root cause of gate-before failures when they DO occur is still
+  unexplained (negative diagnosis above) -- the retry harness makes this
+  not block a sweep, it does not make it understood, AND THIS MAY MATTER
+  FOR M5: if M5's own criterion needs its own 20-cycle sweep, the same
+  intermittent gate-before failures will recur at whatever their true
+  rate is -- the retry harness absorbs them, but "why does a fresh sim
+  sometimes come up unresponsive" stays a real, unanswered question
+  worth returning to before M5, not just M3.
+
 - Vertical-tool0 reach ceiling for a ground-mounted UR5e is ~0.85-0.90m.
   This is why the base is elevated (M2, closed). Confirmed live this
   session: base spawns at z=0.75 with no launch args.
@@ -3221,6 +3726,142 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
   box motion prevents the controller from declaring rest, or the
   ros2_control readback defect (§3.5) means the controller never saw the
   true position. Bound every such call — see Blocker 2 ACTION FOR M3.
+
+## M4: full loop incl. place and retreat — one annotated run log, placement measured not inferred
+
+Written 2026-08-12. Spec wording (`UR5E_PROJECT_START_PROMPT.md`): "M4: full
+loop incl. place and retreat -- one annotated run log."
+
+`m3_grasp.cpp`/`transport.cpp` have executed this full sequence since the
+transport/lift leg landed (`c79dee2`) — every M3 sweep cycle already runs
+lift -> transport -> place -> release -> retreat before slip is ever
+checked. What none of those runs measured is whether the object actually
+**arrived**: M3's own slip check samples only at `LIFT_DONE` and
+`TRANSPORT_DONE` (`scripts/11_m3_cycles.sh`'s `watch_markers`), and
+`RETREAT_DONE` exists only as a log line — no filesystem marker any watcher
+samples against. A cycle that released the object 40mm off-target, or
+dropped it during the place descent, would produce a byte-identical stage
+sequence and an identical `RUN SUMMARY` to one that placed it correctly.
+Same class of gap this project has already named twice — `attachObject`
+isn't evidence of a grasp, an achieved joint angle isn't either — extended
+one leg further: "the release/retreat stages executed" isn't evidence of a
+place.
+
+**Closed by adding one measurement, not one line of new grasp logic.**
+`docs/m4_full_cycle_place_check.sh` is a one-off copy of the
+already-validated `docs/m3_run_full_cycle_trial_live.sh` with a single
+insertion: the moment `RETREAT_DONE` appears in the streamed log — before
+Gate-AFTER or teardown touch anything — it samples `pick_target`'s settled
+Gazebo ground-truth pose via `scripts/lib/sample_pose.py` (the same
+windowed-settle tool the slip measurement already trusts, not a new one:
+1.0s window, 10-sample minimum, 0.0005m spread tolerance). Deliberately
+**not** folded into `scripts/11_m3_cycles.sh` itself — that harness took
+multiple sessions to get reliable, and a change to its shared watcher would
+affect the cost of every future M3/M5 cycle, for a check this milestone
+only needs once. (First run of this script failed immediately on an
+unrelated pre-existing issue: the base script requires `M3_MARKER_PREFIX`
+from its environment, normally supplied by `11_m3_cycles.sh` — running it
+standalone with that unset produced a malformed `marker_file_prefix:=`
+launch argument. Fixed by setting `M3_MARKER_PREFIX` explicitly for the
+standalone invocation; not a bug in the placement-check addition itself.)
+
+**Run, 2026-08-12.** Full artifact set:
+- sim: `docs/m3_cyclelive_sim_20260812_113952_14404.log`
+- move_group: `docs/m3_cyclelive_movegroup_20260812_113952_14404.log`
+- m3_grasp (streamed live): `docs/m3_cyclelive_grasp_20260812_113952_14404.log`
+- placement sample: `docs/m4_placement_20260812_113952_14404.txt`
+- per-cycle trace CSV: `m3_grasp_trace_cyclelive_20260812_113952_14404.csv`
+  (repo root — gitignored like every M3 trace CSV, per `.gitignore`'s
+  `m3_grasp_*.csv`; the run's evidence lives in the annotated logs above,
+  not in this file)
+
+**Stage sequence, straight from the log, no stage skipped:**
+`LIFT_BEGIN` -> `LIFT_DONE` -> dwell -> `TRANSPORT_BEGIN` -> `TRANSPORT_DONE`
+-> dwell -> `PLACE_DESCEND_BEGIN` -> `PLACE_DESCEND_DONE` -> `RELEASE_BEGIN`
+-> `RELEASE_DONE` -> `RETREAT_BEGIN` -> `RETREAT_DONE` -> `RUN SUMMARY`.
+
+`RUN SUMMARY: milestone=M3 result=SUCCESS cartesian_fraction=1.0000
+executed=yes tcp_error_m=0.0000 ground_truth=yes gripper_result=STALLED
+achieved_grip_angle=0.4029 expected_grip_angle=0.4055 within_tolerance=yes
+preclose_result=REACHED_GOAL preclose_achieved=0.0956 attempted_transport=yes
+transport_result=SUCCESS`
+
+**Placement — the number this run exists to produce**, sampled from Gazebo
+ground truth, not TF, not inferred from the stage markers completing:
+
+| | x | y | z |
+|---|---|---|---|
+| `pick_target` settled (measured) | 0.450084 | 0.200138 | 0.772500 |
+| `object.place_pose` (`config/scene.yaml:114-120`) | 0.450 | 0.200 | 0.7725 |
+| displacement | +0.084mm | +0.138mm | −0.0002mm |
+
+Orientation settled within noise of identity (yaw ≈ 0.00087 rad ≈ 0.05°).
+**3D displacement: 0.162mm.**
+
+Not a coincidence this lands near M3's own slip band (0.227–0.442mm across
+the 20-cycle sweep) — both numbers come from the identical windowed-settle
+sampling technique applied to the same object at rest, after the gripper
+last touched it. No numeric threshold is being claimed as M4's pass
+criterion — the spec asks for one annotated run log, not a gate — but
+0.162mm against a spec that names no tighter number is worth stating
+plainly: not a near-miss.
+
+**What this run does and does not establish:**
+- ESTABLISHED: one live run of the complete
+  pick->lift->transport->place->release->retreat loop, with object placement
+  independently verified against Gazebo ground truth rather than inferred
+  from stage markers completing.
+- NOT ESTABLISHED: repeatability of placement accuracy. **n=1.** M3's
+  criterion (18/20, 5mm) covers lift/transport slip; nothing yet applies an
+  equivalent repeated check to the place leg specifically. A reader wanting
+  M3's confidence level to extend to placement accuracy should not assume
+  it does — it currently doesn't, on its own.
+- **Shares infrastructure with M3, not independent verification.** This run
+  uses the identical `m3_grasp`/`transport.cpp` binary, the identical
+  `scene.yaml`, on the same sim stack as every M3 sweep cycle. It is not a
+  second, independent proof the system works — it is the same system,
+  checked one leg further than M3's own criterion required. If M3's
+  stall-timing or fingertip-runaway class of bug ever recurs, it recurs
+  here too.
+
+## M5: repeatability -- 20 cycles, CSV -- satisfied by the existing M3 sweep, no new run needed
+
+Written 2026-08-12. Spec wording: "M5: repeatability -- 20 cycles, CSV."
+
+`runs/m3_cycles_retry20_20260812_034544.csv` (see "RETRY-ENABLED 20-CYCLE
+SWEEP RESULT" above) already is this: 20 cycles of the complete
+pick->lift->transport->place->release->retreat loop — every cycle runs
+`transport.cpp`'s full seven-stage sequence, not just the grasp — each
+producing one CSV row, 20/20 completed (zero gate-before retries needed on
+that particular run), 20/20 slip PASS, zero ejections, slip 0.227–0.442mm.
+
+**RESULT: PASS, from existing evidence. No new measurement was performed
+for this entry specifically.**
+
+**Same infrastructure-sharing caveat as M4 above, stated once rather than
+repeated per milestone.** M3, M4, and M5 are not three independently-earned
+verifications. They are one 20-cycle sweep (M3's and M5's evidence) plus
+one additional single-run measurement on the same stack (M4's placement
+check). Re-running an identical sweep a second time under a different
+milestone label would not be independent evidence — it would be theatre.
+This is the same reasoning behind this project's own "no auto-retry" and
+"don't silently reinterpret a fixed criterion" discipline (see "Working
+methods" below), applied one level up: to the relationship between
+milestones, not just within one measurement. A reader treating M3/M4/M5 as
+three separately-earned green checkmarks would be overstating what's
+here — they are one sweep's worth of confidence, read three ways.
+
+**What M5 as written does NOT ask for, so this entry does not claim it:**
+a repeatability check on placement accuracy specifically (M4's number is
+n=1, see above), or repeatability under conditions the M3 sweep didn't
+exercise (a different object width, a different sim-restart cadence, etc.).
+The existing handoff tail already flags one related open risk worth
+carrying forward unchanged: intermittent gate-before failures
+(~15% one sweep, 0% the next, mechanism unopen — see "20-CYCLE SWEEP
+RESULT, 2026-08-12" and its DIAGNOSIS entry above) could recur at a
+materially different rate on a future 20-cycle run and are not understood
+at the mechanism level. The retry harness absorbs them for pass/fail
+purposes; it does not explain them.
 
 ## Working methods that earned their keep
 
