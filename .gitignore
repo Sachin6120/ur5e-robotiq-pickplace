@@ -27,4 +27,3 @@ docs/**/*.pyc
 
 docs/m3_shots_*/
 docs/m3_guicycle_shots_*/
-.claude/
