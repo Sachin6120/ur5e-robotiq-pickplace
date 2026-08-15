@@ -8,6 +8,7 @@ probe_out/
 grasp_table_out/
 m0_evidence/
 m3_grasp_*.csv
+bootstrap_*.log
 
 # ------------------------------------------------------------
 # Runtime / experiment output
