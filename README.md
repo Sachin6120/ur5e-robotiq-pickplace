@@ -64,6 +64,31 @@ already — see `docs/HANDOFF_M3.md`'s "repo/workspace desync" entry. Build with
 
 ## Running it
 
+**Single-command demo:**
+
+```bash
+cd ~/ur5e_pickplace
+source /opt/ros/jazzy/setup.bash
+source ~/ur5e_ws/install/setup.bash
+ros2 launch ur5e_pick_place full_cycle.launch.py
+```
+
+This one command brings up the whole stack in order — Gazebo, the UR5e +
+Robotiq model with its controllers, MoveIt's `move_group`, the pick object —
+and then runs the M3 pick-and-place cycle (approach, grasp, lift, transport,
+place, release, retreat) to completion. It's an orchestration launch
+(`ur5e_pick_place/launch/full_cycle.launch.py`) that reuses the existing
+`ur5e_robotiq_sim_control.launch.py`, `move_group.launch.py`,
+`scripts/08_spawn_pick_object.sh`, and `m3_grasp.launch.py` rather than
+duplicating them, gated on real readiness checks (controllers active,
+`/move_group` present) instead of fixed sleeps. Like `m3_grasp.launch.py` on
+its own, the launch tree doesn't exit by itself once the cycle finishes —
+end the session with Ctrl+C.
+
+The rest of this section covers the harness used to collect the CSV evidence
+the milestone table below cites; use the single command above just to watch
+the robot move.
+
 Both commands below must be run **from the repo root**. `--trial-cmd` and
 `--out` are relative paths, and `scripts/11_m3_cycles.sh` resolves them
 against the current working directory rather than against the script's own
