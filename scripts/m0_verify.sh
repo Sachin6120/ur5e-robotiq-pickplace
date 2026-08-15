@@ -374,15 +374,22 @@ for j in root.findall('joint'):
         print(f"{j.get('name')} {m.get('multiplier','1.0')} {m.get('offset','0.0')}")
 PY
 
+  # 3 expected as of 2026-08-12 (TENTH OVERRIDE): left_finger_tip_joint and
+  # right_finger_tip_joint changed from continuous+mimic to type="fixed"
+  # after docs/gz_joint_cmd_probe/ traced a fingertip runaway to dartsim
+  # overriding a correctly-computed mimic command under contact load -- a
+  # fixed joint has no DOF for that to act on. Recon originally observed 5;
+  # 3 is now correct, deliberately, not a loosened check. See
+  # docs/HANDOFF_M3.md's "ROUND 4, RESOLVED" and the TENTH OVERRIDE comment.
   NMIMIC=$(grep -c . "$EVID_DIR/C_mimic_spec.txt" 2>/dev/null || echo 0)
   printf '  mimic joints declared off %s: %s\n' "$ACTUATED" "$NMIMIC"
   sed 's|^|      |' "$EVID_DIR/C_mimic_spec.txt" 2>/dev/null
 
-  if [[ "$NMIMIC" -ne 5 ]]; then
-    bad "expected 5 mimic joints in robot_description, found $NMIMIC — merge is wrong"
+  if [[ "$NMIMIC" -ne 3 ]]; then
+    bad "expected 3 mimic joints, found $NMIMIC — merge is wrong"
     C_FAIL=1
   else
-    ok "5 mimic joints declared (merge structurally intact)"
+    ok "3 mimic joints declared (merge structurally intact)"
   fi
 
   ros2 action send_goal "/${GRIPPER_CTRL}/gripper_cmd" \

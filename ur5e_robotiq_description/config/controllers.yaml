@@ -41,12 +41,15 @@ arm_controller:
 # ---------------------------------------------------------------------------
 gripper_controller:
   ros__parameters:
-    # EXACTLY ONE JOINT. The five mimic followers
-    # (right_knuckle, left/right_inner_knuckle, left/right_finger_tip) must NOT
-    # appear here. Under sim_ignition they carry no command interface, so a
-    # controller claiming one would fail to activate — and if it somehow did, it
-    # would fight gz-sim's constraint solver. The symptom is a jittering gripper
-    # that reads as a friction problem and wastes days.
+    # EXACTLY ONE JOINT: the master. Of the other five, three are still
+    # mimic followers (right_knuckle, left/right_inner_knuckle); the two
+    # left/right_finger_tip joints are type="fixed" as of the TENTH OVERRIDE
+    # (robotiq_2f_85_macro.urdf.xacro) and carry no interfaces at all. None
+    # of the five may appear here. Under sim_ignition the mimic followers
+    # carry no command interface, so a controller claiming one would fail to
+    # activate — and if it somehow did, it would fight gz-sim's constraint
+    # solver. The symptom is a jittering gripper that reads as a friction
+    # problem and wastes days.
     #
     # Name confirmed by recon against ros-jazzy-robotiq-description 0.0.1-3.
     # It is NOT `finger_joint` — that is the donor repo's name for a different

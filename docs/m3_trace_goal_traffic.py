@@ -18,10 +18,20 @@
 #                               ("Evidence comes from Gazebo's own state
 #                               topics, never /joint_states and never TF").
 #                               Reuses gz_settle.py's own parser rather than
-#                               re-deriving the regex. ALL SIX linkage joints
-#                               logged per sample (master + 5 mimic
+#                               re-deriving the regex. At the time this was
+#                               written (2026-08-10), ALL SIX linkage joints
+#                               were logged per sample (master + 5 mimic
 #                               followers), not just the master -- see
 #                               GzJointPoller's own 2026-08-10 update note.
+#                               NOTE: the TENTH OVERRIDE (2026-08-12, after
+#                               this script was written) changed both
+#                               fingertip joints from continuous+mimic to
+#                               type="fixed" (1 master + 3 mimic followers
+#                               remain). Whether the two fixed joints still
+#                               appear as independently reported joints in
+#                               this topic, or are folded into their parent
+#                               rigid body instead, has not been re-verified
+#                               against this script's current output.
 #   GOAL <t> id=.. status=..   the gripper action's ROS status topic
 #                               (/<ctrl>/gripper_cmd/_action/status). This
 #                               one is legitimately ROS-level, not

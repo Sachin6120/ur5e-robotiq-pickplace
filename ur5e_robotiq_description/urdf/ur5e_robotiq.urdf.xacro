@@ -26,8 +26,11 @@
      Do not set use_fake_hardware here — mock hardware echoes commands back as
      state with no physics and would grasp nothing while looking healthy.
 
-  4. MIMIC JOINTS. The 2F-85's five follower joints mimic
-     robotiq_85_left_knuckle_joint. Under sim_ignition they carry no command or
+  4. MIMIC JOINTS. Of the 2F-85's five non-actuated joints, three still mimic
+     robotiq_85_left_knuckle_joint (right_knuckle, left/right_inner_knuckle);
+     the other two (left/right_finger_tip) were changed to type="fixed" by
+     the TENTH OVERRIDE (robotiq_2f_85_macro.urdf.xacro) and no longer mimic
+     anything. Under sim_ignition the three mimic joints carry no command or
      state interfaces at all; enforcement is delegated to gz-sim's constraint
      solver by the package author's design. Nothing in this file proves that
      solver works. M0-C is the only evidence. Do not treat a clean spawn as a

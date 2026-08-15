@@ -395,7 +395,11 @@ gripper:
   # controlled, set this false. The squeeze knob above then no longer applies
   # and commanded effort becomes the primary knob. Say so explicitly in the
   # run log; do not silently reuse the position formula.
-  position_controlled: true         # RECON — confirm at M0-B
+  position_controlled: true         # confirmed: the whole SEVENTH-NINTH
+                                     # OVERRIDE effort history (robotiq_2f_85_
+                                     # macro.urdf.xacro) is built on this
+                                     # joint being position-controlled, not
+                                     # just an M0-B recon note anymore
 
 # ---------------------------------------------------------------------------
 thresholds:
