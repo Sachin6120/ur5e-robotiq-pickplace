@@ -1,0 +1,1 @@
+NOT SETTLED after 15.0s: ['wrist_3_link', 'pick_target']. Refusing to sample a moving pose — a number taken here would enter the CSV as slip. Check the entity names exist on /world/empty/pose/info, and that the dwell is longer than --window-s.

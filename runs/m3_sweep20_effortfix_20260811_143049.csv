@@ -1,0 +1,2 @@
+cycle,sim_instance,trial_exit,grasp_result,gripper_result,achieved_grip_angle,tcp_error_m,slip_m,slip_verdict,ejected,lift_fraction,cycle_wall_s,log
+1,1,0,GRASP_LOST_DURING_LIFT,TIMED_OUT_HELD,0.4030,0.0000,0.116699,FAIL,yes,1.0000,346,runs/cycle_001.log
