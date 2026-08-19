@@ -13,6 +13,18 @@ to end. Every result below comes from a Gazebo ground-truth measurement rather
 than from a node's own status message. "Known limitations" covers what
 "complete" does and doesn't mean here.
 
+> **Note on language mix:** GitHub's language detector shows Shell as the
+> largest language in this repo. That reflects the verification harness,
+> not the core system. The actual pick-and-place control logic is a
+> compact ~2,900-line C++ core (`m1_joint_goal.cpp`, `m2_cartesian_approach.cpp`,
+> `m3_grasp.cpp`, `transport.cpp`). The larger shell/Python layer under
+> `scripts/` is deliberate: automated environment bootstrap, launch
+> orchestration, and ground-truth measurement tooling used to generate the
+> evidence in `runs/` that the milestone table below references. The size
+> of that layer is a direct consequence of working falsification-first —
+> every claimed result here is independently measured and checkable rather
+> than asserted.
+
 ## What this is not
 
 - **No perception.** Object pose is read from `config/scene.yaml`, not a
