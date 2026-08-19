@@ -1,0 +1,189 @@
+
+════════════════════════════════════════════════════════════
+§ 0. Clean slate
+
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+§ 1. Launch sim (ur5e_robotiq_sim_control.launch.py)
+
+════════════════════════════════════════════════════════════
+  sim launch PID=34163, log=docs/m3_cyclelive_sim_20260812_024730_4196.log
+  controllers active after 11.15s
+  controllers active after 3.89s
+
+════════════════════════════════════════════════════════════
+§ 1.5 Start stall_monitor (passive /joint_states cadence recorder, whole cycle)
+
+════════════════════════════════════════════════════════════
+  stall_monitor PID=34613, csv=docs/m3_cyclelive_stalls_20260812_024730_4196.csv, log=docs/m3_cyclelive_stallmonitor_20260812_024730_4196.log
+
+════════════════════════════════════════════════════════════
+§ 2. Launch move_group
+
+════════════════════════════════════════════════════════════
+  move_group PID=34639, log=docs/m3_cyclelive_movegroup_20260812_024730_4196.log
+  move_group node present after 3.4s (+3s buffer taken)
+
+════════════════════════════════════════════════════════════
+§ 3. Spawn pick object
+
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+§ 0. Read object: block from scene.yaml
+
+════════════════════════════════════════════════════════════
+  object=pick_target size=0.045 0.045 0.045 m mass=0.15 kg mu=1.0
+  pick_pose=0.45 -0.15 0.7725  rpy=0.0 0.0 0.0
+
+════════════════════════════════════════════════════════════
+§ 1. Spawn pick_target at pick_pose
+
+════════════════════════════════════════════════════════════
+    data: true
+
+════════════════════════════════════════════════════════════
+§ 2. Settle onto the table (gravity only, not contact-loaded)
+
+════════════════════════════════════════════════════════════
+[settle] poses settled after 0.64s (max|delta over 0.15s|=0.000000 m)
+  settled z = 0.772499999938291 (expected table.surface_z + size.z/2 = 0.77250)
+
+done: 2026-08-12T02:47:58+02:00
+
+════════════════════════════════════════════════════════════
+§ 4. Gate BEFORE (gz_assert_gripper_responsive)
+
+════════════════════════════════════════════════════════════
+  [ok] gripper responsive: 0.1rad close completed cleanly in 2.95s
+
+════════════════════════════════════════════════════════════
+§ 5. Run m3_grasp (streamed live, torn down on RUN SUMMARY -- see file header)
+
+════════════════════════════════════════════════════════════
+[INFO] [launch]: All log files can be found below /home/user/.ros/log/2026-08-12-02-48-06-078502-Sachin-34985
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [static_scene_tf-1]: process started with pid [35005]
+[INFO] [m3_grasp-2]: process started with pid [35006]
+[static_scene_tf-1] [0m[INFO] [1786495686.382605612] [static_scene_tf]: published static frames: world->object_frame (pick_pose), object_frame->grasp_frame (approach_axis=[0.000 0.000 -1.000] roll=0.000), tool0->grasp_tcp (tcp_offset=0.1204), world->place_frame (place_pose)[0m
+[m3_grasp-2] [0m[INFO] [1786495686.422508287] [m3_grasp]: GRASP MODE: friction (physics)[0m
+[m3_grasp-2] [0m[INFO] [1786495686.422677472] [m3_grasp]: pad-centre-corrected offset: tcp_offset=0.120405 + pad_centre_offset=0.031573 = 0.151978 m (NOT YET LIVE-VERIFIED direction -- see file header)[0m
+[m3_grasp-2] [0m[INFO] [1786495686.554430699] [m3_grasp]: base-pose guard OK: 'base_link' matches scene.yaml within tolerance (pos error 0.00000 m, angle error 0.00000 rad)[0m
+[m3_grasp-2] [33m[WARN] [1786495686.582590435] [rcl.logging_rosout]: Publisher already registered for node name: 'm3_grasp'. If this is due to multiple nodes with the same name then all logs for the logger named 'm3_grasp' will go out over the existing publisher. As soon as any node with that name is destructed it will unregister the publisher, preventing any further logs for that name from being published on the rosout topic.[0m
+[m3_grasp-2] [0m[INFO] [1786495686.593697881] [m3_grasp.moveit.ros.rdf_loader]: Loaded robot model in 0 seconds[0m
+[m3_grasp-2] [0m[INFO] [1786495686.593781415] [m3_grasp.moveit.core.robot_model]: Loading robot model 'ur5e_robotiq'...[0m
+[m3_grasp-2] [0m[INFO] [1786495686.593811488] [m3_grasp.moveit.core.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint[0m
+[m3_grasp-2] [0m[INFO] [1786495686.609695927] [m3_grasp.moveit.kinematics.kdl_kinematics_plugin]: Joint weights for group 'arm': 1 1 1 1 1 1[0m
+[m3_grasp-2] [0m[INFO] [1786495690.527842133] [m3_grasp.moveit.ros.move_group_interface]: Ready to take commands for planning group arm.[0m
+[m3_grasp-2] [0m[INFO] [1786495690.527935689] [m3_grasp]: pre-grasp tool0 target (world): [0.4500 -0.1500 1.0245]  grasp tool0 target: [0.4500 -0.1500 0.9245]  (corrected_offset=0.151978)[0m
+[m3_grasp-2] [0m[INFO] [1786495690.528139038] [m3_grasp.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m3_grasp-2] [0m[INFO] [1786495690.529738986] [m3_grasp.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495690.570871495] [m3_grasp.moveit.ros.move_group_interface]: Planning request complete![0m
+[m3_grasp-2] [0m[INFO] [1786495690.572068296] [m3_grasp.moveit.ros.move_group_interface]: time taken to generate plan: 0.0225394 seconds[0m
+[m3_grasp-2] [0m[INFO] [1786495690.573869938] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495699.678358820] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495700.738916793] [m3_grasp]: pre-close: REACHED_GOAL in achieved=0.0956 rad (target was 0.1055, free air)[0m
+[m3_grasp-2] [0m[INFO] [1786495700.741602681] [m3_grasp]: computeCartesianPath fraction achieved: 1.0000 (need > 0.9500)[0m
+[m3_grasp-2] [0m[INFO] [1786495700.741685239] [m3_grasp]: executing Cartesian descent to grasp target...[0m
+[m3_grasp-2] [0m[INFO] [1786495700.742045640] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495702.744160709] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495702.744849408] [m3_grasp]: execution reported SUCCESS[0m
+[m3_grasp-2] [0m[INFO] [1786495703.370075263] [m3_grasp]: stage 2 ground truth: grasp_tcp (Gazebo, not TF) = [0.4500 -0.1500 0.7725]  tcp_error_m=0.0000 (max 0.0050)[0m
+[m3_grasp-2] [0m[INFO] [1786495704.522063336] [m3_grasp]: gripper_close_and_hold: STALLED in achieved=0.4029 rad (target was 0.8000)[0m
+[m3_grasp-2] [0m[INFO] [1786495704.522124636] [m3_grasp]: grasp-success check (informational only, does not gate the cycle): achieved=0.4029 expected=0.4055 (width=0.0450m) |err|=0.0026 tolerance=0.0235 -> WITHIN TOLERANCE[0m
+[m3_grasp-2] [0m[INFO] [1786495704.522189022] [m3_grasp]: M3 STAGE 3 LIFT_BEGIN cycle=0 sim=0 t=45.164000[0m
+[m3_grasp-2] [0m[INFO] [1786495704.523603249] [m3_grasp.moveit.ros.current_state_monitor]: Listening to joint states on topic 'joint_states'[0m
+[m3_grasp-2] [0m[INFO] [1786495704.529293671] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495708.132104660] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495708.132583432] [m3_grasp]: lift ok (fraction 1.0000)[0m
+[m3_grasp-2] [0m[INFO] [1786495708.132641945] [m3_grasp]: M3 STAGE 3 LIFT_DONE cycle=0 sim=0 t=47.321000[0m
+[m3_grasp-2] [0m[INFO] [1786495708.245394653] [m3_grasp]: dwelling 2.00 s (slip baseline sample)[0m
+[m3_grasp-2] [0m[INFO] [1786495711.600007087] [m3_grasp]: M3 STAGE 4 TRANSPORT_BEGIN cycle=0 sim=0 t=49.380000[0m
+[m3_grasp-2] [0m[INFO] [1786495711.600280179] [m3_grasp.moveit.ros.move_group_interface]: MoveGroup action client/server ready[0m
+[m3_grasp-2] [0m[INFO] [1786495711.600809741] [m3_grasp.moveit.ros.move_group_interface]: Planning request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495711.625349537] [m3_grasp.moveit.ros.move_group_interface]: Planning request complete![0m
+[m3_grasp-2] [0m[INFO] [1786495711.625720154] [m3_grasp.moveit.ros.move_group_interface]: time taken to generate plan: 0.0203985 seconds[0m
+[m3_grasp-2] [0m[INFO] [1786495711.626420539] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495717.132481176] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495717.133217213] [m3_grasp]: M3 STAGE 4 TRANSPORT_DONE cycle=0 sim=0 t=52.799000[0m
+[m3_grasp-2] [0m[INFO] [1786495717.133345218] [m3_grasp]: dwelling 2.00 s (slip comparison sample)[0m
+[m3_grasp-2] [0m[INFO] [1786495720.574237181] [m3_grasp]: M3 STAGE 5 PLACE_DESCEND_BEGIN cycle=0 sim=0 t=54.799000[0m
+[m3_grasp-2] [0m[INFO] [1786495720.580527521] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495723.784139946] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495723.784554963] [m3_grasp]: place descent ok (fraction 1.0000)[0m
+[m3_grasp-2] [0m[INFO] [1786495723.784598332] [m3_grasp]: M3 STAGE 5 PLACE_DESCEND_DONE cycle=0 sim=0 t=56.745000[0m
+[m3_grasp-2] [0m[INFO] [1786495723.784616637] [m3_grasp]: M3 STAGE 6 RELEASE_BEGIN cycle=0 sim=0 t=56.745000[0m
+[m3_grasp-2] [0m[INFO] [1786495724.788049775] [m3_grasp]: release: STALLED in achieved=0.3493 rad (target was 0.3097)[0m
+[m3_grasp-2] [0m[INFO] [1786495724.788109988] [m3_grasp]: M3 STAGE 6 RELEASE_DONE cycle=0 sim=0 t=57.746000[0m
+[m3_grasp-2] [0m[INFO] [1786495724.788142634] [m3_grasp]: M3 STAGE 7 RETREAT_BEGIN cycle=0 sim=0 t=57.746000[0m
+[m3_grasp-2] [0m[INFO] [1786495724.791154728] [m3_grasp.moveit.ros.move_group_interface]: Execute request accepted[0m
+[m3_grasp-2] [0m[INFO] [1786495726.745484261] [m3_grasp.moveit.ros.move_group_interface]: Execute request success![0m
+[m3_grasp-2] [0m[INFO] [1786495726.746037265] [m3_grasp]: retreat ok (fraction 1.0000)[0m
+[m3_grasp-2] [0m[INFO] [1786495726.746293829] [m3_grasp]: M3 STAGE 7 RETREAT_DONE cycle=0 sim=0 t=59.704000[0m
+[m3_grasp-2] [0m[INFO] [1786495726.746362698] [m3_grasp]: cycle 0 complete: lift -> transport -> place -> release -> retreat. Whether the object ARRIVED is not decided here — that is Gazebo ground truth, measured by the harness.[0m
+[m3_grasp-2] [0m[INFO] [1786495726.770226404] [m3_grasp]: wrote evidence to m3_grasp_trace_cyclelive_20260812_024730_4196.csv[0m
+[m3_grasp-2] [0m[INFO] [1786495726.770391181] [m3_grasp]: RUN SUMMARY: milestone=M3 result=SUCCESS cartesian_fraction=1.0000 executed=yes tcp_error_m=0.0000 ground_truth=yes gripper_result=STALLED achieved_grip_angle=0.4029 expected_grip_angle=0.4055 within_tolerance=yes preclose_result=REACHED_GOAL preclose_achieved=0.0956 attempted_transport=yes transport_result=SUCCESS[0m
+[INFO] [m3_grasp-2]: process has finished cleanly [pid 35006]
+  RUN SUMMARY seen, tearing down now instead of waiting on the launchs own dead-wait
+
+════════════════════════════════════════════════════════════
+§ 6. Gate AFTER (gz_assert_gripper_responsive)
+
+════════════════════════════════════════════════════════════
+  [ok] gripper responsive: 0.1rad close completed cleanly in 4.69s
+  GATE_AFTER=OK
+
+════════════════════════════════════════════════════════════
+§ 6.5 Stop stall_monitor
+
+════════════════════════════════════════════════════════════
+--- docs/m3_cyclelive_stallmonitor_20260812_024730_4196.log ---
+[INFO] [1786495669.150467464] [stall_monitor]: stall_monitor: topic=/joint_states out=docs/m3_cyclelive_stalls_20260812_024730_4196.csv min_gap=20ms heartbeat=30s
+[INFO] [1786495669.151061411] [stall_monitor]: gaps are HEADER-STAMP (sim time) deltas; wall column is arrival time and exists only to separate loop stalls from monitor lag
+[WARN] [1786495676.477001850] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.456258232] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.460205777] [stall_monitor]: loop gap 0 ms sim (3 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.462510550] [stall_monitor]: loop gap 0 ms sim (3 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.474789958] [stall_monitor]: loop gap 22 ms sim (4 ms wall, rtf 4.89) -> up to 0.011 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.490052114] [stall_monitor]: loop gap 29 ms sim (2 ms wall, rtf 13.78) -> up to 0.014 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.493401144] [stall_monitor]: loop gap 21 ms sim (3 ms wall, rtf 7.40) -> up to 0.011 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.495267476] [stall_monitor]: loop gap 25 ms sim (2 ms wall, rtf 10.44) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.499153730] [stall_monitor]: loop gap 25 ms sim (3 ms wall, rtf 7.15) -> up to 0.013 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.502540730] [stall_monitor]: loop gap 21 ms sim (2 ms wall, rtf 9.42) -> up to 0.011 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.505218907] [stall_monitor]: loop gap 30 ms sim (2 ms wall, rtf 12.52) -> up to 0.015 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.506670687] [stall_monitor]: loop gap 26 ms sim (2 ms wall, rtf 14.78) -> up to 0.013 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.508337212] [stall_monitor]: loop gap 22 ms sim (2 ms wall, rtf 14.45) -> up to 0.011 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.510134741] [stall_monitor]: loop gap 24 ms sim (2 ms wall, rtf 12.41) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495680.512299545] [stall_monitor]: loop gap 25 ms sim (2 ms wall, rtf 11.95) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495688.140996522] [stall_monitor]: loop gap 0 ms sim (2 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495690.522591586] [stall_monitor]: loop gap 0 ms sim (4 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.549893622] [stall_monitor]: loop gap 0 ms sim (1 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.552893151] [stall_monitor]: loop gap 0 ms sim (3 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.559935816] [stall_monitor]: loop gap 0 ms sim (4 ms wall, rtf 0.00) -> up to 0.000 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.563892458] [stall_monitor]: loop gap 21 ms sim (2 ms wall, rtf 10.05) -> up to 0.010 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.565650359] [stall_monitor]: loop gap 35 ms sim (2 ms wall, rtf 19.73) -> up to 0.018 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.568546895] [stall_monitor]: loop gap 24 ms sim (3 ms wall, rtf 9.37) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.574631163] [stall_monitor]: loop gap 27 ms sim (2 ms wall, rtf 15.50) -> up to 0.014 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.578121816] [stall_monitor]: loop gap 24 ms sim (2 ms wall, rtf 9.93) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.582166778] [stall_monitor]: loop gap 29 ms sim (2 ms wall, rtf 13.63) -> up to 0.014 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.583781260] [stall_monitor]: loop gap 24 ms sim (2 ms wall, rtf 13.41) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.585955583] [stall_monitor]: loop gap 25 ms sim (2 ms wall, rtf 11.89) -> up to 0.013 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.587702273] [stall_monitor]: loop gap 29 ms sim (2 ms wall, rtf 15.40) -> up to 0.014 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.590224518] [stall_monitor]: loop gap 27 ms sim (3 ms wall, rtf 10.63) -> up to 0.014 rad of open-loop travel at saturated gripper velocity
+[WARN] [1786495733.593554656] [stall_monitor]: loop gap 23 ms sim (2 ms wall, rtf 11.52) -> up to 0.012 rad of open-loop travel at saturated gripper velocity
+[stall_monitor] messages=30234 gaps_logged=31 max_sim_gap_ms=35.0 implied_max_overshoot_rad=0.018
+
+════════════════════════════════════════════════════════════
+§ 7. Cleanup
+
+════════════════════════════════════════════════════════════
+scripts/lib/gz_settle.sh: line 99: 34163 Killed                  nohup ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py > "$SIM_LOG" 2>&1
+
+done: 2026-08-12T02:49:01+02:00
+artifacts:
+  sim_log=docs/m3_cyclelive_sim_20260812_024730_4196.log
+  movegroup_log=docs/m3_cyclelive_movegroup_20260812_024730_4196.log
+  grasp_log=docs/m3_cyclelive_grasp_20260812_024730_4196.log
+  stall_csv=docs/m3_cyclelive_stalls_20260812_024730_4196.csv
+  grasp_csv=m3_grasp_trace_cyclelive_20260812_024730_4196.csv

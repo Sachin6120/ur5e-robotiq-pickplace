@@ -1,0 +1,60 @@
+
+════════════════════════════════════════════════════════════
+§ 0. Clean slate
+
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+§ 1. Launch sim (ur5e_robotiq_sim_control.launch.py)
+
+════════════════════════════════════════════════════════════
+  sim launch PID=57398, log=docs/m3_cyclelive_sim_20260812_030636_3812.log
+  controllers active after 11.63s
+  controllers active after 1.24s
+
+════════════════════════════════════════════════════════════
+§ 1.5 Start stall_monitor (passive /joint_states cadence recorder, whole cycle)
+
+════════════════════════════════════════════════════════════
+  stall_monitor PID=57844, csv=docs/m3_cyclelive_stalls_20260812_030636_3812.csv, log=docs/m3_cyclelive_stallmonitor_20260812_030636_3812.log
+
+════════════════════════════════════════════════════════════
+§ 2. Launch move_group
+
+════════════════════════════════════════════════════════════
+  move_group PID=57870, log=docs/m3_cyclelive_movegroup_20260812_030636_3812.log
+  move_group node present after 0s (+3s buffer taken)
+
+════════════════════════════════════════════════════════════
+§ 3. Spawn pick object
+
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+§ 0. Read object: block from scene.yaml
+
+════════════════════════════════════════════════════════════
+  object=pick_target size=0.045 0.045 0.045 m mass=0.15 kg mu=1.0
+  pick_pose=0.45 -0.15 0.7725  rpy=0.0 0.0 0.0
+
+════════════════════════════════════════════════════════════
+§ 1. Spawn pick_target at pick_pose
+
+════════════════════════════════════════════════════════════
+    data: true
+
+════════════════════════════════════════════════════════════
+§ 2. Settle onto the table (gravity only, not contact-loaded)
+
+════════════════════════════════════════════════════════════
+[settle] poses settled after 0.74s (max|delta over 0.15s|=0.000000 m)
+  settled z = 0.772499999938291 (expected table.surface_z + size.z/2 = 0.77250)
+
+done: 2026-08-12T03:06:58+02:00
+
+════════════════════════════════════════════════════════════
+§ 4. Gate BEFORE (gz_assert_gripper_responsive)
+
+════════════════════════════════════════════════════════════
+  [STOP] gz_assert_gripper_responsive: a trivial 0.1rad close did not cleanly succeed within 8.0s (took 2.33s) -- sim is likely degraded (see docs/HANDOFF_M3.md), not a property of "robotiq_85_left_knuckle_joint". Restart the sim before trusting any measurement.
+  [STOP] sim is degraded before the trial even started -- restart and retry, do not proceed
