@@ -74,6 +74,11 @@ def _setup(context, *args, **kwargs):
         object_pose = scene["object"]["pick_pose"]
         place_pose_cfg = scene["object"]["place_pose"]
         object_size = scene["object"]["size"]
+        # DEPRECATED cross-check only — the real width axis is derived in
+        # scene_xacro_args.resolve_closing_axis(), which validates against
+        # this value and raises CONFIG_ERROR on disagreement. Still read here
+        # so a missing key stays a named CONFIG_ERROR rather than a KeyError
+        # deeper in.
         grasp_width_axis = int(scene["object"]["grasp_width_axis"])
         grasp = scene["grasp"]
         gripper = scene["gripper"]
@@ -98,6 +103,8 @@ def _setup(context, *args, **kwargs):
             "without this value. See docs/HANDOFF_M3.md."
         )
 
+    scene_xacro_args = _load_scene_xacro_args_module()
+
     rows = grasp_table.get("rows") or []
     if not rows:
         raise RuntimeError(
@@ -109,7 +116,14 @@ def _setup(context, *args, **kwargs):
     grasp_table_widths_m = [float(r["width_m"]) for r in rows]
     grasp_table_grip_angles_rad = [float(r["grip_angle_rad"]) for r in rows]
 
-    object_width_m = float(object_size[grasp_width_axis])
+    # object_width_m is DERIVED from the gripper's actual closing direction,
+    # not indexed with the hand-set object.grasp_width_axis (2026-08-21, M6:
+    # that index named object.size[0] while the gripper closes along
+    # object-frame +Y, i.e. size[1] — silent for five milestones because the
+    # object was a cube). resolve_grasp_width_m() is the single source; it
+    # also raises CONFIG_ERROR if scene.yaml's deprecated grasp_width_axis
+    # cross-check field still disagrees with the derivation.
+    object_width_m = scene_xacro_args.resolve_grasp_width_m(scene)
 
     pick_pose = [
         float(object_pose["x"]), float(object_pose["y"]), float(object_pose["z"]),
@@ -120,7 +134,6 @@ def _setup(context, *args, **kwargs):
         float(place_pose_cfg["roll"]), float(place_pose_cfg["pitch"]), float(place_pose_cfg["yaw"]),
     ]
     approach_axis = [float(v) for v in grasp["approach_axis"]]
-    scene_xacro_args = _load_scene_xacro_args_module()
     base_args = scene_xacro_args.xacro_base_args(scene)
     # fingertip_grasp_theta (robotiq_2f_85_macro.urdf.xacro's TENTH
     # OVERRIDE): this node's own robot model must match the sim's spawned

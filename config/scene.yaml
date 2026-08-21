@@ -96,9 +96,23 @@ object:
   # -- tcp_offset, pad_centre_offset, grip_angle, and width_at_grip are all
   # functions of aperture/width, not height, so none of that measured data
   # is invalidated by this change.
-  size: [0.045, 0.045, 0.045]       # x, y, z  [m]
-  grasp_width_axis: 0               # index into size[] the fingers close ACROSS
-                                    #   -> object width = size[grasp_width_axis]
+  size: [0.030, 0.045, 0.045]       # x, y, z  [m]
+  # DEPRECATED 2026-08-21 (M6), kept only as a cross-check. This index is no
+  # longer what selects the grasp width: scene_xacro_args.resolve_closing_axis()
+  # DERIVES the axis from grasp.approach_axis + grasp.gripper_roll and raises
+  # CONFIG_ERROR if this value disagrees with it.
+  #
+  # CORRECTED 0 -> 1. It was wrong, and silently so for the whole of M1-M5.
+  # With approach_axis [0,0,-1] the gripper closes along object-frame +Y, so
+  # the squeezed dimension is size[1], not size[0]. That was unobservable
+  # while the object was a 45mm CUBE (size[0] == size[1]); M6's change to
+  # [0.030, 0.045, 0.045] was the first configuration where the two differed,
+  # and it fed 0.030 m to a grasp that physically closes on 0.045 m --
+  # a 0.1069 rad grip-angle error against a 0.0235 rad tolerance.
+  #
+  # This does NOT change what M1-M5 measured: on a cube both indices give
+  # 0.045 m, so every prior result stands.
+  grasp_width_axis: 1               # index into size[] the fingers close ACROSS
   mass: 0.150                       # [kg]
 
   # Pose is the CENTRE of the object, in `world`.
