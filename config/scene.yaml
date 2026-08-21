@@ -96,7 +96,7 @@ object:
   # -- tcp_offset, pad_centre_offset, grip_angle, and width_at_grip are all
   # functions of aperture/width, not height, so none of that measured data
   # is invalidated by this change.
-  size: [0.045, 0.045, 0.045]       # x, y, z  [m]
+  size: [0.030, 0.045, 0.045]       # x, y, z  [m]
   # DEPRECATED 2026-08-21 (M6), kept only as a cross-check. This index is no
   # longer what selects the grasp width: scene_xacro_args.resolve_closing_axis()
   # DERIVES the axis from grasp.approach_axis + grasp.gripper_roll and raises
