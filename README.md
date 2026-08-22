@@ -193,9 +193,15 @@ from memory. The evidence and reasoning behind each result are in
 | M0 | stack verification A/B/C — pass/fail note with log lines | PASS | `docs/HANDOFF_M3.md` M0 row |
 | M1 | MoveIt executes a joint goal — 20/20 planning success, logged | PASS | `docs/evidence/m1_planning.csv` |
 | M2 | TF-derived pre-grasp/grasp reached, no gripper — TCP pose vs commanded, ground truth | PASS — `tcp_error_m=0.0000` | `docs/HANDOFF_M3.md` M2 row |
-| M3 | friction grasp tuning — 20 cycles, ≥18 with slip <5mm, zero ejection/penetration | **PASS** — 20/20, slip 0.227–0.442mm | `runs/m3_cycles_retry20_20260812_034544.csv` + `runs/attempt_001.log`…`attempt_020.log` |
-| M4 | full loop incl. place and retreat — one annotated run log | **PASS** — placement measured, 0.162mm from commanded place pose | `docs/m3_cyclelive_grasp_20260812_113952_14404.log`, `docs/m4_placement_20260812_113952_14404.txt` |
-| M5 | repeatability — 20 cycles, CSV | **PASS** — same sweep as M3 | `runs/m3_cycles_retry20_20260812_034544.csv` |
+| M3 | friction grasp tuning — 20 cycles, ≥18 with slip <5mm, zero ejection/penetration | **PASS** — 20/20, slip 0.227–0.442mm (45mm cube, `gripper_roll` 0) | `runs/m3_cycles_retry20_20260812_034544.csv` + `runs/attempt_001.log`…`attempt_020.log` |
+| M4 | full loop incl. place and retreat — one annotated run log | **PASS** — placement measured, 0.162mm from commanded place pose (45mm cube, `gripper_roll` 0) | `docs/m3_cyclelive_grasp_20260812_113952_14404.log`, `docs/m4_placement_20260812_113952_14404.txt` |
+| M5 | repeatability — 20 cycles, CSV | **PASS** — same sweep as M3 (45mm cube, `gripper_roll` 0) | `runs/m3_cycles_retry20_20260812_034544.csv` |
+
+These figures were measured on a 45 mm cube at `gripper_roll` 0. The committed
+default is now a 30 mm cube at `gripper_roll` π/2, which the M10 regression
+recorded at 22.261 mm transport slip (`docs/HANDOFF_M3.md`, Test C) — so the
+single-command demo above does not reproduce the M3 slip figure, and is not
+expected to.
 
 **M3, M4 and M5 are not three independently-earned checkmarks.** M3 and M5 are
 the same 20-cycle sweep read two ways, and M4 is one additional ground-truth
@@ -254,3 +260,10 @@ attempt and so cannot be selecting on an outcome. But that is a policy for
 surviving the failure, not a diagnosis of it. Anyone running this tooling at
 scale should expect the occasional fresh launch to fail its own health check
 and be silently retried; the underlying cause is still open.
+
+**4. The production gripper controller is deprecated upstream.** The
+direct-effort grasp runs on `effort_controllers/GripperActionController`,
+which ros2_control logs at startup as deprecated in favour of
+`parallel_gripper_controllers/GripperActionController` — harmless on ROS 2
+Jazzy, but the baseline will need migrating before it can move to a release
+that removes it.
