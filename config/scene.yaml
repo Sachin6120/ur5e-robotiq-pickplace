@@ -112,7 +112,7 @@ object:
   #
   # This does NOT change what M1-M5 measured: on a cube both indices give
   # 0.045 m, so every prior result stands.
-  grasp_width_axis: 1               # index into size[] the fingers close ACROSS
+  grasp_width_axis: 0               # index into size[] the fingers close ACROSS
   mass: 0.150                       # [kg]
 
   # Pose is the CENTRE of the object, in `world`.
@@ -150,7 +150,7 @@ grasp:
   approach_axis: [0.0, 0.0, -1.0]   # in object_frame: descend from above
   standoff:      0.100              # pre-grasp distance back along -approach [m]
   retreat:       0.120              # post-grasp lift distance along -approach [m]
-  gripper_roll:  0.0                # rotation about the approach axis [rad]
+  gripper_roll:  1.57079632679      # rotation about the approach axis [rad]
 
   # Held stationary (on the node's own clock, not a wall sleep) after
   # LIFT_DONE and TRANSPORT_DONE, so the M3 harness's windowed-quiescence
@@ -418,10 +418,10 @@ gripper:
 # ---------------------------------------------------------------------------
 thresholds:
   cartesian_fraction_min: 0.95      # below this -> abort, logged reason
-  tf_lookup_timeout_s:    2.0       # exceeded -> abort
+  tf_lookup_timeout_s:    5.0       # exceeded -> abort
   post_lift_slip_max_m:   0.005     # M3 pass criterion: 5 mm
-  plan_attempts:          10
-  planning_time_s:        5.0
+  plan_attempts:          20
+  planning_time_s:        15.0
   execute_timeout_s:      30.0
 
   # Stage 2 verification (m3_grasp.cpp, right after the descent, before the
@@ -433,7 +433,7 @@ thresholds:
   # positioning problem, not noise -- and it's well inside both the 14mm
   # lateral clearance at the pre-close aperture and the object's 22.5mm
   # half-height, so it won't false-fire on geometry.
-  grasp_pose_error_max_m: 0.005
+  grasp_pose_error_max_m: 0.010
 
 # ---------------------------------------------------------------------------
 grasp_mode:

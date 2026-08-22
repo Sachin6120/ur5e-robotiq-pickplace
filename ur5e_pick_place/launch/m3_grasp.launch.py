@@ -65,6 +65,9 @@ def _setup(context, *args, **kwargs):
     csv_path = LaunchConfiguration("csv_path").perform(context)
     world = LaunchConfiguration("world").perform(context)
     marker_file_prefix = LaunchConfiguration("marker_file_prefix").perform(context)
+    close_and_hold_only = (
+        LaunchConfiguration("close_and_hold_only").perform(context).lower() == "true"
+    )
 
     scene = _load_yaml(scene_file, "scene.yaml")
     grasp_table = _load_yaml(grasp_table_file, "grasp_table.yaml")
@@ -255,6 +258,7 @@ def _setup(context, *args, **kwargs):
                 "grasp_tolerance_rad": float(grasp["grasp_tolerance_rad"]),
                 "preclose_margin_rad": float(grasp["preclose_margin_rad"]),
                 "grasp_loss_threshold_rad": float(grasp["grasp_loss_threshold_rad"]),
+                "close_and_hold_only": close_and_hold_only,
             },
         ],
     )
@@ -297,6 +301,16 @@ def generate_launch_description():
                 "signal for scripts/11_m3_cycles.sh's sweep watcher, robust to "
                 "the live-stdout-parsing failure confirmed under the sweep "
                 "harness's nested bash -c / backgrounded-tail process tree.",
+            ),
+            DeclareLaunchArgument(
+                "close_and_hold_only",
+                default_value="false",
+                description="Default false preserves normal M3/M6 behavior (close/"
+                "stall continues into lift/transport/place/release/retreat). When "
+                "true: run pre-grasp, descent, and gripper_close_and_hold() exactly "
+                "as normal, record the close result, then skip the entire "
+                "attempted_transport block and go straight to the final summary/CSV "
+                "and a clean exit. See m3_grasp.cpp's close_and_hold_only comment.",
             ),
             OpaqueFunction(function=_setup),
         ]

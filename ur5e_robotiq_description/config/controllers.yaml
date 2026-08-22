@@ -15,7 +15,7 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
 
     gripper_controller:
-      type: position_controllers/GripperActionController
+      type: effort_controllers/GripperActionController
 
 # ---------------------------------------------------------------------------
 arm_controller:
@@ -77,3 +77,10 @@ gripper_controller:
     # for threshold margin, per docs/gripper_stall_velocity_noise_20260806.log.
     stall_velocity_threshold: 0.05
     stall_timeout: 0.2
+
+    gains:
+      robotiq_85_left_knuckle_joint:
+        p: 50.0
+        d: 2.0
+        i: 0.0
+        i_clamp: 0.0
