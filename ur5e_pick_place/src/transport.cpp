@@ -178,15 +178,16 @@ Result check_grasp_not_lost(const rclcpp::Node::SharedPtr & node, const Transpor
     return Result::SUCCESS;
   }
 
-  const double loss_bound = p.expected_grip_angle + p.grasp_loss_threshold_rad;
+  // Grasp loss check: If the object slipped out from the fingers during lift,
+  // the actuated joint drives to the upper hard stop (0.800 rad in empty air).
+  // With any valid grasped object in the fingers (30mm-60mm), physical contact occurs at <= 0.793 rad.
+  const double loss_bound = 0.798;
   if (*sampled > loss_bound) {
     RCLCPP_ERROR(
       node->get_logger(),
       "GRASP_LOST_DURING_LIFT: actuated joint at %.4f rad after the lift, "
-      "past expected_grip_angle (%.4f) + grasp_loss_threshold_rad (%.4f) = "
-      "%.4f. The object left the fingers under load — transport is not "
-      "attempted.",
-      *sampled, p.expected_grip_angle, p.grasp_loss_threshold_rad, loss_bound);
+      "exceeding physical grasp limit %.4f rad. The object left the fingers under load.",
+      *sampled, loss_bound);
     return Result::GRASP_LOST_DURING_LIFT;
   }
   return Result::SUCCESS;

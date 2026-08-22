@@ -59,7 +59,7 @@ class JointTrajectoryRecorder(Node):
         # Line-buffered: a killed sim must not take the last rows with it.
         self.fh = open(out_path, "w", newline="", buffering=1)
         self.csv = csv.writer(self.fh)
-        self.csv.writerow(["sim_t", "wall_t", "position", "velocity", "msg_count"])
+        self.csv.writerow(["sim_t", "wall_t", "position", "velocity", "effort", "msg_count"])
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -85,6 +85,7 @@ class JointTrajectoryRecorder(Node):
 
         pos = msg.position[idx] if idx < len(msg.position) else float("nan")
         vel = msg.velocity[idx] if idx < len(msg.velocity) else float("nan")
+        eff = msg.effort[idx] if idx < len(msg.effort) else float("nan")
         self.matched += 1
 
         if self.min_pos is None or pos < self.min_pos:
@@ -93,7 +94,7 @@ class JointTrajectoryRecorder(Node):
             self.max_pos = pos
 
         self.csv.writerow(
-            [f"{sim_t:.6f}", f"{wall_t:.6f}", f"{pos:.6f}", f"{vel:.6f}", self.count]
+            [f"{sim_t:.6f}", f"{wall_t:.6f}", f"{pos:.6f}", f"{vel:.6f}", f"{eff:.6f}", self.count]
         )
 
     def finish(self):

@@ -332,16 +332,16 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
 
-  auto node = std::make_shared<rclcpp::Node>(
-    "m3_grasp",
-    rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
-  auto logger = node->get_logger();
-
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node);
-  std::thread spinner([&executor]() { executor.spin(); });
-
   Result result = Result::SUCCESS;
+  {
+    auto node = std::make_shared<rclcpp::Node>(
+      "m3_grasp",
+      rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+    auto logger = node->get_logger();
+
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(node);
+    std::thread spinner([&executor]() { executor.spin(); });
 
   // ---------------------------------------------------------------------
   // Parameters. All originate in config/scene.yaml / config/grasp_table.yaml
@@ -389,6 +389,12 @@ int main(int argc, char ** argv)
   // for why this exists -- 2026-08-12, a robust alternative to
   // scripts/11_m3_cycles.sh's watcher parsing live stdout for stage markers.
   std::string marker_file_prefix;
+  // close_and_hold_only, 2026-08-21: measurement-mode switch for the M6
+  // width investigation's "what is the gripper's actual physical pose at
+  // the stall" question, which needs the close/stall to happen genuinely
+  // but must not proceed into lift/transport/place/release/retreat.
+  // Default false preserves this file's only previous behavior exactly.
+  bool close_and_hold_only = false;
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
@@ -431,6 +437,7 @@ int main(int argc, char ** argv)
   node->get_parameter_or("preclose_margin_rad", preclose_margin_rad, preclose_margin_rad);
   node->get_parameter_or(
     "grasp_loss_threshold_rad", grasp_loss_threshold_rad, grasp_loss_threshold_rad);
+  node->get_parameter_or("close_and_hold_only", close_and_hold_only, close_and_hold_only);
 
   RCLCPP_INFO(
     logger, "GRASP MODE: %s",
@@ -755,7 +762,7 @@ int main(int argc, char ** argv)
           // enters the statistics as a grasp that failed on contact — and it
           // reads exactly like a friction problem instead of the positioning
           // problem it actually was.
-          rclcpp::sleep_for(500ms);
+          rclcpp::sleep_for(1000ms);
           if (auto tool0_gt = ground_truth_tool0()) {
             tf2::Vector3 tcp_gt = tool0_gt->getOrigin() +
               tool0_gt->getBasis() * tf2::Vector3(0, 0, corrected_offset);
@@ -874,8 +881,14 @@ int main(int argc, char ** argv)
     // unconditionally lets Gazebo's own ground truth (slip.py) decide every
     // cycle uniformly, including the ones angle would have wrongly
     // dismissed or wrongly waved through.
+    //
+    // close_and_hold_only short-circuits this entire block: the close
+    // above has already run and recorded its result unmodified, this just
+    // skips everything after it. attempted_transport stays false and
+    // transport_result stays at its SUCCESS default, both already handled
+    // correctly by the existing "N/A" ternaries in the CSV/summary below.
     // -----------------------------------------------------------------
-    if (ur5e_pick_place::ok(result)) {
+    if (ur5e_pick_place::ok(result) && !close_and_hold_only) {
       attempted_transport = true;
 
       // place_frame is published by static_scene_tf the same way grasp_frame
@@ -1053,8 +1066,9 @@ int main(int argc, char ** argv)
     std::ofstream(marker_file_prefix + ".run_summary_ready", std::ios::trunc).close();
   }
 
-  executor.cancel();
-  if (spinner.joinable()) { spinner.join(); }
+    executor.cancel();
+    if (spinner.joinable()) { spinner.join(); }
+  }
   rclcpp::shutdown();
 
   return ur5e_pick_place::ok(result) ? 0 : 1;

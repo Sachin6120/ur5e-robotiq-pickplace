@@ -368,6 +368,13 @@
                     </contact>
                 </surface>
             </collision>
+            <sensor name="${prefix}left_finger_tip_contact" type="contact">
+                <contact>
+                    <collision>robotiq_85_left_knuckle_link_fixed_joint_lump__robotiq_85_left_finger_tip_link_collision_2</collision>
+                </contact>
+                <update_rate>500</update_rate>
+                <topic>${prefix}robotiq_85_left_finger_tip_link/contact</topic>
+            </sensor>
         </gazebo>
 
         <link name="${prefix}robotiq_85_right_finger_tip_link">
@@ -409,6 +416,13 @@
                     </contact>
                 </surface>
             </collision>
+            <sensor name="${prefix}right_finger_tip_contact" type="contact">
+                <contact>
+                    <collision>robotiq_85_right_knuckle_link_fixed_joint_lump__robotiq_85_right_finger_tip_link_collision_2</collision>
+                </contact>
+                <update_rate>500</update_rate>
+                <topic>${prefix}robotiq_85_right_finger_tip_link/contact</topic>
+            </sensor>
         </gazebo>
 
         <joint name="${prefix}robotiq_85_base_joint" type="fixed">

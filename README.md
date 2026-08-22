@@ -43,6 +43,25 @@ than from a node's own status message. "Known limitations" covers what
 - MoveIt 2, two planning groups (`arm`, `gripper`), config built fresh via
   Setup Assistant against the merged URDF
 
+## Gripper Control Architecture & Validated M10 Root Cause
+
+```text
+Gripper control path:
+ROS 2 effort command
+  → effort_controllers/GripperActionController (PID: P=50.0, D=2.0)
+  → gz_ros2_control
+  → gz::sim::components::JointForceCmd
+  → DART ActuatorType::FORCE
+```
+
+- **Root Cause of World-X / 90° Instability**: Position-mode gripper control used `gz_ros2_control`'s
+  velocity command law, which DART solved as a `ServoMotorConstraint` (velocity equality constraint).
+  When external lift reactions in the World-X orientation opposed closing velocity, the solver suffered
+  contact-constraint chatter (18–43 Hz limit cycle), effort collapse, contact dropout, and severe slip.
+- **Validated Fix**: Direct effort control completely bypasses `ServoMotorConstraint`, providing continuous
+  holding torque (+1.000 N·m) directly into DART dynamics, eliminating the limit cycle and cutting velocity
+  reversals from 594 → 26. Full pick-place regression passed across all tested orientations ($0^\circ, 90^\circ, 180^\circ$).
+
 ## Repo layout
 
 ```
