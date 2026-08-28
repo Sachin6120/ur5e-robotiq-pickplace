@@ -30,10 +30,50 @@ LATEST VERIFIED MILESTONE:
   validated. Planner-attempt configuration difference (G1-G4 at
   plan_attempts=20, G5 qualification at plan_attempts=1) explicitly
   documented; see HANDOFF.md 2026-08-28 section for caveats.
+  FROZEN: do not re-run G1-G5 to add evidence -- Stage 2 (below) is next.
 
   Scene-A Perception-Driven Pick & Place Repeatability — PASS (2026-08-27)
   5/5 consecutive clean perception-driven cycles PASSED with parallel_jaw baseline.
+
+  Post-cleanup Scene-A regression — PASS (2026-08-28), CONFIRMATION ONLY
+  One cycle via the unmodified run_5_cycles.py harness after the baseline
+  cleanup below: all 11 Stage-1 criteria PASS. Does NOT add to either
+  campaign's N; see HANDOFF.md 2026-08-28 "Baseline Frozen" section.
 ```
+
+## 2026-08-28 Baseline Frozen — Stage-1 Commits + Local Tag
+
+Session-end state, recorded for a clean continuation. Supersedes the
+previous "Session End — Next Task: READ-ONLY WORKING-TREE AUDIT" entry --
+that audit ran, its findings were reviewed, and the resulting cleanup is now
+committed. Full detail: `HANDOFF.md` §"2026-08-28 Baseline Frozen".
+
+- Generalization Stage-1 G1-G5 remains validated and is now **frozen**
+  (section below).
+- The READ-ONLY working-tree audit, the D6 (`static_scene_tf` re-publish
+  timer)/D7 (`tf_lookup_timeout_s`) forensic resolution, and the controlled
+  baseline cleanup (legacy `allowed_start_tolerance: 0.05` reverted, stale
+  parallel_jaw comments corrected, dead `ur5e_robotiq.srdf` duplicate
+  removed, `.gitignore` hardened against raw evidence/generated artifacts)
+  all ran to completion in prior sessions and are recorded in `HANDOFF.md`.
+- The cleaned tree is committed as three commits on `rgbd-perception`
+  (production baseline, tooling, docs). A local (unpushed) annotated tag
+  `stage1-generalization-pass` is intended as the final step of this same
+  effort, once a post-commit build re-verification passes -- see
+  `HANDOFF.md` for exact hashes and `git log --oneline -8` / `git tag -l`
+  for the actual current state.
+- The historical G5 15.001 s transport-planning stall remains an
+  **unexplained, non-reproduced transient planner/runtime anomaly** -- OPEN,
+  not fixed. `thresholds.plan_attempts` remains `1` (diagnosability only).
+  `thresholds.tf_lookup_timeout_s` remains `15.0` (never approached by any
+  validated run). Neither is a claimed fix for anything.
+- Raw bulk evidence (`evidence/`, ~7.7 GB) is intentionally excluded from
+  Git and stays local-only; only curated summaries are ever committed.
+
+**Next task: Generalization Stage 2 — object orientation/yaw variation.**
+Not started. Position generalization (Stage 1) and repeatability are closed;
+Stage 2 is a new campaign against a different variable, not a re-run of
+Stage 1's poses.
 
 ## 2026-08-28 Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS
 

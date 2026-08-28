@@ -1,10 +1,85 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The 2026-08-28 section immediately below is current
-> authority: Generalization Stage-1 is RESOLVED, G1-G5 all PASS. Everything
-> below the "Historical record" heading is superseded chronology, kept for its
-> root-cause evidence. Sections dated 2026-08-23 further down record the F1 and
-> F2 investigations in order.
+> READ THIS SECTION FIRST. The 2026-08-28 "Baseline Frozen" section
+> immediately below is current authority for repository state: the working
+> tree has been audited, cleaned, and committed as three commits on
+> `rgbd-perception` (production/tooling/docs). A local annotated tag
+> `stage1-generalization-pass` is intended as the final step of this same
+> baseline-freeze effort, once a post-commit build re-verification passes —
+> check `git tag -l` if this file is read before that step's own commit
+> lands. The section after it is current authority for results:
+> Generalization Stage-1 is RESOLVED, G1-G5 all PASS. Everything below the
+> "Historical record" heading is superseded chronology, kept for its
+> root-cause evidence. Sections dated 2026-08-23 further down record the F1
+> and F2 investigations in order.
+
+## 2026-08-28 Baseline Frozen — Stage-1 Commits + Local Tag — Current Authority
+
+The READ-ONLY working-tree audit, the D6/D7 forensic resolution, and the
+controlled baseline cleanup (all recorded in prior sessions this same day)
+are complete and are now committed. This supersedes the previous "Session
+End — Next Task: READ-ONLY WORKING-TREE AUDIT" section; that audit is done,
+not pending.
+
+- Generalization Stage-1 G1-G5 is validated (full detail in the section
+  immediately below) and the campaign is **frozen** — do not re-run G1-G5 to
+  "add" evidence; any further pose sweep is Stage-2 scope (see below).
+- 5/5 Scene-A perception-driven repeatability is validated (its own section
+  further down).
+- One **post-cleanup Scene-A regression** cycle was run on 2026-08-28 after
+  the cleanup, through the unmodified `scripts/perception/run_5_cycles.py`
+  harness: result SUCCESS, perception error 1.6134 mm, selected q =
+  `[-0.572304 -0.909075 1.525371 0.954500 1.570796 0.998492]` (identical to
+  the repeatability campaign's own selection), Cartesian fraction 1.0000,
+  TCP error 0.000281 mm, aperture 29.9995 mm, max tilt 0.0573°, lift slip
+  0.0154 mm, transport slip 0.0257 mm, placement error 1.9557 mm, final
+  orientation error 0.0542°. **This is a confirmation that the cleaned
+  working tree still reproduces the validated cycle — it is NOT an
+  additional Stage-1 repeatability or generalization data point and must not
+  be counted toward either campaign's N.**
+- The historical G5 15.001 s transport-planning stall remains an
+  **unexplained, non-reproduced transient planner/runtime anomaly** — still
+  OPEN, not fixed. The KDL goal-sampling-starvation hypothesis was refuted
+  (offline `IKConstraintSampler` reproduction: 6000/6000 success). Nothing
+  in this session's cleanup or regression run bears on this anomaly one way
+  or the other.
+- `thresholds.plan_attempts` remains `1` in `config/scene.yaml` — still a
+  **diagnosability change only**, not a claimed fix for the stall.
+- `thresholds.tf_lookup_timeout_s` remains `15.0` — its own comment in
+  `config/scene.yaml` records that this value was **never approached** by
+  any validated run (worst observed upper bound 2.381 s) and must not be
+  described as validated, only as the deadline in force during the final G5
+  qualification.
+- `static_scene_tf`'s periodic `/tf_static` re-publish timer is **unchanged
+  and undemonstrated** — its own comment in `static_scene_tf.cpp` records
+  that no consumer in this repository requires it (every lookup uses
+  `TimePointZero`) and that no evidence shows it changed an outcome. It is
+  retained because Stage-1 validated the binary containing it, not because
+  it was shown to fix anything. **Do not describe either the timer or the
+  15 s timeout as a validated fix in any future summary.**
+- The current production baseline requires `gripper_model:=parallel_jaw`
+  with `use_perceived_position:=true require_perception:=true` — every
+  Stage-1/repeatability/regression result was measured under this
+  configuration. The launch-file **defaults** remain `robotiq_linkage` /
+  `use_perceived_position:=false` for backward compatibility; that default
+  path has no current validation evidence and must not be assumed
+  equivalent.
+- Raw bulk experiment evidence (`evidence/`, ~7.7 GB) is **intentionally
+  excluded from Git** (`.gitignore`) and stays local-only. Durable results
+  live in this file and `PROJECT_STATE.md`, not as committed raw data. Only
+  curated summaries (README + MANIFEST.sha256 + summary CSV/JSON), committed
+  individually by explicit path, are ever intended to enter Git.
+- Three commits establish this baseline on `rgbd-perception`:
+  `feat: establish validated perception-driven manipulation baseline`,
+  `tools: add manipulation validation and diagnostic utilities`,
+  `docs: freeze Stage-1 validation authority` (this commit). A local
+  (unpushed) annotated tag `stage1-generalization-pass` is intended as the
+  final step, pointing at this commit or later, once a post-commit build
+  re-verification passes; check `git tag -l` / `git log --oneline -8` for
+  the actual current tip. Nothing is to be pushed.
+- **Next research phase: Generalization Stage 2 — object orientation/yaw
+  variation.** Not started. Position generalization (G1-G5) and repeatability
+  are closed; Stage 2 is a new campaign, not a re-run of Stage 1.
 
 ## 2026-08-28 Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS — Current Authority
 
