@@ -249,8 +249,23 @@ def run_probe(case_name, yaw_deg, gazebo_gui=False):
     sim_log_fh.close()
 
     # 10. Metrics -- ground truth used for measurement only, never fed back.
-    perceived_xyz = [
+    #
+    # /object_detector/position_world reports the VISIBLE TOP-SURFACE point
+    # (object_detector.cpp's own header: "deliberately NOT the object's
+    # geometric centre"). The validated production conversion to object
+    # centre, proved from m3_grasp.cpp (perceived centre assignment,
+    # "sample->point.z - object_height_m / 2.0"), is Z-only:
+    #     centre = [top.x, top.y, top.z - object_height_m / 2.0]
+    # Both quantities are recorded; only the centre-adjusted one is compared
+    # against Gazebo's object-centre ground truth.
+    raw_perceived_top_xyz = [
         sum(s["xyz"][k] for s in samples) / len(samples) for k in range(3)
+    ]
+    object_height_m = obj_size[2]
+    centre_adjusted_perceived_xyz = [
+        raw_perceived_top_xyz[0],
+        raw_perceived_top_xyz[1],
+        raw_perceived_top_xyz[2] - object_height_m / 2.0,
     ]
     spreads = [
         math.dist(a["xyz"], b["xyz"]) for a in samples for b in samples
@@ -264,11 +279,15 @@ def run_probe(case_name, yaw_deg, gazebo_gui=False):
         1.0 - 2.0 * (gt_quat[1] ** 2 + gt_quat[2] ** 2),
     )
 
-    ex_mm = (perceived_xyz[0] - gt_xyz[0]) * 1000.0
-    ey_mm = (perceived_xyz[1] - gt_xyz[1]) * 1000.0
-    ez_mm = (perceived_xyz[2] - gt_xyz[2]) * 1000.0
+    # Equivalent quantities only: centre-adjusted perceived vs GT centre.
+    ex_mm = (centre_adjusted_perceived_xyz[0] - gt_xyz[0]) * 1000.0
+    ey_mm = (centre_adjusted_perceived_xyz[1] - gt_xyz[1]) * 1000.0
+    ez_mm = (centre_adjusted_perceived_xyz[2] - gt_xyz[2]) * 1000.0
     euclidean_mm = math.sqrt(ex_mm ** 2 + ey_mm ** 2 + ez_mm ** 2)
 
+    # Harmful/orthogonal projections use centre-position XY error; the
+    # height correction is Z-only and does not change ex/ey, so sign
+    # conventions are unchanged from before this fix.
     cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
     harmful_projection_mm = ex_mm * cos_y + ey_mm * sin_y
     orthogonal_projection_mm = -ex_mm * sin_y + ey_mm * cos_y
@@ -282,7 +301,9 @@ def run_probe(case_name, yaw_deg, gazebo_gui=False):
         "measured_yaw_deg_gt": math.degrees(measured_yaw_rad),
         "gt_centre_xyz_m": gt_xyz,
         "gt_quaternion_xyzw": gt_quat,
-        "perceived_xyz_mean_m": perceived_xyz,
+        "object_height_m": object_height_m,
+        "raw_perceived_top_xyz_m": raw_perceived_top_xyz,
+        "centre_adjusted_perceived_xyz_m": centre_adjusted_perceived_xyz,
         "perceived_sample_spread_max_m": sample_spread_m,
         "n_perception_samples": len(samples),
         "ex_mm": ex_mm,
@@ -294,7 +315,11 @@ def run_probe(case_name, yaw_deg, gazebo_gui=False):
         "orthogonal_projection_mm": orthogonal_projection_mm,
         "gt_drift_during_probe_m": gt_drift_m,
         "note": "ground truth used for measurement only; never fed back into "
-                "perception or any target. No manipulation node was started.",
+                "perception or any target. No manipulation node was started. "
+                "ex/ey/ez/euclidean_error_mm compare centre_adjusted_perceived_xyz_m "
+                "(top surface minus half object height, matching m3_grasp.cpp's "
+                "own conversion) against gt_centre_xyz_m -- equivalent quantities. "
+                "raw_perceived_top_xyz_m is retained unmodified for traceability.",
     }
     with open(case_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
@@ -306,7 +331,8 @@ def run_probe(case_name, yaw_deg, gazebo_gui=False):
     print(f"Configured yaw:        {yaw_deg:+.1f} deg")
     print(f"Measured yaw (GT):     {metrics['measured_yaw_deg_gt']:+.4f} deg")
     print(f"GT centre:             {gt_xyz}")
-    print(f"Perceived (mean of {len(samples)}): {perceived_xyz}")
+    print(f"Raw perceived (top, mean of {len(samples)}): {raw_perceived_top_xyz}")
+    print(f"Centre-adjusted perceived: {centre_adjusted_perceived_xyz}")
     print(f"Sample spread (max):   {sample_spread_m * 1000:.4f} mm")
     print(f"ex, ey, ez:            {ex_mm:+.4f}, {ey_mm:+.4f}, {ez_mm:+.4f} mm")
     print(f"Euclidean error:       {euclidean_mm:.4f} mm")
