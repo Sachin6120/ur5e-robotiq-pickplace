@@ -26,10 +26,9 @@
 #    docs/HANDOFF_RGBD_PERCEPTION.md section 8). Preserved verbatim from that
 #    validated run; behaviour is unchanged apart from this comment block.
 #
-# PRESERVATION NOTE: the --out default below still points at the session
-#    scratchpad directory the Milestone D run used, which no longer exists.
-#    That path was NOT edited, because preserving validated behaviour exactly
-#    was the point of keeping these files. Pass --out explicitly when re-running.
+# The --out default below is a portable path derived from this file's own
+#    location, not the machine-specific one the original validated run used.
+#    Pass --out explicitly to write elsewhere.
 # ===========================================================================
 """milestone_e_harness.py -- Milestone E evaluation harness.  NOT part of the estimator.
 
@@ -51,6 +50,7 @@ STRICT SEPARATION
   ground-truth call is made, so the ordering is auditable from the log.
 """
 import argparse, json, math, os, subprocess, sys, time
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -64,7 +64,7 @@ from std_msgs.msg import Bool, Int32MultiArray, UInt32
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 import yaml
 
-REPO = "/home/sachin/ur5e_pickplace"
+REPO = str(Path(__file__).resolve().parents[2])
 WORLD = "empty"
 SCENE = yaml.safe_load(open(f"{REPO}/config/scene.yaml"))
 ARM_JOINTS = SCENE["robot"]["arm_joints"]
@@ -272,7 +272,7 @@ def main():
     ap.add_argument("--y", type=float)
     ap.add_argument("--absent", action="store_true")
     ap.add_argument("--frames", type=int, default=5)
-    ap.add_argument("--out", default="/tmp/claude-1000/-home-sachin-ur5e-pickplace/00fa8ea1-a70a-40c8-ab8d-69cbc21316fb/scratchpad/me_results")
+    ap.add_argument("--out", default="/tmp/ur5e_pickplace/me_results")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 

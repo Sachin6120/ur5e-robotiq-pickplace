@@ -59,6 +59,7 @@ pregrasp_only behaviour is unchanged: no manipulation, so the frozen baseline
 and the live sample are the same pose, and the compared stage is the pre-grasp.
 """
 import argparse, json, math, subprocess, sys, time
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -66,7 +67,7 @@ from rclpy.node import Node
 import tf2_ros
 import yaml
 
-REPO = "/home/sachin/ur5e_pickplace"
+REPO = str(Path(__file__).resolve().parents[2])
 WORLD = "empty"
 SCENE = yaml.safe_load(open(f"{REPO}/config/scene.yaml"))
 OBJ = SCENE["object"]
@@ -134,7 +135,7 @@ def truth_pose(timeout=25.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", required=True)
-    ap.add_argument("--out", default="/tmp/claude-1000/-home-sachin-ur5e-pickplace/00fa8ea1-a70a-40c8-ab8d-69cbc21316fb/scratchpad/f1_results")
+    ap.add_argument("--out", default="/tmp/ur5e_pickplace/f1_results")
     ap.add_argument(
         "--pose-csv", default=None,
         help="optional pose_recorder.py CSV for this run. Cross-checks the "

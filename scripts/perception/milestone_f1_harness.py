@@ -17,10 +17,11 @@
 # ===========================================================================
 """milestone_f1_harness.py -- spawn, run one m3_grasp cycle, freeze evidence."""
 import argparse, importlib.util, json, os, re, shutil, subprocess, sys, time
+from pathlib import Path
 
 import yaml
 
-REPO = "/home/sachin/ur5e_pickplace"
+REPO = str(Path(__file__).resolve().parents[2])
 WORLD = "empty"
 SCENE = yaml.safe_load(open(f"{REPO}/config/scene.yaml"))
 OBJ = SCENE["object"]
@@ -260,7 +261,7 @@ def main():
     ap.add_argument("--absent", action="store_true")
     ap.add_argument("--init-only", action="store_true")
     ap.add_argument("--flags", nargs="*", default=[])
-    ap.add_argument("--out", default="/tmp/claude-1000/-home-sachin-ur5e-pickplace/00fa8ea1-a70a-40c8-ab8d-69cbc21316fb/scratchpad/f1_results")
+    ap.add_argument("--out", default="/tmp/ur5e_pickplace/f1_results")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     base = f"{a.out}/{a.scene}"

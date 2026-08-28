@@ -26,10 +26,9 @@
 #    docs/HANDOFF_RGBD_PERCEPTION.md section 8). Preserved verbatim from that
 #    validated run; behaviour is unchanged apart from this comment block.
 #
-# PRESERVATION NOTE: the --out default below still points at the session
-#    scratchpad directory the Milestone D run used, which no longer exists.
-#    That path was NOT edited, because preserving validated behaviour exactly
-#    was the point of keeping these files. Pass --out explicitly when re-running.
+# The --out default below is a portable path derived from this file's own
+#    location, not the machine-specific one the original validated run used.
+#    Pass --out explicitly to write elsewhere.
 # ===========================================================================
 """milestone_e_truth.py -- Milestone E GROUND-TRUTH EVALUATION ONLY.
 
@@ -42,6 +41,7 @@ production path is TF2 inside object_position_world; nothing computed in this
 file is or can be substituted for it.
 """
 import argparse, json, math, subprocess, sys, time
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -49,7 +49,7 @@ from rclpy.node import Node
 import tf2_ros
 import yaml
 
-REPO = "/home/sachin/ur5e_pickplace"
+REPO = str(Path(__file__).resolve().parents[2])
 WORLD = "empty"
 SCENE = yaml.safe_load(open(f"{REPO}/config/scene.yaml"))
 OBJ = SCENE["object"]
@@ -97,7 +97,7 @@ def truth_pose(timeout=25.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", required=True)
-    ap.add_argument("--out", default="/tmp/claude-1000/-home-sachin-ur5e-pickplace/00fa8ea1-a70a-40c8-ab8d-69cbc21316fb/scratchpad/me_results")
+    ap.add_argument("--out", default="/tmp/ur5e_pickplace/me_results")
     a = ap.parse_args()
 
     sensor = json.load(open(f"{a.out}/{a.scene}_sensor.json"))
