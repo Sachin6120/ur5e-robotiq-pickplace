@@ -7,6 +7,16 @@ node's own status message.
 
 `ROS 2 Jazzy | MoveIt 2 | Gazebo Harmonic | C++ | Python | RGB-D Perception`
 
+## Demo
+
+<p align="center">
+  <img src="docs/assets/ur5e_pickplace_demo.gif"
+       alt="Perception-driven UR5e pick-and-place cycle in Gazebo Harmonic"
+       width="900">
+</p>
+
+*Perception-driven UR5e pick-and-place cycle in Gazebo Harmonic.*
+
 ## Overview
 
 The scene is a UR5e on a table with one object at a fixed height. A camera
