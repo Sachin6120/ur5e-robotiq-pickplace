@@ -87,8 +87,11 @@
     - no follower servo / no second controlled joint;
     - no fingertip_grasp_theta or any object-size-derived xacro argument;
     - visual meshes are NOT attached in this pass (cosmetic vendor-mesh
-      decoration is design §8, not V0 — jaw/base links carry a plain box
-      visual only, so the macro remains self-contained and inspectable).
+      decoration is design §8, not V0 — base/pad links carry a plain box
+      visual, and the two jaw links carry a small visual-only connector box
+      bridging housing to pad (added post-V0, see jaw_fixed_link /
+      jaw_moving_link below), so the macro remains self-contained and
+      inspectable).
 
   This file must not change the expansion of ur5e_robotiq.urdf.xacro under
   the default gripper_model:=robotiq_linkage in any way, including this
@@ -171,6 +174,9 @@
                 <geometry>
                     <box size="0.030 0.060 0.030"/>
                 </geometry>
+                <material name="gripper_body_blue">
+                    <color rgba="0.10 0.35 0.90 1.0"/>
+                </material>
             </visual>
             <inertial>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -188,6 +194,19 @@
 
         <!-- fixed jaw -->
         <link name="${prefix}jaw_fixed_link">
+            <!-- Visual-only connector bridging the housing box to
+                 pad_fixed_link (see this file's audit note above: a real,
+                 unrendered gap otherwise exists between them). No
+                 <collision>: purely cosmetic, does not touch contact/physics. -->
+            <visual>
+                <origin xyz="0.01375 0 -0.022" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.0315 0.022 0.012"/>
+                </geometry>
+                <material name="gripper_body_blue">
+                    <color rgba="0.10 0.35 0.90 1.0"/>
+                </material>
+            </visual>
             <inertial>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
                 <mass value="0.02"/>
@@ -207,6 +226,9 @@
                 <geometry>
                     <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
                 </geometry>
+                <material name="gripper_pad_dark">
+                    <color rgba="0.15 0.15 0.15 1.0"/>
+                </material>
             </visual>
             <collision>
                 <geometry>
@@ -265,6 +287,20 @@
 
         <!-- moving jaw — the ONE actuated DOF -->
         <link name="${prefix}jaw_moving_link">
+            <!-- Visual-only connector bridging the housing box to
+                 pad_moving_link, mirrored in X from jaw_fixed_link's
+                 connector. Rides rigidly with this link, so it tracks the
+                 prismatic joint automatically. No <collision>: purely
+                 cosmetic, does not touch contact/physics. -->
+            <visual>
+                <origin xyz="-0.01375 0 -0.022" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.0315 0.022 0.012"/>
+                </geometry>
+                <material name="gripper_body_blue">
+                    <color rgba="0.10 0.35 0.90 1.0"/>
+                </material>
+            </visual>
             <inertial>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
                 <mass value="0.02"/>
@@ -290,6 +326,9 @@
                 <geometry>
                     <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
                 </geometry>
+                <material name="gripper_pad_dark">
+                    <color rgba="0.15 0.15 0.15 1.0"/>
+                </material>
             </visual>
             <collision>
                 <geometry>
