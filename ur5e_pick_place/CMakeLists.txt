@@ -23,6 +23,11 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(OpenCV REQUIRED)
 
 include_directories(include)
 
@@ -92,12 +97,38 @@ ament_target_dependencies(probe_gripper_cmd
   control_msgs
 )
 
+# --- Milestone C: deterministic RGB-D tabletop-object detector --------------
+add_executable(object_detector src/object_detector.cpp)
+ament_target_dependencies(object_detector
+  rclcpp
+  sensor_msgs
+  std_msgs
+  geometry_msgs
+  cv_bridge
+  message_filters
+)
+target_link_libraries(object_detector ${OpenCV_LIBRARIES})
+
+# --- Milestone E: camera-frame -> world-frame transform ---------------------
+# Deliberately a separate executable from object_detector: the Milestone C/D
+# estimator stays byte-identical, and no TF listener is pulled into it.
+add_executable(object_position_world src/object_position_world.cpp)
+ament_target_dependencies(object_position_world
+  rclcpp
+  geometry_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
 install(TARGETS
   m1_joint_goal
   static_scene_tf
   m2_cartesian_approach
   m3_grasp
   probe_gripper_cmd
+  object_detector
+  object_position_world
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

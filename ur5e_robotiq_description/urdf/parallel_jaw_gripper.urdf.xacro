@@ -1,0 +1,344 @@
+<?xml version="1.0"?>
+<!--
+  parallel_jaw_gripper.urdf.xacro — opt-in DART-compatible gripper abstraction.
+
+  STATUS: V0 (offline geometry only). Selected via `gripper_model:=parallel_jaw`
+  on ur5e_robotiq.urdf.xacro; the vendor Robotiq linkage remains the default
+  (`gripper_model:=robotiq_linkage`) and is byte-for-byte unchanged by this
+  file's existence. See docs/GRIPPER_REDESIGN_DESIGN.md for the full
+  architecture rationale (candidate comparison, validation ladder V0-V10,
+  redesigned F3 G0 concept) — this file implements only §3 (Architecture A)
+  and only as far as V0 requires.
+
+  WHY THIS EXISTS: the vendor 2F-85 model's four-bar linkage is kinematically
+  fictional under this project's stack (both inner-knuckle joints are leaves;
+  the coupler that would close the loop does not exist — DART rejects closed
+  loops outright, confirmed by probe I-0) and its parallel-jaw property held
+  only at one fixed angle after the TENTH OVERRIDE. Neither DART native mimic
+  nor DART closed loops are available, and the bullet-featherstone escape is
+  BLOCKED (shared-ECM mimic conflict with gz_ros2_control, doubly confirmed).
+  This macro is a declared, exactly-specified 1-DOF prismatic abstraction:
+  one actuated moving jaw, one fixed reference jaw, two flat pads, no mimic,
+  no closed loop, no protruding collision geometry, no object-dependent
+  xacro argument of any kind.
+
+  KINEMATIC TREE (exactly two collision bodies in the whole gripper):
+
+    parent (gripper_mount_link)
+     └─ (fixed)      gripper_base_link      [NO collision]
+         ├─ (fixed)      jaw_fixed_link      [NO collision]
+         │   └─ (fixed)  pad_fixed_link      [BOX collision + contact sensor]
+         └─ (PRISMATIC)  jaw_moving_link     [NO collision]  <- gripper_jaw_joint
+             └─ (fixed)  pad_moving_link     [BOX collision + contact sensor]
+
+  CLOSING AXIS: local +X of gripper_base_link. gripper_jaw_joint's own axis is
+  "-1 0 0" (i.e. increasing q moves jaw_moving_link toward -X, toward the
+  fixed jaw), so aperture is monotonically DECREASING in q, matching the
+  vendor master joint's sign convention (increasing angle -> closing) even
+  though the unit changes from radians to metres.
+
+  APERTURE IDENTITY (derived below, not fitted):
+    Let A0 = full-open aperture (stroke), t = pad thickness.
+    jaw_fixed_link  origin (from base): x = -(A0/2 + t/2)   [rest, always]
+    pad_fixed_link  origin (from jaw_fixed_link): (0,0,0)   [coincident]
+      -> pad_fixed_link box, centred at x=-(A0/2+t/2), half-width t/2
+      -> inner (facing +X) face at x = -A0/2                          ... (i)
+    jaw_moving_link origin (from base): x = +(A0/2 + t/2), q = 0 rest
+      joint axis = (-1,0,0) -> position at joint value q: x = A0/2+t/2-q
+    pad_moving_link origin (from jaw_moving_link): (0,0,0) [coincident]
+      -> pad_moving_link box, centred at x=A0/2+t/2-q, half-width t/2
+      -> inner (facing -X) face at x = A0/2 - q                       ... (ii)
+    aperture(q) = (ii) - (i) = (A0/2 - q) - (-A0/2) = A0 - q     Q.E.D.
+    grasp_centre_offset(q) = midpoint of the two inner faces - x=0
+                            = [(A0/2-q) + (-A0/2)] / 2 = -q/2
+      i.e. magnitude q/2, direction -X = toward the fixed jaw, matching
+      docs/GRIPPER_REDESIGN_DESIGN.md §3.5.
+
+  PARALLELISM: every link above gets rpy="0 0 0" at every fixed joint, and a
+  prismatic joint contributes pure translation (zero rotation) by
+  construction. Therefore R(pad_moving_link) == R(pad_fixed_link) ==
+  R(gripper_base_link) for ALL q — provable from the joint types alone, not
+  just at a design point. This is strictly stronger than the vendor model's
+  TENTH-OVERRIDE fixed-fingertip approximation, which was exact only at one
+  angle.
+
+  PAD DIMENSIONS: A0 = 0.085 m (85 mm) is carried over deliberately from the
+  vendor model's own published/mesh-validated stroke (gripper_geometry.py
+  validates it to 1 micron) so the aperture scale keeps its existing
+  provenance. Pad height (local Z) = 0.038 m, from the vendor pad mesh's own
+  measured PAD_FACE_Z_MAX_M - PAD_FACE_Z_MIN_M = 38.004 mm
+  (scripts/lib/gripper_geometry.py). Pad thickness (t, local X) = 0.004 m and
+  pad width (local Y) = 0.022 m are THIS FILE'S OWN CHOSEN VALUES, not
+  mesh-derived — no equivalent number exists for a flat abstraction pad in the
+  vendor model or the design doc, and neither figure affects the aperture,
+  parallelism, or travel identities above (all purely along local X and
+  independent of Y/Z box size). Flag before trusting either in a contact
+  study.
+
+  COLLISION SURFACE PARAMETERS carried over byte-identical from the vendor
+  model's fingertip <surface> blocks (robotiq_2f_85_macro.urdf.xacro), so the
+  mu_eff = 1.0202 friction calibration remains the applicable material result
+  per docs/GRIPPER_REDESIGN_DESIGN.md §7 (contact patch changes mesh -> box,
+  so a cheap re-confirmation is recommended there, not claimed here).
+
+  WHAT IS DELIBERATELY ABSENT, per the V0 task brief:
+    - no mimic tag anywhere in this file;
+    - no inner-knuckle-equivalent collision geometry (only 2 colliders exist);
+    - no follower servo / no second controlled joint;
+    - no fingertip_grasp_theta or any object-size-derived xacro argument;
+    - visual meshes are NOT attached in this pass (cosmetic vendor-mesh
+      decoration is design §8, not V0 — jaw/base links carry a plain box
+      visual only, so the macro remains self-contained and inspectable).
+
+  This file must not change the expansion of ur5e_robotiq.urdf.xacro under
+  the default gripper_model:=robotiq_linkage in any way, including this
+  <include>: xacro only instantiates a macro when it is invoked, so merely
+  including this file's definition is inert unless
+  <xacro:parallel_jaw_gripper .../> is actually called.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="parallel_jaw_gripper">
+    <xacro:macro name="parallel_jaw_gripper" params="
+        name
+        prefix
+        parent
+        *origin
+        sim_ignition:=false
+        sim_isaac:=false
+        use_fake_hardware:=false
+        fake_sensor_commands:=false
+        include_ros2_control:=true
+        aperture_m:=0.085
+        pad_thickness_m:=0.004
+        pad_width_m:=0.022
+        pad_height_m:=0.038
+        finger_standoff_z_m:=0.038
+        jaw_effort:=20.0
+        jaw_velocity:=0.1">
+
+        <!-- Derived, offline, so both the URDF and this comment stay in sync
+             with whatever aperture_m/pad_thickness_m the caller passes. -->
+        <xacro:property name="A0" value="${aperture_m}"/>
+        <xacro:property name="T"  value="${pad_thickness_m}"/>
+        <xacro:property name="LZ" value="${finger_standoff_z_m}"/>
+        <xacro:property name="FIXED_JAW_X"  value="${-(A0/2.0 + T/2.0)}"/>
+        <xacro:property name="MOVING_JAW_X0" value="${A0/2.0 + T/2.0}"/>
+
+        <!-- ================================================================= -->
+        <!-- ros2_control — one actuated prismatic joint, self-contained       -->
+        <!-- (does not touch vendor/robotiq_gripper.ros2_control.xacro).       -->
+        <!-- Interface shape mirrors the vendor master joint's, per            -->
+        <!-- docs/GRIPPER_REDESIGN_DESIGN.md §3.9, so gripper_close_and_hold() -->
+        <!-- and the stall/GripperCommand machinery keep their expected shape  -->
+        <!-- when this model is eventually wired into a controller (not V0).  -->
+        <!-- ================================================================= -->
+        <xacro:if value="${include_ros2_control}">
+            <ros2_control name="${name}" type="system">
+                <hardware>
+                    <xacro:if value="${sim_isaac}">
+                        <plugin>isaac_ros2_control/IsaacSystem</plugin>
+                        <param name="joint_commands_topic">/isaac_joint_commands</param>
+                        <param name="joint_states_topic">/isaac_joint_states</param>
+                    </xacro:if>
+                    <xacro:if value="${sim_ignition}">
+                        <plugin>ign_ros2_control/IgnitionSystem</plugin>
+                    </xacro:if>
+                    <xacro:if value="${use_fake_hardware}">
+                        <plugin>mock_components/GenericSystem</plugin>
+                        <param name="fake_sensor_commands">${fake_sensor_commands}</param>
+                        <param name="state_following_offset">0.0</param>
+                    </xacro:if>
+                </hardware>
+                <joint name="${prefix}gripper_jaw_joint">
+                    <command_interface name="position"/>
+                    <command_interface name="effort"/>
+                    <state_interface name="position">
+                        <param name="initial_value">0.0</param>
+                    </state_interface>
+                    <state_interface name="velocity"/>
+                    <state_interface name="effort"/>
+                </joint>
+            </ros2_control>
+        </xacro:if>
+
+        <!-- ================================================================= -->
+        <!-- Links and joints                                                  -->
+        <!-- ================================================================= -->
+        <link name="${prefix}gripper_base_link">
+            <!-- Visual-only placeholder box. No <collision>: this link must
+                 never be able to touch anything (that is what removes defect 1,
+                 the protruding-collider first-contact problem). -->
+            <visual>
+                <geometry>
+                    <box size="0.030 0.060 0.030"/>
+                </geometry>
+            </visual>
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.663"/>
+                <inertia ixx="5.1617816e-04" ixy="0.0" ixz="0.0"
+                         iyy="5.8802208e-04" iyz="0.0" izz="3.9462776e-04"/>
+            </inertial>
+        </link>
+
+        <joint name="${prefix}gripper_base_joint" type="fixed">
+            <parent link="${parent}"/>
+            <child link="${prefix}gripper_base_link"/>
+            <xacro:insert_block name="origin"/>
+        </joint>
+
+        <!-- fixed jaw -->
+        <link name="${prefix}jaw_fixed_link">
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.02"/>
+                <inertia ixx="1.0e-6" ixy="0.0" ixz="0.0"
+                         iyy="1.0e-6" iyz="0.0" izz="1.0e-6"/>
+            </inertial>
+        </link>
+
+        <joint name="${prefix}jaw_fixed_joint" type="fixed">
+            <parent link="${prefix}gripper_base_link"/>
+            <child link="${prefix}jaw_fixed_link"/>
+            <origin xyz="${FIXED_JAW_X} 0 ${LZ}" rpy="0 0 0"/>
+        </joint>
+
+        <link name="${prefix}pad_fixed_link">
+            <visual>
+                <geometry>
+                    <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.01"/>
+                <inertia ixx="1.0e-7" ixy="0.0" ixz="0.0"
+                         iyy="1.0e-7" iyz="0.0" izz="1.0e-7"/>
+            </inertial>
+        </link>
+
+        <joint name="${prefix}pad_fixed_joint" type="fixed">
+            <parent link="${prefix}jaw_fixed_link"/>
+            <child link="${prefix}pad_fixed_link"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </joint>
+
+        <!-- Friction/contact params carried over byte-identical from the
+             vendor fingertip blocks (robotiq_2f_85_macro.urdf.xacro), see
+             this file's header. Inline <surface> inside URDF <collision> is
+             silently dropped by the URDF->SDF converter; this <gazebo
+             reference> extension form is the one that survives, exactly as
+             in the vendor macro. -->
+        <gazebo reference="${prefix}pad_fixed_link">
+            <collision>
+                <surface>
+                    <friction>
+                        <ode>
+                            <mu>100000.0</mu>
+                            <mu2>100000.0</mu2>
+                        </ode>
+                    </friction>
+                    <contact>
+                        <ode>
+                            <kp>1e+5</kp>
+                            <kd>1</kd>
+                            <soft_cfm>0</soft_cfm>
+                            <soft_erp>0.2</soft_erp>
+                            <min_depth>0.002</min_depth>
+                            <max_vel>0</max_vel>
+                        </ode>
+                    </contact>
+                </surface>
+            </collision>
+            <sensor name="${prefix}pad_fixed_contact" type="contact">
+                <contact>
+                    <collision>${prefix}pad_fixed_link_collision</collision>
+                </contact>
+                <update_rate>500</update_rate>
+                <topic>${prefix}pad_fixed_link/contact</topic>
+            </sensor>
+        </gazebo>
+
+        <!-- moving jaw — the ONE actuated DOF -->
+        <link name="${prefix}jaw_moving_link">
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.02"/>
+                <inertia ixx="1.0e-6" ixy="0.0" ixz="0.0"
+                         iyy="1.0e-6" iyz="0.0" izz="1.0e-6"/>
+            </inertial>
+        </link>
+
+        <joint name="${prefix}gripper_jaw_joint" type="prismatic">
+            <parent link="${prefix}gripper_base_link"/>
+            <child link="${prefix}jaw_moving_link"/>
+            <!-- axis -1 0 0: increasing q moves toward the fixed jaw (-X),
+                 so aperture DECREASES with increasing q, same sign
+                 convention as the vendor master joint (increasing angle ->
+                 closing), per docs/GRIPPER_REDESIGN_DESIGN.md §3.2. -->
+            <origin xyz="${MOVING_JAW_X0} 0 ${LZ}" rpy="0 0 0"/>
+            <axis xyz="-1 0 0"/>
+            <limit lower="0.0" upper="${A0}" velocity="${jaw_velocity}" effort="${jaw_effort}"/>
+        </joint>
+
+        <link name="${prefix}pad_moving_link">
+            <visual>
+                <geometry>
+                    <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
+                </geometry>
+            </visual>
+            <collision>
+                <geometry>
+                    <box size="${pad_thickness_m} ${pad_width_m} ${pad_height_m}"/>
+                </geometry>
+            </collision>
+            <inertial>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <mass value="0.01"/>
+                <inertia ixx="1.0e-7" ixy="0.0" ixz="0.0"
+                         iyy="1.0e-7" iyz="0.0" izz="1.0e-7"/>
+            </inertial>
+        </link>
+
+        <joint name="${prefix}pad_moving_joint" type="fixed">
+            <parent link="${prefix}jaw_moving_link"/>
+            <child link="${prefix}pad_moving_link"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </joint>
+
+        <gazebo reference="${prefix}pad_moving_link">
+            <collision>
+                <surface>
+                    <friction>
+                        <ode>
+                            <mu>100000.0</mu>
+                            <mu2>100000.0</mu2>
+                        </ode>
+                    </friction>
+                    <contact>
+                        <ode>
+                            <kp>1e+5</kp>
+                            <kd>1</kd>
+                            <soft_cfm>0</soft_cfm>
+                            <soft_erp>0.2</soft_erp>
+                            <min_depth>0.002</min_depth>
+                            <max_vel>0</max_vel>
+                        </ode>
+                    </contact>
+                </surface>
+            </collision>
+            <sensor name="${prefix}pad_moving_contact" type="contact">
+                <contact>
+                    <collision>${prefix}pad_moving_link_collision</collision>
+                </contact>
+                <update_rate>500</update_rate>
+                <topic>${prefix}pad_moving_link/contact</topic>
+            </sensor>
+        </gazebo>
+
+    </xacro:macro>
+</robot>

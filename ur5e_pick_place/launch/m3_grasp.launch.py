@@ -18,6 +18,7 @@ WHY THE YAML IS READ HERE AND NOT IN C++
 
 import importlib.util
 import os
+from pathlib import Path
 
 import yaml
 from launch import LaunchDescription
@@ -25,6 +26,14 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
+
+
+# install/.../launch is a symlink to this source file in the active colcon
+# workspace, so resolving this file yields the project root independently of
+# HOME. Gazebo uses HOME only for writable runtime state.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = PROJECT_ROOT / "config"
+SCRIPT_LIB_DIR = PROJECT_ROOT / "scripts/lib"
 
 
 def _load_yaml(path, what):
@@ -38,7 +47,7 @@ def _load_scene_xacro_args_module():
     # Single source for scene.yaml's robot.base_pose -> xacro mapping
     # strings, shared with every launch file that spawns a robot model —
     # see config/scene_xacro_args.py for why this exists.
-    path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    path = CONFIG_DIR / "scene_xacro_args.py"
     spec = importlib.util.spec_from_file_location("scene_xacro_args", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -52,8 +61,23 @@ def _load_gripper_geometry_module():
     # along the approach axis across the aperture range, so an arbitrary
     # "open" angle is a vertical motion as well as a lateral one, with the
     # object sitting on the table underneath the place descent.
-    path = os.path.expanduser("~/ur5e_pickplace/scripts/lib/gripper_geometry.py")
+    path = SCRIPT_LIB_DIR / "gripper_geometry.py"
     spec = importlib.util.spec_from_file_location("gripper_geometry", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_parallel_jaw_geometry_module():
+    # scripts/lib/parallel_jaw_geometry.py -- the SINGLE SOURCE for
+    # gripper_model:=parallel_jaw's geometry formulas (aperture(q)=0.085-q,
+    # grasp_centre_offset(q)=q/2, preclose_aperture, etc.). m3_grasp.cpp does
+    # NOT reimplement these in C++; every parallel-jaw geometric value is
+    # computed HERE, launch-side, and passed down as an already-resolved ROS
+    # parameter, same treatment as fingertip_grasp_theta above for the vendor
+    # gripper.
+    path = SCRIPT_LIB_DIR / "parallel_jaw_geometry.py"
+    spec = importlib.util.spec_from_file_location("parallel_jaw_geometry", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -68,6 +92,42 @@ def _setup(context, *args, **kwargs):
     close_and_hold_only = (
         LaunchConfiguration("close_and_hold_only").perform(context).lower() == "true"
     )
+    use_perceived_position = (
+        LaunchConfiguration("use_perceived_position").perform(context).lower() == "true"
+    )
+    require_perception = (
+        LaunchConfiguration("require_perception").perform(context).lower() == "true"
+    )
+    pregrasp_only = (
+        LaunchConfiguration("pregrasp_only").perform(context).lower() == "true"
+    )
+    descent_only = (
+        LaunchConfiguration("descent_only").perform(context).lower() == "true"
+    )
+    grasp_only = LaunchConfiguration("grasp_only").perform(context).lower() == "true"
+    lift_only = LaunchConfiguration("lift_only").perform(context).lower() == "true"
+    transport_only = (
+        LaunchConfiguration("transport_only").perform(context).lower() == "true"
+    )
+    pre_lift_barrier_file = LaunchConfiguration("pre_lift_barrier_file").perform(context)
+    pre_lift_barrier_timeout_s = float(
+        LaunchConfiguration("pre_lift_barrier_timeout_s").perform(context)
+    )
+    pregrasp_joint_target_raw = LaunchConfiguration("pregrasp_joint_target").perform(context)
+    try:
+        pregrasp_joint_target = yaml.safe_load(pregrasp_joint_target_raw)
+    except yaml.YAMLError as exc:
+        raise RuntimeError(
+            "CONFIG_ERROR: pregrasp_joint_target must be a YAML/ROS list of six numbers."
+        ) from exc
+    if pregrasp_joint_target is None:
+        pregrasp_joint_target = []
+    if not isinstance(pregrasp_joint_target, list):
+        raise RuntimeError("CONFIG_ERROR: pregrasp_joint_target must be a list.")
+    pregrasp_joint_target = [float(v) for v in pregrasp_joint_target]
+    experiment_cartesian_fjt_path = LaunchConfiguration(
+        "experiment_cartesian_fjt_path"
+    ).perform(context)
 
     scene = _load_yaml(scene_file, "scene.yaml")
     grasp_table = _load_yaml(grasp_table_file, "grasp_table.yaml")
@@ -128,6 +188,59 @@ def _setup(context, *args, **kwargs):
     # cross-check field still disagrees with the derivation.
     object_width_m = scene_xacro_args.resolve_grasp_width_m(scene)
 
+    # --- gripper_model dispatch (2026-08-25) ---------------------------------
+    # "robotiq_linkage" (default): every line below this block that reads
+    # gripper[...] / grasp[...] for the vendor gripper is UNCHANGED from
+    # before this arg existed. "parallel_jaw": opt-in, computed here from
+    # parallel_jaw_geometry.py using the object_width_m already resolved
+    # above, and dispatched into the m3_node parameters dict further down --
+    # see that dict's own gripper_model-conditioned entries.
+    gripper_model = LaunchConfiguration("gripper_model").perform(context)
+    if gripper_model not in ("robotiq_linkage", "parallel_jaw"):
+        raise RuntimeError(
+            f"CONFIG_ERROR: gripper_model='{gripper_model}' is not recognised. "
+            "Must be 'robotiq_linkage' (default) or 'parallel_jaw'."
+        )
+    is_parallel_jaw = gripper_model == "parallel_jaw"
+
+    pj_params = {}
+    if is_parallel_jaw:
+        pjg = _load_parallel_jaw_geometry_module()
+        pj_preclose_aperture_m = pjg.preclose_aperture_m(object_width_m)
+        pj_q_preclose = pjg.q_for_aperture(pj_preclose_aperture_m)
+        pj_q_final_expected = pjg.q_for_width(object_width_m)
+        # First-contact effort ceiling and stall semantics are FROZEN by the
+        # pre-contact calibration checkpoint (2026-08-25): 5.0 N, derived
+        # from the 0.7212 N static-retention requirement (m=0.15kg,
+        # mu_eff=1.0202) with headroom below the URDF's 20 N joint limit --
+        # not retuned here.
+        PARALLEL_JAW_FIRST_CONTACT_MAX_EFFORT_N = 5.0
+        # Explicitly-derived linear tolerance for the informational
+        # grasp-success check -- see m3_grasp.cpp's pj_grasp_tolerance_m
+        # comment for why this is its own parameter, never grasp_tolerance_rad
+        # reinterpreted. Same order of magnitude as the controller's own
+        # goal_tolerance (0.5mm, controllers.yaml), rounded to a clean number,
+        # analogous to RELEASE_CLEARANCE_M above (a margin to pick, not a
+        # geometric fact to derive).
+        PARALLEL_JAW_GRASP_TOLERANCE_M = 0.001
+        pj_params = {
+            "gripper_model": gripper_model,
+            "parallel_jaw_q_preclose": pj_q_preclose,
+            "parallel_jaw_q_final_expected": pj_q_final_expected,
+            "parallel_jaw_q_close_commanded": pjg.Q_MAX_M,
+            "parallel_jaw_preclose_offset_x_m": pjg.preclose_pose_offset_m(object_width_m),
+            "parallel_jaw_tcp_offset_z_m": pjg.TCP_OFFSET_Z_M,
+            "parallel_jaw_grasp_tolerance_m": PARALLEL_JAW_GRASP_TOLERANCE_M,
+        }
+        gripper_ctrl_value = "parallel_jaw_gripper_controller"
+        actuated_joint_value = "gripper_jaw_joint"
+        gripper_max_effort_value = PARALLEL_JAW_FIRST_CONTACT_MAX_EFFORT_N
+    else:
+        pj_params = {"gripper_model": gripper_model}
+        gripper_ctrl_value = "gripper_controller"
+        actuated_joint_value = gripper["actuated_joint"]
+        gripper_max_effort_value = float(gripper["max_effort"])
+
     pick_pose = [
         float(object_pose["x"]), float(object_pose["y"]), float(object_pose["z"]),
         float(object_pose["roll"]), float(object_pose["pitch"]), float(object_pose["yaw"]),
@@ -153,10 +266,15 @@ def _setup(context, *args, **kwargs):
     # clearance is enough" isn't a geometric fact to derive, it's a margin to
     # pick.
     RELEASE_CLEARANCE_M = 0.010
-    gripper_geometry = _load_gripper_geometry_module()
-    release_position_rad = gripper_geometry.theta_for_width(
-        object_width_m + RELEASE_CLEARANCE_M
-    )
+    if is_parallel_jaw:
+        # Full-open q = 0.0 m (resulting aperture = 0.085 m), guaranteed to clear any object dimension.
+        # Do not reuse object-width-based release logic for parallel_jaw.
+        release_position_rad = 0.0
+    else:
+        gripper_geometry = _load_gripper_geometry_module()
+        release_position_rad = gripper_geometry.theta_for_width(
+            object_width_m + RELEASE_CLEARANCE_M
+        )
 
     world_frame = frames["world"]
     flange_frame = frames["flange"]
@@ -195,15 +313,103 @@ def _setup(context, *args, **kwargs):
         ],
     )
 
-    # Same base-pose-mismatch fix as m2's launch file — see that file's
-    # comment for why this exists.
+    controllers_file = (
+        "config/moveit_controllers_parallel_jaw.yaml"
+        if is_parallel_jaw
+        else "config/moveit_controllers.yaml"
+    )
     moveit_config = (
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
         )
-        .robot_description(mappings={**base_args, **gripper_args})
+        .robot_description(
+            mappings={**base_args, **gripper_args, "gripper_model": gripper_model}
+        )
+        .robot_description_semantic(
+            file_path="config/ur5e_robotiq.srdf.xacro",
+            mappings={"gripper_model": gripper_model},
+        )
+        .trajectory_execution(file_path=controllers_file)
         .to_moveit_configs()
     )
+
+    node_params = {
+        "use_sim_time": True,
+        "world_frame": world_frame,
+        "grasp_frame_name": grasp_frame_name,
+        "place_frame_name": place_frame_name,
+        "tool0_frame": flange_frame,
+        "standoff": float(grasp["standoff"]),
+        "retreat": float(grasp["retreat"]),
+        "slip_sample_dwell_s": float(grasp["slip_sample_dwell_s"]),
+        "marker_file_prefix": marker_file_prefix,
+        "release_position_rad": release_position_rad,
+        "tcp_offset": float(grasp["tcp_offset"]),
+        "pad_centre_offset": float(grasp["pad_centre_offset"]),
+        "tf_lookup_timeout_s": float(thresholds["tf_lookup_timeout_s"]),
+        "cartesian_fraction_min": float(thresholds["cartesian_fraction_min"]),
+        "grasp_pose_error_max_m": float(thresholds["grasp_pose_error_max_m"]),
+        "planning_time_s": float(thresholds["planning_time_s"]),
+        "plan_attempts": int(thresholds["plan_attempts"]),
+        "velocity_scaling": 0.1,
+        "acceleration_scaling": 0.1,
+        "eef_step": 0.01,
+        "csv_path": csv_path,
+        "grasp_mode": grasp_mode,
+        "gt_wrist3_link_name": "wrist_3_link",
+        "gz_world": world,
+        "expected_base_xyz": [
+            float(base_pose["x"]), float(base_pose["y"]), float(base_pose["z"]),
+        ],
+        "expected_base_rpy": [
+            float(base_pose["roll"]), float(base_pose["pitch"]), float(base_pose["yaw"]),
+        ],
+        "gripper_ctrl": gripper_ctrl_value,
+        "actuated_joint": actuated_joint_value,
+        "gripper_command_timeout_s": float(gripper["command_timeout_s"]),
+        "gripper_max_effort": gripper_max_effort_value,
+        "object_width_m": object_width_m,
+        **pj_params,
+        "grasp_table_widths_m": grasp_table_widths_m,
+        "grasp_table_grip_angles_rad": grasp_table_grip_angles_rad,
+        "grasp_tolerance_rad": float(grasp["grasp_tolerance_rad"]),
+        "preclose_margin_rad": float(grasp["preclose_margin_rad"]),
+        "grasp_loss_threshold_rad": float(grasp["grasp_loss_threshold_rad"]),
+        "close_and_hold_only": close_and_hold_only,
+        "use_perceived_position": use_perceived_position,
+        "perceived_position_topic": "object_detector/position_world",
+        "perceived_position_timeout_s": float(
+            LaunchConfiguration("perceived_position_timeout_s").perform(context)
+        ),
+        "object_height_m": float(object_size[2]),
+        "require_perception": require_perception,
+        "pregrasp_only": pregrasp_only,
+        "descent_only": descent_only,
+        "grasp_only": grasp_only,
+        "lift_only": lift_only,
+        "transport_only": transport_only,
+        "pre_lift_barrier_file": pre_lift_barrier_file,
+        "pre_lift_barrier_timeout_s": pre_lift_barrier_timeout_s,
+        "m1_joint_names": [str(j) for j in scene["robot"]["arm_joints"]],
+        "m1_goal_positions": [
+            float(v) for v in scene["milestones"]["m1"]["goal_positions"]
+        ],
+        "experiment_cartesian_fjt_path": experiment_cartesian_fjt_path,
+        "stationary_velocity_eps": float(
+            LaunchConfiguration("stationary_velocity_eps").perform(context)
+        ),
+        "stationary_consecutive_samples": int(
+            LaunchConfiguration("stationary_consecutive_samples").perform(context)
+        ),
+        "stationary_timeout_s": float(
+            LaunchConfiguration("stationary_timeout_s").perform(context)
+        ),
+        "pregrasp_pose_error_max_m": float(
+            LaunchConfiguration("pregrasp_pose_error_max_m").perform(context)
+        ),
+    }
+    if pregrasp_joint_target:
+        node_params["pregrasp_joint_target"] = pregrasp_joint_target
 
     m3_node = Node(
         package="ur5e_pick_place",
@@ -217,49 +423,7 @@ def _setup(context, *args, **kwargs):
             moveit_config.robot_description_kinematics,
             moveit_config.planning_pipelines,
             moveit_config.joint_limits,
-            {
-                "use_sim_time": True,
-                "world_frame": world_frame,
-                "grasp_frame_name": grasp_frame_name,
-                "place_frame_name": place_frame_name,
-                "tool0_frame": flange_frame,
-                "standoff": float(grasp["standoff"]),
-                "retreat": float(grasp["retreat"]),
-                "slip_sample_dwell_s": float(grasp["slip_sample_dwell_s"]),
-                "marker_file_prefix": marker_file_prefix,
-                "release_position_rad": release_position_rad,
-                "tcp_offset": float(grasp["tcp_offset"]),
-                "pad_centre_offset": float(grasp["pad_centre_offset"]),
-                "tf_lookup_timeout_s": float(thresholds["tf_lookup_timeout_s"]),
-                "cartesian_fraction_min": float(thresholds["cartesian_fraction_min"]),
-                "grasp_pose_error_max_m": float(thresholds["grasp_pose_error_max_m"]),
-                "planning_time_s": float(thresholds["planning_time_s"]),
-                "plan_attempts": int(thresholds["plan_attempts"]),
-                "velocity_scaling": 0.1,
-                "acceleration_scaling": 0.1,
-                "eef_step": 0.01,
-                "csv_path": csv_path,
-                "grasp_mode": grasp_mode,
-                "gt_wrist3_link_name": "wrist_3_link",
-                "gz_world": world,
-                "expected_base_xyz": [
-                    float(base_pose["x"]), float(base_pose["y"]), float(base_pose["z"]),
-                ],
-                "expected_base_rpy": [
-                    float(base_pose["roll"]), float(base_pose["pitch"]), float(base_pose["yaw"]),
-                ],
-                "gripper_ctrl": "gripper_controller",
-                "actuated_joint": gripper["actuated_joint"],
-                "gripper_command_timeout_s": float(gripper["command_timeout_s"]),
-                "gripper_max_effort": float(gripper["max_effort"]),
-                "object_width_m": object_width_m,
-                "grasp_table_widths_m": grasp_table_widths_m,
-                "grasp_table_grip_angles_rad": grasp_table_grip_angles_rad,
-                "grasp_tolerance_rad": float(grasp["grasp_tolerance_rad"]),
-                "preclose_margin_rad": float(grasp["preclose_margin_rad"]),
-                "grasp_loss_threshold_rad": float(grasp["grasp_loss_threshold_rad"]),
-                "close_and_hold_only": close_and_hold_only,
-            },
+            node_params,
         ],
     )
 
@@ -267,8 +431,8 @@ def _setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    default_scene = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
-    default_grasp_table = os.path.expanduser("~/ur5e_pickplace/config/grasp_table.yaml")
+    default_scene = str(CONFIG_DIR / "scene.yaml")
+    default_grasp_table = str(CONFIG_DIR / "grasp_table.yaml")
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -311,6 +475,128 @@ def generate_launch_description():
                 "as normal, record the close result, then skip the entire "
                 "attempted_transport block and go straight to the final summary/CSV "
                 "and a clean exit. See m3_grasp.cpp's close_and_hold_only comment.",
+            ),
+            DeclareLaunchArgument(
+                "use_perceived_position",
+                default_value="false",
+                description="Use one world-frame RGB-D position for the pick. "
+                "false preserves the configured classical pipeline.",
+            ),
+            DeclareLaunchArgument(
+                "require_perception",
+                default_value="false",
+                description="Strict perception mode. true => a perception "
+                "timeout is a typed PERCEPTION_TIMEOUT failure that plans and "
+                "executes nothing; there is NO fall back to scene.yaml. "
+                "Required for Milestone F1 evidence.",
+            ),
+            DeclareLaunchArgument(
+                "pregrasp_only",
+                default_value="false",
+                description="Milestone F1 stop mode. Stop immediately after pre-grasp "
+                "pose is executed and verified. No descent, pre-close, gripper "
+                "command, lift, transport, place or release. Not the same as "
+                "close_and_hold_only, which stops after contact.",
+            ),
+            DeclareLaunchArgument(
+                "descent_only",
+                default_value="false",
+                description="Stage-2 descent validation stop mode. Stop after Stage-2 "
+                "Cartesian descent and ground-truth pose verification. No gripper "
+                "closure command, no lift, no transport, no place or release.",
+            ),
+            DeclareLaunchArgument(
+                "pregrasp_joint_target",
+                default_value="[]",
+                description="Experiment-only explicit Stage-1 arm target in scene arm_joints order. "
+                "Empty preserves the normal pregrasp pose-goal IK behavior.",
+            ),
+            DeclareLaunchArgument(
+                "experiment_cartesian_fjt_path",
+                default_value="",
+                description="Optional experiment-only path for the exact post-scaling Stage-2 trajectory "
+                "passed to MoveIt execution.",
+            ),
+            DeclareLaunchArgument(
+                "grasp_only",
+                default_value="false",
+                description="Milestone F2 stop mode. Run the existing pre-grasp, "
+                "pre-close, Cartesian descent, grasp-pose verification, and direct-"
+                "effort gripper close/hold path, then stop before lift, transport, "
+                "place, or release. Mutually exclusive with pregrasp_only.",
+            ),
+            DeclareLaunchArgument(
+                "lift_only",
+                default_value="false",
+                description="Milestone F3 execution boundary. Complete grasp and the "
+                "existing Stage-3 lift, post-lift grasp-loss check, and full dwell, "
+                "then stop before TRANSPORT_BEGIN. Mutually exclusive with all other "
+                "boundary modes. F3 remains unvalidated until measured evidence passes.",
+            ),
+            DeclareLaunchArgument(
+                "transport_only",
+                default_value="false",
+                description="Transport execution boundary. Complete Stage 4 transport and dwell, "
+                "then stop before PLACE_DESCEND_BEGIN. Mutually exclusive with all other boundary modes.",
+            ),
+            DeclareLaunchArgument(
+                "pre_lift_barrier_file",
+                default_value="",
+                description="Evaluation-only pre-lift barrier. Empty (default) "
+                "disables it and preserves existing behaviour exactly. When set "
+                "AND lift_only is true, m3_grasp establishes the grasp, touches "
+                "<marker_file_prefix>.pre_lift_ready, and blocks immediately "
+                "before the lift until this file appears. Synchronisation only: "
+                "no controller, gain, physics, perception, grasp, geometry, "
+                "transport, place or release behaviour changes. See "
+                "docs/F3_P12_5_LIFT_PLAN.md.",
+            ),
+            DeclareLaunchArgument(
+                "pre_lift_barrier_timeout_s",
+                default_value="300.0",
+                description="Wall-clock seconds to wait for the pre-lift barrier "
+                "release before failing with PRE_LIFT_BARRIER_TIMEOUT. On timeout "
+                "the lift is NOT attempted and no transport, place or release "
+                "occurs. Ignored when pre_lift_barrier_file is empty.",
+            ),
+            DeclareLaunchArgument(
+                "stationary_velocity_eps",
+                default_value="0.001",
+                description="Max |joint velocity| (rad/s) counting as stationary "
+                "at M1 before perception is accepted.",
+            ),
+            DeclareLaunchArgument(
+                "stationary_consecutive_samples",
+                default_value="6",
+                description="Consecutive below-threshold /joint_states samples "
+                "required. One sample is not evidence of rest.",
+            ),
+            DeclareLaunchArgument(
+                "stationary_timeout_s",
+                default_value="25.0",
+                description="Give up waiting for M1 stationarity after this long.",
+            ),
+            DeclareLaunchArgument(
+                "pregrasp_pose_error_max_m",
+                default_value="0.010",
+                description="Max ground-truth TCP error against the commanded "
+                "pre-grasp pose in pregrasp_only mode.",
+            ),
+            DeclareLaunchArgument(
+                "perceived_position_timeout_s",
+                default_value="2.0",
+                description="Bounded wait for object_detector/position_world; "
+                "timeout falls back to scene.yaml's configured pick position.",
+            ),
+            DeclareLaunchArgument(
+                "gripper_model",
+                default_value="robotiq_linkage",
+                description="robotiq_linkage (default): unchanged vendor 2F-85 "
+                "linkage path (grasp_table.yaml, radians, gripper_controller). "
+                "parallel_jaw: opt-in docs/GRIPPER_REDESIGN_DESIGN.md path "
+                "(metres, newtons, parallel_jaw_gripper_controller). The "
+                "matching gripper_model:=parallel_jaw must ALSO be passed to "
+                "ur5e_robotiq_sim_control.launch.py and move_group.launch.py.",
             ),
             OpaqueFunction(function=_setup),
         ]

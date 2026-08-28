@@ -3,6 +3,14 @@
 # Three controllers, matching what M0-B checks for. The names here MUST match
 # what moveit_controllers.yaml declares once Setup Assistant has run; that
 # mismatch is the single seam M0-B exists to catch.
+#
+# parallel_jaw_gripper_controller (added 2026-08-25, V1) is a FOURTH,
+# opt-in-only entry for the docs/GRIPPER_REDESIGN_DESIGN.md parallel-jaw
+# gripper (gripper_model:=parallel_jaw). Declaring it here does not affect
+# the vendor/default path: ros2_control only instantiates a controller when
+# a spawner explicitly loads+activates it by name, and
+# ur5e_robotiq_sim_control.launch.py's default gripper_model:=robotiq_linkage
+# never spawns this one. The three controllers above are UNCHANGED.
 
 controller_manager:
   ros__parameters:
@@ -15,6 +23,9 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
 
     gripper_controller:
+      type: effort_controllers/GripperActionController
+
+    parallel_jaw_gripper_controller:
       type: effort_controllers/GripperActionController
 
 # ---------------------------------------------------------------------------
@@ -35,8 +46,14 @@ arm_controller:
     allow_partial_joints_goal: false
     open_loop_control: true
     constraints:
-      stopped_velocity_tolerance: 0.2
-      goal_time: 0.0
+      goal_time: 1.5
+      stopped_velocity_tolerance: 0.05
+      shoulder_pan_joint: {trajectory: 0.20, goal: 0.01}
+      shoulder_lift_joint: {trajectory: 0.20, goal: 0.01}
+      elbow_joint: {trajectory: 0.20, goal: 0.01}
+      wrist_1_joint: {trajectory: 0.20, goal: 0.01}
+      wrist_2_joint: {trajectory: 0.20, goal: 0.01}
+      wrist_3_joint: {trajectory: 0.20, goal: 0.01}
 
 # ---------------------------------------------------------------------------
 gripper_controller:
@@ -80,6 +97,85 @@ gripper_controller:
 
     gains:
       robotiq_85_left_knuckle_joint:
+        p: 50.0
+        d: 2.0
+        i: 0.0
+        i_clamp: 0.0
+
+# ---------------------------------------------------------------------------
+# parallel_jaw_gripper_controller -- opt-in only, added 2026-08-25 for V1.
+# Never active unless gripper_model:=parallel_jaw AND
+# ur5e_robotiq_sim_control.launch.py's gripper_model launch arg selects it;
+# the gripper_controller block above is untouched.
+parallel_jaw_gripper_controller:
+  ros__parameters:
+    # EXACTLY ONE JOINT: gripper_jaw_joint, the only actuated DOF in
+    # parallel_jaw_gripper.urdf.xacro. No mimic/follower joint exists in this
+    # model (see docs/GRIPPER_REDESIGN_DESIGN.md Section 3.9) so there is
+    # nothing else this controller could claim.
+    joint: gripper_jaw_joint
+
+    # Joint-space tolerance on reaching the commanded position, METRES (this
+    # joint is prismatic -- not radians, and NOT the vendor's 0.01 rad number
+    # reused under a new name). 0.5 mm: comfortably above expected control
+    # resolution, far below the 30/45/85 mm features this controller is
+    # commanded across. Not empirically derived; a placeholder pending a real
+    # measurement, chosen for adequacy, not to make any specific run pass.
+    goal_tolerance: 0.0005
+
+    # Ceiling in NEWTONS (this joint's effort interface is a physical force,
+    # not the vendor's torque-through-a-lever-arm quantity -- see
+    # docs/GRIPPER_REDESIGN_DESIGN.md Section 3.2). Matches
+    # parallel_jaw_gripper.urdf.xacro's own jaw_effort default (20.0 N),
+    # which is itself a ~28x ceiling over the 0.72 N required for
+    # mu_eff=1.0202 at 0.15 kg -- not tuned here, just kept consistent with
+    # the URDF's own declared limit.
+    max_effort: 20.0
+
+    # Stalling is the normal end state of a successful grasp: the pads meet
+    # the object and stop moving short of the commanded position.
+    allow_stalling: true
+
+    # DERIVED 2026-08-25 from the V1 free-space open->close->open recording
+    # (6330 native-sim-time /joint_states samples, gripper_jaw_joint
+    # velocity, 500 Hz nominal) -- NOT copied from the vendor's rad/s
+    # value, and NOT tuned against any object/contact run (none has
+    # happened yet). Method mirrors the vendor's own derivation
+    # (docs/gripper_stall_velocity_noise_20260806.log): measure the
+    # steady-state |velocity| noise body, pick a threshold that clears it
+    # with margin.
+    #
+    # Excluding the first 0.20s of each post-goal HOLD window (the real
+    # PID-settling transient, measured settle_dt ~0.064-0.066s -- included
+    # samples would look like "noise" but are actually still-converging
+    # motion) left 4551 steady-state samples:
+    #   mean |v|  = 7.96e-08 m/s   stdev = 5.05e-07 m/s
+    #   p95 |v|   = 5.83e-08 m/s   p99 |v| = 3.10e-06 m/s
+    #   max |v|   = 5.99e-06 m/s   (pooled across all 7 hold windows)
+    # Separately confirmed: during ACTIVE motion (before goal-reached),
+    # velocity never dips below 2.0e-5 m/s while still outside tolerance
+    # in any of the 6 real (non-trivial) commanded segments -- zero false-
+    # stall risk at this threshold in the measured data.
+    #   stall_velocity_threshold = 2.0e-5 m/s ~= 3.3x measured steady-state
+    #     max (5.99e-6), ~6.4x measured p99 (3.10e-6).
+    #   stall_timeout = 0.15 s ~= 2.3x the measured worst-case settle_dt
+    #     (0.066s); zero continuous below-threshold run was observed in any
+    #     real active segment before goal-reached, so no larger minimum is
+    #     forced by the data.
+    # Derived pre-contact (see above), but no longer untested against real
+    # stalls: this controller has since closed on an object in every G1-G5
+    # Generalization Stage-1 trial and the 5/5 Scene-A repeatability
+    # campaign (HANDOFF.md), all under these unchanged values. No stall
+    # false-positive/negative has been observed in that evidence; revisit
+    # only if a future run's evidence contradicts that.
+    stall_velocity_threshold: 0.00002
+    stall_timeout: 0.15
+
+    gains:
+      gripper_jaw_joint:
+        # Carried over UNCHANGED from the vendor joint's own starting values
+        # (docs/GRIPPER_REDESIGN_DESIGN.md Section 3.9: "carried over as a
+        # starting point"), not retuned for this joint or this run.
         p: 50.0
         d: 2.0
         i: 0.0

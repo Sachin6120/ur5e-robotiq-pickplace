@@ -1,0 +1,96 @@
+<?xml version="1.0" ?>
+<!--
+  tabletop_rgbd.sdf : empty.sdf plus the rendering-sensor system.
+
+  WHY THIS FILE EXISTS
+    Gazebo Harmonic's stock empty.sdf loads exactly four systems: Physics,
+    UserCommands, SceneBroadcaster and Contact. It does NOT load
+    gz-sim-sensors-system, which is the system that actually renders camera
+    sensors. A camera sensor declared in the robot URDF against the stock
+    world produces an entity that never renders and never publishes: no
+    error, no warning, just no topic. That is the single reason a project
+    world file is needed at all.
+
+  WHAT CHANGED vs THE STOCK empty.sdf
+    Exactly one addition: the gz-sim-sensors-system plugin block below.
+    Physics, world name, step size, sun and ground plane are untouched.
+
+  WORLD NAME IS DELIBERATELY STILL "empty"
+    scripts/m0_verify.sh, scripts/lib/gz_settle.sh, sample_pose.py and every
+    capture script in docs/ are path-keyed on /world/empty/... Renaming the
+    world would break all of them silently. The file name differs; the world
+    name must not.
+-->
+<sdf version="1.6">
+  <world name="empty">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact">
+    </plugin>
+
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

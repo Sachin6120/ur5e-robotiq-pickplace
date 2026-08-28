@@ -131,6 +131,15 @@ struct TransportParams
   // planning the transport almost immediately after LIFT_DONE fires.
   double slip_sample_dwell_s = 2.0;
 
+  // Opt-in F3 boundary: complete Stage 3, its grasp-loss check, and the full
+  // post-LIFT_DONE dwell, then return SUCCESS before TRANSPORT_BEGIN.
+  // false preserves the full lift/transport/place/release/retreat lifecycle.
+  bool lift_only = false;
+
+  // Opt-in Stage 4 boundary: complete Stage 4 transport and its post-TRANSPORT_DONE dwell,
+  // then return SUCCESS before PLACE_DESCEND_BEGIN.
+  bool transport_only = false;
+
   // Emitted verbatim in the stage markers so a CSV row can be tied back to a
   // specific cycle of a specific sim instance after the fact.
   int cycle_index = 0;

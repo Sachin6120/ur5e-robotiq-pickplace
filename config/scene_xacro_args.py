@@ -23,6 +23,10 @@
 #   load snippet.
 
 import math as _math
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def xacro_base_args(scene: dict) -> dict:
@@ -43,9 +47,8 @@ def _load_gripper_geometry_module():
     # import) — it lives in a different package's scripts/lib/, not next to
     # scene.yaml, and has no __init__.py chain to this file either.
     import importlib.util
-    import os
 
-    module_path = os.path.expanduser("~/ur5e_pickplace/scripts/lib/gripper_geometry.py")
+    module_path = PROJECT_ROOT / "scripts/lib/gripper_geometry.py"
     spec = importlib.util.spec_from_file_location("gripper_geometry", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

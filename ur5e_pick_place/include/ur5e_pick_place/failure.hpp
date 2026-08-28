@@ -28,10 +28,28 @@ enum class Result
   CONFIG_ERROR,             // required parameter missing or inconsistent
   POSE_VERIFY_FAILURE,      // execution reported SUCCESS but ground truth
                             // disagrees with the commanded pose
-  GRASP_LOST_DURING_LIFT    // actuated joint closed past
+  GRASP_LOST_DURING_LIFT,   // actuated joint closed past
                             // expected_grip_angle + grasp_loss_threshold_rad
                             // during the lift leg -- the object left the
                             // fingers under load; transport is not attempted
+  PRE_LIFT_BARRIER_TIMEOUT, // pre_lift_barrier_file was set and no external
+                            // release appeared before pre_lift_barrier_timeout_s.
+                            // Its OWN variant for the same reason
+                            // PERCEPTION_TIMEOUT is: the configuration was
+                            // fine and the grasp succeeded, an external
+                            // evaluator simply never released the barrier.
+                            // The lift is not attempted, and no transport,
+                            // place or release occurs.
+  PERCEPTION_TIMEOUT        // require_perception was set and no fresh, valid
+                            // perceived object position arrived before the
+                            // timeout. Deliberately its OWN variant and not
+                            // CONFIG_ERROR: the configuration was fine, the
+                            // sensor produced nothing usable. In strict mode
+                            // this aborts before any target is composed --
+                            // no motion, and explicitly no silent fall back
+                            // to the configured position, which would make a
+                            // perception failure indistinguishable from a
+                            // perception success in the evidence.
 };
 
 inline const char * to_string(Result r)
@@ -47,6 +65,8 @@ inline const char * to_string(Result r)
     case Result::CONFIG_ERROR:           return "CONFIG_ERROR";
     case Result::POSE_VERIFY_FAILURE:    return "POSE_VERIFY_FAILURE";
     case Result::GRASP_LOST_DURING_LIFT: return "GRASP_LOST_DURING_LIFT";
+    case Result::PRE_LIFT_BARRIER_TIMEOUT: return "PRE_LIFT_BARRIER_TIMEOUT";
+    case Result::PERCEPTION_TIMEOUT:     return "PERCEPTION_TIMEOUT";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the

@@ -356,13 +356,44 @@ grasp:
   # ~28mm/side inward pad inset from that reference point -- see
   # docs/HANDOFF_M3.md) against a measured ~8.7mm lateral positioning
   # error -- a lateral capture failure, not a vertical/knuckle one. 0.30
-  # targets ~0.1 rad pre-close (~12.6mm/side clearance, comfortably over
-  # the measured error) -- STILL UNVALIDATED, and trades away most of
-  # pre-close's original Z-descent-into-free-air benefit (only ~25% of the
-  # full closing motion happens before descent now, not ~90%). May reopen
-  # the original h=45mm stall-at-~0 symptom pre-close was built to fix.
-  # Test before trusting either number.
-  preclose_margin_rad: 0.30
+  # targeted ~0.1 rad pre-close (~12.6mm/side clearance, comfortably over
+  # the measured error), and traded away most of pre-close's original
+  # Z-descent-into-free-air benefit (only ~25% of the full closing motion
+  # happens before descent now, not ~90%).
+  #
+  # CURRENT VALUE, set 2026-08-23 and VALIDATED by Milestone F2:
+  # 0.4678679450464813. Against the unchanged expected grip angle
+  # 0.5378679450464813 rad and the unchanged max(0, expected - margin)
+  # calculation, this commands a descent pre-close target of exactly
+  # 0.070000 rad. It is FROZEN. Do not tune it.
+  #
+  # Why it changed from 0.30 (which commanded 0.2379 rad): under F2's
+  # perception-derived descent, 0.2379 rad let the RIGHT INNER KNUCKLE
+  # collision mesh -- not the fingertips -- reach the object's -X top edge
+  # in the last few mm of descent. Its oblique lower surface wedged the
+  # object along the closing axis, ~1.4-1.6mm, failing F2's <=1mm approach
+  # criterion. Proven by synchronized contact sensors: first contact was
+  # robotiq_85_right_inner_knuckle_link_collision vs pick_target::link::c,
+  # with object motion at the next 1ms pose sample. Large fingertip
+  # aperture was irrelevant because a more proximal mesh touched first.
+  #
+  # 0.130 rad was tried first and generalized only to Scene B; Scene A
+  # still contacted, because the actual FOLLOWER joints do not track the
+  # master deterministically while the linkage is relaxing (A's right
+  # inner sat ~0.058 rad more closed than B's at equal master angle).
+  # 0.070 rad was then selected from a real-collision-STL sweep evaluated
+  # against directly measured follower states, and validated scene by
+  # scene: A-D all reached Cartesian fraction 1.0 with 0.000000mm P1->P2
+  # disturbance, no premature contact, and minimum right-inner clearances
+  # of 1.198/6.841/7.680/3.603 mm. Strict no-object and a full classical
+  # regression also passed.
+  #
+  # Headroom warning: opening further costs reverse-travel time at the
+  # frozen 0.1 rad/s joint limit. 0.070 rad leaves only ~0.223s before the
+  # gripper helper's 5s first-result boundary; ~0.045 rad would cross it.
+  # See HANDOFF.md and docs/HANDOFF_RGBD_PERCEPTION.md sec 11 for the full
+  # evidence chain before changing this.
+  preclose_margin_rad: 0.4678679450464813
 
 # ---------------------------------------------------------------------------
 gripper:
@@ -397,30 +428,71 @@ gripper:
   #   joint_angle_for_width(object_width + clearance)
   preclose_clearance: 0.005  # m of aperture margin over object width
 
-  # How far PAST first contact to keep commanding closed. This is the grip-force
-  # knob in a position-controlled sim.
+  # How far PAST first contact to keep commanding closed. This WAS the
+  # grip-force knob back when the sim gripper was position-controlled.
   # UNITS: RADIANS OF ACTUATED JOINT ANGLE. Not metres of width.
-  squeeze: 0.020                    # M3 tuning knob
+  #
+  # STALE as of the direct-effort baseline (commit f33879d): production now
+  # uses effort_controllers/GripperActionController and grip force comes from
+  # commanded effort (max_effort below), not from an angle overshoot. Against
+  # a rigid object DART will not permit real interpenetration, so the joint
+  # physically cannot advance past geometric touch and this knob has nothing
+  # to act on. No production code reads grasp.squeeze -- m3_grasp.cpp mentions
+  # it only in comments explaining why an angle band cannot serve as a grasp
+  # verdict. Left in place unchanged; documentation note only.
+  squeeze: 0.020                    # M3 tuning knob (inert under direct effort)
 
   max_effort: 50.0                  # ceiling passed in GripperCommand [N]
   command_timeout_s: 5.0
 
-  # If M0-B finds the sim gripper is EFFORT-controlled rather than position-
-  # controlled, set this false. The squeeze knob above then no longer applies
-  # and commanded effort becomes the primary knob. Say so explicitly in the
-  # run log; do not silently reuse the position formula.
-  position_controlled: true         # confirmed: the whole SEVENTH-NINTH
-                                     # OVERRIDE effort history (robotiq_2f_85_
-                                     # macro.urdf.xacro) is built on this
-                                     # joint being position-controlled, not
-                                     # just an M0-B recon note anymore
+  # STALE KEY -- THE VALUE BELOW NO LONGER DESCRIBES THE PRODUCTION SYSTEM.
+  #
+  # The original note read: "If M0-B finds the sim gripper is EFFORT-controlled
+  # rather than position-controlled, set this false. The squeeze knob above
+  # then no longer applies and commanded effort becomes the primary knob."
+  # That condition has since been met. Commit f33879d switched the actuated
+  # master joint robotiq_85_left_knuckle_joint to
+  # effort_controllers/GripperActionController with PID P=50, D=2, I=0. Direct
+  # effort was what eliminated the destructive 18-43 Hz position-servo/contact
+  # limit cycle, and it is the baseline every M8-M10, prod_reg, F1 and F2
+  # result was measured on.
+  #
+  # The `true` below is therefore historically-worded and factually wrong for
+  # the current stack. It is left AS-IS deliberately: no production code reads
+  # grasp.position_controlled (verified by grep across the C++, Python and
+  # YAML sources), so changing it would alter nothing but is still a value
+  # change rather than a documentation fix, and this pass is documentation
+  # only. Authoritative sources for how the gripper is driven, in order:
+  # ur5e_robotiq_description/config/controllers.yaml, commit f33879d, and the
+  # M10 section of docs/HANDOFF_M3.md. Do not reintroduce the position
+  # controller or reuse the position formula on the strength of this key.
+  position_controlled: true         # STALE -- see the note above; the
+                                     # production gripper is direct-effort
+                                     # controlled. Unused by any code.
 
 # ---------------------------------------------------------------------------
 thresholds:
   cartesian_fraction_min: 0.95      # below this -> abort, logged reason
-  tf_lookup_timeout_s:    5.0       # exceeded -> abort
+  # tf_lookup_timeout_s: 5.0 -> 15.0 (undated, before Stage-1). Historical
+  # trigger: a genuine 2026-08-22 TF_LOOKUP_TIMEOUT during startup /tf_static
+  # discovery, at the then-current 2.0s deadline (observed wait 2.27s). The
+  # worst upper bound actually observed across every G1-G5 and 5/5
+  # repeatability run is 2.381s -- 15.0 was never approached and must NOT be
+  # described as a validated value, only as the deadline in force during the
+  # final G5 qualification. It changes only the clean-abort deadline, not any
+  # lookup's success condition (see static_scene_tf.cpp's timer comment for
+  # the related, separately-retained precaution).
+  tf_lookup_timeout_s:    15.0      # exceeded -> abort
   post_lift_slip_max_m:   0.005     # M3 pass criterion: 5 mm
-  plan_attempts:          20
+  # DIAGNOSABILITY (2026-08-27): 20 -> 1. With count>1 MoveIt takes the
+  # ompl::tools::ParallelPlan branch in ModelBasedPlanningContext::solve(),
+  # which never calls logPlannerStatus() -- so a planning failure is logged
+  # only as "Unable to solve the planning problem" with no OMPL PlannerStatus.
+  # That is exactly why the 2026-08-27 G5 transport PLAN_FAILURE (15.001 s)
+  # produced no diagnosable evidence. At 1 attempt the PlannerStatus
+  # (Invalid goal state / Timed out / ...) is emitted. Measured cost: none --
+  # this transport plan solves in 21-36 ms against a 15 s budget.
+  plan_attempts:          1
   planning_time_s:        15.0
   execute_timeout_s:      30.0
 

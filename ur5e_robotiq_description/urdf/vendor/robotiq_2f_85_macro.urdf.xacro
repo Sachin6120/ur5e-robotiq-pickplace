@@ -177,6 +177,7 @@
         fake_sensor_commands:=false
         include_ros2_control:=true
         com_port:=/dev/ttyUSB0
+        enable_diagnostic_contacts:=false
         fingertip_grasp_theta:=0.4029">
 
         <!-- ros2 control include -->
@@ -424,6 +425,25 @@
                 <topic>${prefix}robotiq_85_right_finger_tip_link/contact</topic>
             </sensor>
         </gazebo>
+
+        <!-- Evaluation-only collision observers. Disabled by default and
+             containing no geometry, surface, inertia, or controller data. -->
+        <xacro:if value="${enable_diagnostic_contacts}">
+          <gazebo reference="${prefix}robotiq_85_left_knuckle_link">
+            <sensor name="diag_left_outer_knuckle" type="contact"><contact><collision>robotiq_85_left_knuckle_link_collision</collision></contact><update_rate>1000</update_rate><topic>diag/left_outer_knuckle</topic></sensor>
+            <sensor name="diag_left_finger" type="contact"><contact><collision>robotiq_85_left_knuckle_link_fixed_joint_lump__robotiq_85_left_finger_link_collision_1</collision></contact><update_rate>1000</update_rate><topic>diag/left_finger</topic></sensor>
+          </gazebo>
+          <gazebo reference="${prefix}robotiq_85_right_knuckle_link">
+            <sensor name="diag_right_outer_knuckle" type="contact"><contact><collision>robotiq_85_right_knuckle_link_collision</collision></contact><update_rate>1000</update_rate><topic>diag/right_outer_knuckle</topic></sensor>
+            <sensor name="diag_right_finger" type="contact"><contact><collision>robotiq_85_right_knuckle_link_fixed_joint_lump__robotiq_85_right_finger_link_collision_1</collision></contact><update_rate>1000</update_rate><topic>diag/right_finger</topic></sensor>
+          </gazebo>
+          <gazebo reference="${prefix}robotiq_85_left_inner_knuckle_link">
+            <sensor name="diag_left_inner_knuckle" type="contact"><contact><collision>robotiq_85_left_inner_knuckle_link_collision</collision></contact><update_rate>1000</update_rate><topic>diag/left_inner_knuckle</topic></sensor>
+          </gazebo>
+          <gazebo reference="${prefix}robotiq_85_right_inner_knuckle_link">
+            <sensor name="diag_right_inner_knuckle" type="contact"><contact><collision>robotiq_85_right_inner_knuckle_link_collision</collision></contact><update_rate>1000</update_rate><topic>diag/right_inner_knuckle</topic></sensor>
+          </gazebo>
+        </xacro:if>
 
         <joint name="${prefix}robotiq_85_base_joint" type="fixed">
             <parent link="${parent}" />

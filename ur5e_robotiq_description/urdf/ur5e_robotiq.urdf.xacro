@@ -78,6 +78,13 @@
        Changing it here changes where the fingers point in the world. -->
   <xacro:arg name="gripper_rotation" default="0.0"/>
 
+  <!-- Fixed overhead RGB-D camera (eye-to-hand). OFF by default: with this
+       false the expanded URDF is byte-identical to the pre-camera baseline,
+       so the validated classical pipeline is unaffected unless a caller opts
+       in with enable_camera:=true. See the CAMERA block near the end of this
+       file for the mount derivation. -->
+  <xacro:arg name="enable_camera" default="false"/>
+
   <!-- Where the arm base is bolted, in the world frame. Keep consistent with
        the table pose in config/scene.yaml. -->
   <xacro:arg name="base_xyz" default="0 0 0"/>
@@ -93,6 +100,22 @@
        default below matches the object this project has used all session
        (45mm cube); do not rely on it for a different object. -->
   <xacro:arg name="fingertip_grasp_theta" default="0.4029"/>
+  <!-- Evaluation-only. Adds contact observers, never collision/physics data. -->
+  <xacro:arg name="enable_diagnostic_contacts" default="false"/>
+
+  <!-- OPT-IN gripper model selector, added for the DART-compatible
+       parallel-jaw redesign (docs/GRIPPER_REDESIGN_DESIGN.md). Default
+       "robotiq_linkage" reproduces the exact existing expansion: the
+       <xacro:if>/<xacro:unless> pair below is the ONLY change this selector
+       makes to that path, and merely including parallel_jaw_gripper.urdf.xacro
+       is inert unless gripper_model:=parallel_jaw actually invokes its macro.
+       "parallel_jaw" is the validated DART-compatible baseline: wired into
+       controllers.yaml (parallel_jaw_gripper_controller), MoveIt
+       (moveit_controllers_parallel_jaw.yaml), and confirmed by the 5/5
+       Scene-A repeatability campaign and the G1-G5 Generalization Stage-1
+       PASS (see HANDOFF.md). -->
+  <xacro:arg name="gripper_model" default="robotiq_linkage"/>
+  <xacro:property name="gripper_model" value="$(arg gripper_model)"/>
 
   <!-- Controller parameter file handed to the gz_ros2_control system plugin. -->
   <xacro:arg name="controllers_file"
@@ -127,6 +150,8 @@
        velocity limit dropped 0.5 to 0.1, see that file's own header for why. -->
   <xacro:include filename="$(find ur5e_robotiq_description)/urdf/vendor/robotiq_2f_85_macro.urdf.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+  <!-- Opt-in alternative gripper, validated baseline. See the gripper_model arg above. -->
+  <xacro:include filename="$(find ur5e_robotiq_description)/urdf/parallel_jaw_gripper.urdf.xacro"/>
 
   <!-- ===================================================================== -->
   <!-- World anchor                                                          -->
@@ -174,19 +199,42 @@
   <!-- Gripper                                                               -->
   <!-- ===================================================================== -->
   <!-- include_ros2_control defaults true, so the macro emits its own
-       <ros2_control> block. Do not also declare one for the gripper below. -->
-  <xacro:robotiq_gripper
-    name="RobotiqGripperHardware"
-    prefix="${tf_prefix}"
-    parent="${coupler_output_link}"
-    sim_ignition="$(arg sim_ignition)"
-    sim_isaac="false"
-    use_fake_hardware="false"
-    fake_sensor_commands="false"
-    include_ros2_control="true"
-    fingertip_grasp_theta="$(arg fingertip_grasp_theta)">
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-  </xacro:robotiq_gripper>
+       <ros2_control> block. Do not also declare one for the gripper below.
+       gripper_model:=robotiq_linkage (default) takes this branch, producing
+       an expansion identical to before gripper_model existed. -->
+  <xacro:if value="${gripper_model == 'robotiq_linkage'}">
+    <xacro:robotiq_gripper
+      name="RobotiqGripperHardware"
+      prefix="${tf_prefix}"
+      parent="${coupler_output_link}"
+      sim_ignition="$(arg sim_ignition)"
+      sim_isaac="false"
+      use_fake_hardware="false"
+      fake_sensor_commands="false"
+      include_ros2_control="true"
+      enable_diagnostic_contacts="$(arg enable_diagnostic_contacts)"
+      fingertip_grasp_theta="$(arg fingertip_grasp_theta)">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:robotiq_gripper>
+  </xacro:if>
+
+  <!-- gripper_model:=parallel_jaw — validated DART-compatible baseline, see
+       docs/GRIPPER_REDESIGN_DESIGN.md. Wired into controllers.yaml and
+       MoveIt (moveit_controllers_parallel_jaw.yaml); required baseline for
+       the 5/5 Scene-A repeatability campaign and G1-G5 Stage-1 PASS. -->
+  <xacro:if value="${gripper_model == 'parallel_jaw'}">
+    <xacro:parallel_jaw_gripper
+      name="ParallelJawGripperHardware"
+      prefix="${tf_prefix}"
+      parent="${coupler_output_link}"
+      sim_ignition="$(arg sim_ignition)"
+      sim_isaac="false"
+      use_fake_hardware="false"
+      fake_sensor_commands="false"
+      include_ros2_control="true">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:parallel_jaw_gripper>
+  </xacro:if>
 
   <!-- ===================================================================== -->
   <!-- Arm ros2_control                                                      -->
@@ -245,18 +293,29 @@
        order within a phase, and reversed order makes a live command look
        stale. See JointCmdProbe.cc's header for the full reasoning. Requires
        GZ_SIM_SYSTEM_PLUGIN_PATH to include docs/gz_joint_cmd_probe/build at
-       launch time, or gz-sim will fail to find the plugin at spawn. -->
-  <gazebo>
-    <plugin filename="JointCmdProbe" name="gz::sim::systems::JointCmdProbe">
-      <joint>robotiq_85_left_knuckle_joint</joint>
-      <joint>robotiq_85_right_knuckle_joint</joint>
-      <joint>robotiq_85_left_finger_tip_joint</joint>
-      <joint>robotiq_85_right_finger_tip_joint</joint>
-      <joint>robotiq_85_left_inner_knuckle_joint</joint>
-      <joint>robotiq_85_right_inner_knuckle_joint</joint>
-      <output>/tmp/joint_cmd_probe.csv</output>
-    </plugin>
-  </gazebo>
+       launch time, or gz-sim will fail to find the plugin at spawn.
+
+       GATED to gripper_model=='robotiq_linkage' (V1 fix, 2026-08-25): the
+       six <joint> names below are robotiq_85_* linkage joints that do not
+       exist under gripper_model:=parallel_jaw. Emitting this block
+       unconditionally would reference nonexistent joints under that model.
+       No equivalent diagnostic list is invented for parallel_jaw here;
+       that model has no mimic/follower joints for this probe to have any
+       reason to watch (see docs/GRIPPER_REDESIGN_DESIGN.md); add one only
+       if a future defect actually needs it. -->
+  <xacro:if value="${gripper_model == 'robotiq_linkage'}">
+    <gazebo>
+      <plugin filename="JointCmdProbe" name="gz::sim::systems::JointCmdProbe">
+        <joint>robotiq_85_left_knuckle_joint</joint>
+        <joint>robotiq_85_right_knuckle_joint</joint>
+        <joint>robotiq_85_left_finger_tip_joint</joint>
+        <joint>robotiq_85_right_finger_tip_joint</joint>
+        <joint>robotiq_85_left_inner_knuckle_joint</joint>
+        <joint>robotiq_85_right_inner_knuckle_joint</joint>
+        <output>/tmp/joint_cmd_probe.csv</output>
+      </plugin>
+    </gazebo>
+  </xacro:if>
 
   <!-- Gazebo's OWN joint state output, independent of ros2_control.
        This is not redundant with joint_state_broadcaster. It is the entire
@@ -280,6 +339,144 @@
             name="gz::sim::systems::JointStatePublisher">
     </plugin>
   </gazebo>
+
+  <!-- ===================================================================== -->
+  <!-- CAMERA — fixed overhead RGB-D (eye-to-hand)                           -->
+  <!-- ===================================================================== -->
+  <!-- MOUNT DERIVATION (from config/scene.yaml, not chosen by eye):
+         table.surface_z            = 0.750
+         object.pick_pose           = (0.450, -0.150, 0.7725)
+         object.place_pose          = (0.450, +0.200, 0.7725)
+         x is common to both poses  -> camera x = 0.450
+         y midpoint (-0.150+0.200)/2 = 0.025  -> camera y = 0.025
+         camera z = 2.400  => 1.650 m above the table surface.
+
+       HEIGHT HISTORY, so the number is auditable:
+         z = 1.600 was tried first (0.850 m above the table) and MEASURED to
+         fail the static visibility check: with the arm at its home pose the
+         UR5e upper arm reaches z = 1.394, only 0.206 m below the camera, and
+         occluded 46.1% of the required workspace rectangle (43.9% of the
+         whole frame). The original derivation accounted for the commanded
+         tool0 heights (max 1.044478) but not for the elbow/upper-arm
+         envelope, which sits far higher at home. z = 2.400 puts the same arm
+         1.006 m away against a 1.650 m table distance, so the arm subtends a
+         proportionally much smaller solid angle.
+
+       COVERAGE at 1.650 m with hfov=1.047 rad (60 deg) and 640x480:
+         horizontal footprint = 2*1.650*tan(30.000 deg) = 1.9053 m
+         vertical   footprint = 2*1.650*tan(23.409 deg) = 1.4283 m
+       Image x maps to world -Y, image y maps to world -X (see the optical
+       frame note below), so the visible ground rectangle is
+         world Y in [-0.928, +0.978]   table spans [-0.40, +0.40]
+         world X in [-0.264, +1.164]   table spans [-0.05, +1.15]
+       At this height the ENTIRE table is inside the frame in both axes,
+       which the 1.600 m mount could not do in x.
+
+       COST: raising the camera reduces object pixel density. Quantifying that
+       trade-off requires an object-present capture at this final height; the
+       live structural validation only confirms the streams, calibration and
+       frame geometry, so no unmeasured footprint is claimed here. -->
+  <xacro:if value="$(arg enable_camera)">
+
+    <!-- camera_link follows the ROS body convention (REP-103): +X forward
+         along the view direction, +Y left, +Z up. rpy="0 pi/2 0" pitches +X
+         from world +X down to world -Z, i.e. the camera looks straight down.
+         Resulting axis mapping, needed by any later pixel-to-world work:
+           camera_link +X = world -Z   (view direction, down)
+           camera_link +Y = world +Y
+           camera_link +Z = world +X -->
+    <link name="${tf_prefix}camera_link">
+      <!-- COLLISIONLESS on purpose: this sensor must never enter the contact,
+           friction or grasp solution. It does carry a token inertial, and
+           that is load-bearing rather than cosmetic: the URDF to SDF
+           converter LUMPS a massless fixed-joint child into its parent (the
+           same mechanism that produces the
+           robotiq_85_left_knuckle_link_fixed_joint_lump__... names on the
+           fingertips). When camera_link was lumped into world, camera_link
+           stopped existing as an SDF link and Gazebo rejected the model with
+           "attached_to name[camera_link] ... does not match a nested model,
+           link, joint, or frame name". The mass below is 1e-6 kg attached by
+           a fixed joint to the static world link, so it contributes nothing
+           to any dynamics; it exists purely to keep the link addressable. -->
+      <inertial>
+        <mass value="1.0e-6"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <inertia ixx="1.0e-9" ixy="0.0" ixz="0.0"
+                 iyy="1.0e-9" iyz="0.0" izz="1.0e-9"/>
+      </inertial>
+      <visual>
+        <geometry>
+          <box size="0.030 0.090 0.025"/>
+        </geometry>
+        <material name="camera_dark">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="${tf_prefix}world_to_camera_joint" type="fixed">
+      <parent link="world"/>
+      <child link="${tf_prefix}camera_link"/>
+      <origin xyz="0.450 0.025 2.400" rpy="0 ${pi/2} 0"/>
+    </joint>
+
+    <!-- Explicit belt-and-braces against the lumping described above. The
+         inertial alone is what actually fixes it on this sdformat version;
+         this tag states the intent so a future converter change cannot
+         silently reintroduce the failure. -->
+    <gazebo reference="${tf_prefix}world_to_camera_joint">
+      <preserveFixedJoint>true</preserveFixedJoint>
+      <disableFixedJointLumping>true</disableFixedJointLumping>
+    </gazebo>
+
+    <!-- Optical frame, REP-103 / REP-145: +Z along the view direction,
+         +X right in the image, +Y down in the image. The rpy below is the
+         standard body-to-optical rotation and yields, against the camera_link
+         orientation above:
+           optical +Z = camera_link +X = world -Z  (into the scene, down)
+           optical +X = camera_link -Y = world -Y  (image right)
+           optical +Y = camera_link -Z = world -X  (image down)
+         So in the rendered image world +X points UP and world +Y points LEFT.
+         The robot base (x=0) is therefore at the BOTTOM of the frame and the
+         place pose (y=+0.200) is LEFT of the pick pose (y=-0.150). -->
+    <link name="${tf_prefix}camera_optical_frame"/>
+
+    <joint name="${tf_prefix}camera_optical_joint" type="fixed">
+      <parent link="${tf_prefix}camera_link"/>
+      <child link="${tf_prefix}camera_optical_frame"/>
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+
+    <!-- The sensor is attached to camera_link, but <gz_frame_id> pins the
+         frame_id stamped into Image and CameraInfo to the OPTICAL frame,
+         which is what every downstream ROS consumer expects. Without it the
+         messages would carry camera_link and every projection would be
+         silently rotated. -->
+    <gazebo reference="${tf_prefix}camera_link">
+      <sensor name="overhead_rgbd" type="rgbd_camera">
+        <topic>overhead_camera</topic>
+        <gz_frame_id>${tf_prefix}camera_optical_frame</gz_frame_id>
+        <update_rate>5</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <camera>
+          <horizontal_fov>1.047</horizontal_fov>
+          <image>
+            <width>960</width>
+            <height>720</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <!-- near 0.10 is well inside the 0.850 m table distance; far 3.0
+                 reaches the floor (1.600 m away) with room to spare. -->
+            <near>0.10</near>
+            <far>3.0</far>
+          </clip>
+        </camera>
+      </sensor>
+    </gazebo>
+
+  </xacro:if>
 
   <!-- Grounding needs NOTHING here. It comes from <link name="world"/> plus
        ur_robot(parent="world"), which creates a fixed joint to it.

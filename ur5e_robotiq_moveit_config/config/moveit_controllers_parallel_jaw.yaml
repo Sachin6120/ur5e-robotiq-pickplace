@@ -1,0 +1,33 @@
+# MoveIt uses this configuration for controller management under gripper_model:=parallel_jaw
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+# Keep MoveIt's execution watchdog consistent with arm_controller's unchanged
+# 1.5 s goal_time allowance. The default 0.5 s margin can cancel an accepted
+# FJT goal before the controller's own legal settling window ends.
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.2
+  allowed_goal_duration_margin: 1.5
+  allowed_start_tolerance: 0.01
+
+moveit_simple_controller_manager:
+  controller_names:
+    - arm_controller
+    - parallel_jaw_gripper_controller
+
+  arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+  parallel_jaw_gripper_controller:
+    type: GripperCommand
+    joints:
+      - gripper_jaw_joint
+    action_ns: gripper_cmd
+    default: true

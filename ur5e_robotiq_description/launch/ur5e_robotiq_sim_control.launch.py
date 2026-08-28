@@ -66,6 +66,7 @@
 #    See docs/HANDOFF_M3.md's spawn-state investigation for the full case.
 
 import os
+from pathlib import Path
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -76,6 +77,7 @@ from launch.actions import (
     RegisterEventHandler,
     SetEnvironmentVariable,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
@@ -84,18 +86,26 @@ from launch.substitutions import (
     IfElseSubstitution,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
+# The active install space symlinks this launch file to source. Resolve the
+# source location so project configuration remains independent of HOME, which
+# Gazebo uses separately for writable runtime state.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = PROJECT_ROOT / "config"
+
+
 def _load_scene():
     # Shared by base-pose defaulting and table-geometry spawning below —
     # both derive from the same scene.yaml, loaded once here rather than
     # each re-implementing its own existence check.
-    scene_file = os.path.expanduser("~/ur5e_pickplace/config/scene.yaml")
-    if not os.path.isfile(scene_file):
+    scene_file = CONFIG_DIR / "scene.yaml"
+    if not scene_file.is_file():
         return None
     import yaml
     with open(scene_file, "r") as fh:
@@ -104,7 +114,7 @@ def _load_scene():
 
 def _load_table_sdf_module():
     import importlib.util
-    module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_table_sdf.py")
+    module_path = CONFIG_DIR / "scene_table_sdf.py"
     spec = importlib.util.spec_from_file_location("scene_table_sdf", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -135,11 +145,14 @@ def launch_setup(context, *args, **kwargs):
     base_xyz = LaunchConfiguration("base_xyz")
     base_rpy = LaunchConfiguration("base_rpy")
     fingertip_grasp_theta = LaunchConfiguration("fingertip_grasp_theta")
+    enable_diagnostic_contacts = LaunchConfiguration("enable_diagnostic_contacts")
+    gripper_model = LaunchConfiguration("gripper_model")
     controllers_file = LaunchConfiguration("controllers_file")
     description_file = LaunchConfiguration("description_file")
     model_name = LaunchConfiguration("model_name")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     world_file = LaunchConfiguration("world_file")
+    enable_camera = LaunchConfiguration("enable_camera")
 
     # See design note 5 above. Every ROS prefix's share/ dir goes on
     # GZ_SIM_RESOURCE_PATH so package://robotiq_description/... resolves.
@@ -188,9 +201,16 @@ def launch_setup(context, *args, **kwargs):
             "' ",
             "fingertip_grasp_theta:=",
             fingertip_grasp_theta,
+            " enable_diagnostic_contacts:=",
+            enable_diagnostic_contacts,
+            " gripper_model:=",
+            gripper_model,
             " ",
             "controllers_file:=",
             controllers_file,
+            " ",
+            "enable_camera:=",
+            enable_camera,
         ]
     )
     # ParameterValue(..., value_type=str) is required, not cosmetic: launch_ros
@@ -222,11 +242,36 @@ def launch_setup(context, *args, **kwargs):
         arguments=["arm_controller", "--controller-manager", "/controller_manager"],
         parameters=[{"use_sim_time": True}],
     )
+    # condition=... makes each spawner a no-op unless gripper_model matches --
+    # this is the ONLY behavioral change to the vendor path's gripper
+    # controller spawn: gripper_model defaults to "robotiq_linkage", so
+    # gripper_controller_spawner's condition is true by default, exactly as
+    # before this arg existed.
     gripper_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
         arguments=["gripper_controller", "--controller-manager", "/controller_manager"],
         parameters=[{"use_sim_time": True}],
+        condition=IfCondition(
+            PythonExpression(["'", gripper_model, "' == 'robotiq_linkage'"])
+        ),
+    )
+    # V1 opt-in: spawns ONLY when gripper_model:=parallel_jaw. Controls
+    # exactly gripper_jaw_joint via parallel_jaw_gripper_controller
+    # (config/../controllers.yaml) -- no mimic/follower controller exists to
+    # spawn alongside it.
+    parallel_jaw_gripper_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "parallel_jaw_gripper_controller",
+            "--controller-manager",
+            "/controller_manager",
+        ],
+        parameters=[{"use_sim_time": True}],
+        condition=IfCondition(
+            PythonExpression(["'", gripper_model, "' == 'parallel_jaw'"])
+        ),
     )
 
     delay_arm_controller_after_joint_state_broadcaster = RegisterEventHandler(
@@ -235,10 +280,13 @@ def launch_setup(context, *args, **kwargs):
             on_exit=[arm_controller_spawner],
         )
     )
+    # Both spawners are listed; only the one whose condition matches
+    # gripper_model actually runs a process, so only it can ever exit and
+    # trigger anything chained off it below.
     delay_gripper_controller_after_arm_controller = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=arm_controller_spawner,
-            on_exit=[gripper_controller_spawner],
+            on_exit=[gripper_controller_spawner, parallel_jaw_gripper_controller_spawner],
         )
     )
 
@@ -324,6 +372,30 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # Camera bridge. Deliberately a SEPARATE node from gz_sim_bridge above
+    # rather than extra arguments on it: with enable_camera false this node
+    # is not created at all, so the /clock bridge the classical pipeline
+    # depends on keeps the exact argument list it has always had.
+    #
+    # Direction is gz->ROS only ("[") for all three. Nothing in ROS writes to
+    # a camera. The <topic>overhead_camera</topic> in the xacro sensor block
+    # is what makes these the gz-side names; change one and you must change
+    # the other. /overhead_camera/points is intentionally NOT bridged -- no
+    # consumer needs a point cloud yet, and it is the most expensive of the
+    # four streams.
+    gz_camera_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="camera_bridge",
+        condition=IfCondition(enable_camera),
+        arguments=[
+            "/overhead_camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/overhead_camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/overhead_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+        output="screen",
+    )
+
     set_gz_resource_path = SetEnvironmentVariable(
         name="GZ_SIM_RESOURCE_PATH", value=gz_resource_path
     )
@@ -338,6 +410,7 @@ def launch_setup(context, *args, **kwargs):
         gz_spawn_entity,
         gz_launch_description,
         gz_sim_bridge,
+        gz_camera_bridge,
     ]
     if gz_spawn_table is not None:
         actions.append(gz_spawn_table)
@@ -354,7 +427,7 @@ def _default_gripper_args(scene):
         return {"fingertip_grasp_theta": "0.4029"}
     import importlib.util
 
-    args_module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    args_module_path = CONFIG_DIR / "scene_xacro_args.py"
     spec = importlib.util.spec_from_file_location("scene_xacro_args", args_module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -380,7 +453,7 @@ def _default_base_args(scene):
         return {"base_xyz": "0 0 0", "base_rpy": "0 0 0"}
     import importlib.util
 
-    args_module_path = os.path.expanduser("~/ur5e_pickplace/config/scene_xacro_args.py")
+    args_module_path = CONFIG_DIR / "scene_xacro_args.py"
     spec = importlib.util.spec_from_file_location("scene_xacro_args", args_module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -405,6 +478,15 @@ def generate_launch_description():
             "scene.yaml's object.size via gripper_geometry.theta_for_width(). "
             "See robotiq_2f_85_macro.urdf.xacro's TENTH OVERRIDE.",
         ),
+        DeclareLaunchArgument(
+            "enable_diagnostic_contacts", default_value="false",
+            description="Evaluation-only Robotiq contact observers; no physical changes."),
+        DeclareLaunchArgument(
+            "gripper_model", default_value="robotiq_linkage",
+            description="robotiq_linkage (default, vendor 2F-85 linkage, "
+            "unchanged behavior) or parallel_jaw (V1, opt-in only -- see "
+            "docs/GRIPPER_REDESIGN_DESIGN.md). Selects both the xacro "
+            "expansion and which gripper controller spawner runs."),
         DeclareLaunchArgument(
             "model_name",
             default_value="ur5e_robotiq",
@@ -435,8 +517,33 @@ def generate_launch_description():
             "note 3) — pass true to actually look at the spawn.",
         ),
         DeclareLaunchArgument(
+            "enable_camera",
+            default_value="false",
+            description="Add the fixed overhead RGB-D camera (eye-to-hand). "
+            "false leaves the expanded URDF byte-identical to the pre-camera "
+            "baseline, keeps the stock empty.sdf world, and creates no camera "
+            "bridge, so the validated classical pipeline is untouched.",
+        ),
+        DeclareLaunchArgument(
             "world_file",
-            default_value="empty.sdf",
+            # The stock empty.sdf does NOT load gz-sim-sensors-system, so a
+            # camera declared against it renders nothing and publishes nothing,
+            # silently. When enable_camera is true the default therefore moves
+            # to this package's tabletop_rgbd.sdf, which is empty.sdf plus that
+            # one system. Both worlds are named "empty" internally, so every
+            # /world/empty/... path-keyed script keeps working either way.
+            # An explicit world_file:= still overrides this default.
+            default_value=IfElseSubstitution(
+                LaunchConfiguration("enable_camera"),
+                if_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("ur5e_robotiq_description"),
+                        "worlds",
+                        "tabletop_rgbd.sdf",
+                    ]
+                ),
+                else_value="empty.sdf",
+            ),
             description="World name inside this becomes 'empty', matching "
             "scripts/m0_verify.sh's WORLD default.",
         ),

@@ -249,6 +249,15 @@ Result lift_transport_place(
   // of that window.
   dwell(node, p.slip_sample_dwell_s, "slip baseline sample");
 
+  if (p.lift_only) {
+    RCLCPP_INFO(
+      node->get_logger(),
+      "M3 F3 LIFT_ONLY_STOP lift_only_stop_reached=yes t=%.6f; "
+      "Stage 3 and the full post-lift dwell completed; TRANSPORT_BEGIN will not occur.",
+      node->get_clock()->now().seconds());
+    return Result::SUCCESS;
+  }
+
   // --- Stage 4: transport --------------------------------------------------
   // Free-space planned move to a pose one standoff above the place pose.
   // Deliberately not Cartesian; see the note at the top of this file.
@@ -289,6 +298,15 @@ Result lift_transport_place(
     node, 4, "TRANSPORT_DONE", p,
     p.marker_file_prefix.empty() ? "" : p.marker_file_prefix + ".transportdone_ready");
   dwell(node, p.slip_sample_dwell_s, "slip comparison sample");
+
+  if (p.transport_only) {
+    RCLCPP_INFO(
+      node->get_logger(),
+      "M3 F3 TRANSPORT_ONLY_STOP transport_only_stop_reached=yes t=%.6f; "
+      "Stage 4 transport and post-transport dwell completed; PLACE_DESCEND_BEGIN will not occur.",
+      node->get_clock()->now().seconds());
+    return Result::SUCCESS;
+  }
 
   // --- Stage 5: descend to place ------------------------------------------
   // Cartesian again: the object is still held, and a bowed path here scrapes

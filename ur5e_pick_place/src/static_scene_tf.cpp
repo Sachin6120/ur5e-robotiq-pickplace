@@ -230,6 +230,30 @@ int main(int argc, char ** argv)
 
   broadcaster->sendTransform(transforms);
 
+  // Periodic re-publish, retained as a precaution against the documented
+  // /tf_static late-joiner discovery race (see the measured startup-race
+  // comment in m2_cartesian_approach.cpp, next to its own polling
+  // canTransform() loop). Every consumer of these frames in this repository
+  // -- m2_cartesian_approach.cpp, m3_grasp.cpp, milestone_f1_truth.py --
+  // looks them up at tf2::TimePointZero / rclpy.time.Time(), so restamping
+  // changes no lookup outcome; this does not fix or guard against staleness.
+  // Stage-1 (G1-G5) and the 5/5 Scene-A repeatability campaign both ran with
+  // this timer compiled in, but no evidence in either campaign shows it
+  // changed an outcome -- the one recorded TF_LOOKUP_TIMEOUT predates this
+  // timer, and no run since has approached the configured deadline. Retained
+  // because Stage-1 validated the binary that contains it; a candidate for
+  // removal only under a future requalification, not by inference now.
+  auto timer = node->create_wall_timer(
+    std::chrono::seconds(1),
+    [broadcaster, transforms, node]() {
+      auto t = transforms;
+      auto now = node->get_clock()->now();
+      for (auto & tr : t) {
+        tr.header.stamp = now;
+      }
+      broadcaster->sendTransform(t);
+    });
+
   const std::string place_frame_log = published_place_frame
     ? (", " + world_frame + "->" + place_frame_name + " (place_pose)")
     : std::string();

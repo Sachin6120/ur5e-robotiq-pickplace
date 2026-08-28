@@ -27,3 +27,29 @@ docs/**/*.pyc
 
 docs/m3_shots_*/
 docs/m3_guicycle_shots_*/
+
+# ------------------------------------------------------------
+# Raw experiment evidence (2026-08-28 Stage-1 cleanup, D1)
+# ------------------------------------------------------------
+# Raw/bulk evidence stays local. Do not `git add -A` this tree. Curated,
+# durable results (README + MANIFEST.sha256 + summary CSV/JSON only) are
+# committed individually, by explicit path, when a milestone is closed --
+# never through a blanket add of evidence/.
+evidence/
+
+# Root-level runtime CSV outputs (default csv_path of m1_joint_goal.launch.py
+# and m3_grasp.launch.py / full_cycle.launch.py). The durable M1 dataset is
+# tracked separately at docs/evidence/m1_planning.csv; these are regenerated
+# every run and are not that file.
+/m3_grasp.csv
+/m1_*.csv
+
+# Per-run marker directories under docs/ (M8-M10/prod_reg capture scripts).
+# Each holds only zero-payload stage.*_ready barrier files, not evidence.
+docs/*_markers_*/
+
+# Loose stage-barrier files anywhere in the tree (zero-payload synchronization
+# markers written by the perception/repeatability harnesses -- not evidence).
+*.liftdone_ready
+*.transportdone_ready
+*.run_summary_ready

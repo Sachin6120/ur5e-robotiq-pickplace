@@ -122,44 +122,62 @@ std::string run_command(const std::string & cmd)
 std::optional<tf2::Transform> parse_link_pose(const std::string & dump, const std::string & link_name)
 {
   const std::string name_needle = "name: \"" + link_name + "\"";
-  auto name_pos = dump.find(name_needle);
-  if (name_pos == std::string::npos) {
-    return std::nullopt;
+
+  std::size_t pos = 0;
+  while (pos < dump.size()) {
+    auto block_start = dump.find("pose {", pos);
+    if (block_start == std::string::npos) {
+      break;
+    }
+    auto block_end = dump.find("\n}", block_start);
+    if (block_end == std::string::npos) {
+      block_end = dump.size();
+    } else {
+      block_end += 2;
+    }
+    std::string block = dump.substr(block_start, block_end - block_start);
+    pos = block_end;
+
+    if (block.find(name_needle) == std::string::npos) {
+      continue;
+    }
+
+    auto extract_field = [&](const std::string & b, char field) -> double {
+        const std::string needle = std::string(1, field) + ":";
+        auto p = b.find(needle);
+        if (p == std::string::npos) {
+          return 0.0;
+        }
+        return std::strtod(b.c_str() + p + needle.size(), nullptr);
+      };
+
+    auto pos_start = block.find("position {");
+    auto pos_end = (pos_start != std::string::npos) ? block.find('}', pos_start) : std::string::npos;
+    auto ori_start = block.find("orientation {");
+    auto ori_end = (ori_start != std::string::npos) ? block.find('}', ori_start) : std::string::npos;
+
+    std::string pos_block = (pos_start != std::string::npos && pos_end != std::string::npos)
+      ? block.substr(pos_start, pos_end - pos_start) : "";
+    std::string ori_block = (ori_start != std::string::npos && ori_end != std::string::npos)
+      ? block.substr(ori_start, ori_end - ori_start) : "";
+
+    tf2::Vector3 origin(
+      extract_field(pos_block, 'x'), extract_field(pos_block, 'y'), extract_field(pos_block, 'z'));
+    const bool has_x = ori_block.find("x:") != std::string::npos;
+    const bool has_y = ori_block.find("y:") != std::string::npos;
+    const bool has_z = ori_block.find("z:") != std::string::npos;
+    const bool has_w = ori_block.find("w:") != std::string::npos;
+
+    const double qx = has_x ? extract_field(ori_block, 'x') : 0.0;
+    const double qy = has_y ? extract_field(ori_block, 'y') : 0.0;
+    const double qz = has_z ? extract_field(ori_block, 'z') : 0.0;
+    const double qw = has_w ? extract_field(ori_block, 'w') : ((has_x || has_y || has_z) ? 0.0 : 1.0);
+
+    tf2::Quaternion q(qx, qy, qz, qw);
+    return tf2::Transform(q, origin);
   }
 
-  auto extract_field = [&](const std::string & block, char field) -> double {
-      const std::string needle = std::string(1, field) + ":";
-      auto p = block.find(needle);
-      if (p == std::string::npos) {
-        return 0.0;
-      }
-      return std::strtod(block.c_str() + p + needle.size(), nullptr);
-    };
-
-  auto pos_start = dump.find("position {", name_pos);
-  auto pos_end = dump.find('}', pos_start);
-  auto ori_start = dump.find("orientation {", name_pos);
-  auto ori_end = dump.find('}', ori_start);
-  if (pos_start == std::string::npos || pos_end == std::string::npos ||
-    ori_start == std::string::npos || ori_end == std::string::npos)
-  {
-    return std::nullopt;
-  }
-
-  const std::string pos_block = dump.substr(pos_start, pos_end - pos_start);
-  const std::string ori_block = dump.substr(ori_start, ori_end - ori_start);
-
-  tf2::Vector3 origin(
-    extract_field(pos_block, 'x'), extract_field(pos_block, 'y'), extract_field(pos_block, 'z'));
-  // Default w=1 (identity) matches gz's own convention of omitting a field
-  // at its default value in the text dump.
-  auto oz = ori_block.find("z:");
-  auto ow = ori_block.find("w:");
-  tf2::Quaternion q(
-    extract_field(ori_block, 'x'), extract_field(ori_block, 'y'),
-    oz == std::string::npos ? 0.0 : extract_field(ori_block, 'z'),
-    ow == std::string::npos ? 1.0 : extract_field(ori_block, 'w'));
-  return tf2::Transform(q, origin);
+  return std::nullopt;
 }
 
 }  // namespace
