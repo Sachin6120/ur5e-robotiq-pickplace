@@ -44,9 +44,9 @@ def main():
     from tf2_ros import Buffer,TransformListener,TransformException
     class P(Node):
         def __init__(self):
-            super().__init__("depth_stats_probe");self.rgb=OrderedDict();self.src=OrderedDict();self.noisy=OrderedDict();self.mask=OrderedDict();self.contracted=set();self.done=set();self.rows=[];self.raw=[];self.failure=None;self.info=None;self.M=None;self.started=time.monotonic();self.n0bad=0;self.n0frames=0;self.sh=hashlib.sha256();self.nh=hashlib.sha256();self.tf=Buffer(self.get_clock());self.listener=TransformListener(self.tf,self);self.create_subscription(Image,"/overhead_camera/image",self.rgb_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image",self.src_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image_noisy",self.noisy_cb,20);self.create_subscription(Image,"object_detector/mask",self.mask_cb,20);self.create_subscription(CameraInfo,"/overhead_camera/camera_info",self.info_cb,5);self.timer=self.create_timer(.1,self.tick)
+            super().__init__("depth_stats_probe");self.rgb=OrderedDict();self.src=OrderedDict();self.noisy=OrderedDict();self.mask=OrderedDict();self.contracted=set();self.done=set();self.rows=[];self.raw=[];self.failure=None;self.info=None;self.M=None;self.started=time.monotonic();self.n0bad=0;self.n0frames=0;self.sh=hashlib.sha256();self.nh=hashlib.sha256();self.tf=Buffer(node=self);self.listener=TransformListener(self.tf,self);self.create_subscription(Image,"/overhead_camera/image",self.rgb_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image",self.src_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image_noisy",self.noisy_cb,20);self.create_subscription(Image,"object_detector/mask",self.mask_cb,20);self.create_subscription(CameraInfo,"/overhead_camera/camera_info",self.info_cb,5);self.timer=self.create_timer(.1,self.tick)
         def fail(self,s):
-            if not self.failure:self.failure=s;self.get_logger().error("HARD_ABORT: %s",s)
+            if not self.failure:self.failure=s;self.get_logger().error(f"HARD_ABORT: {s}")
         def decode(self,m,d,e):
             if m.encoding!=e:raise ValueError(f"encoding {m.encoding}, expected {e}")
             if m.is_bigendian or m.step!=m.width*np.dtype(d).itemsize or len(m.data)!=m.height*m.step:raise ValueError("invalid image layout")

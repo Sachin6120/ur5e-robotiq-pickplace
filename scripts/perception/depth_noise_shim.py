@@ -47,12 +47,12 @@ def main():
         def audit(self,last): atomic_json(a.audit_out,{"seed":a.seed,"frames":self.frames,"identity_internal_failures":self.bad,"cumulative":self.totals,"source_sha256":self.ih.hexdigest(),"published_sha256":self.oh.hexdigest(),"last_frame":last,"n0_internal_pass":self.bad==0})
         def cb(self,m):
             if m.encoding!="32FC1" or m.is_bigendian or m.step!=m.width*4 or len(m.data)!=m.height*m.step:
-                self.bad+=1;self.get_logger().error("DEPTH_INPUT_REJECTED encoding=%s",m.encoding);self.audit({"rejected":True});return
+                self.bad+=1;self.get_logger().error(f"DEPTH_INPUT_REJECTED encoding={m.encoding}");self.audit({"rejected":True});return
             src=np.frombuffer(m.data,dtype=np.float32).reshape(m.height,m.width);out,s=perturb_depth(src,a.sigma_mm,a.dropout_fraction,a.outlier_fraction,a.outlier_magnitude_mm,self.rng);raw=out.tobytes();self.frames+=1;self.ih.update(m.data);self.oh.update(raw)
             for k in self.totals:self.totals[k]+=s[k]
             if a.sigma_mm==a.dropout_fraction==a.outlier_fraction==0. and (not bits_equal(src,out) or s["max_abs_input_output_diff_m"]!=0.):self.bad+=1
             r=Image();r.header=m.header;r.height=m.height;r.width=m.width;r.encoding="32FC1";r.is_bigendian=False;r.step=m.step;r.data=raw;self.pub.publish(r);self.audit(s)
-            if self.frames==1 or self.frames%25==0:self.get_logger().info("frame=%d seed=%d cumulative=%s",self.frames,a.seed,self.totals)
+            if self.frames==1 or self.frames%25==0:self.get_logger().info(f"frame={self.frames} seed={a.seed} cumulative={self.totals}")
     rclpy.init();n=Shim()
     try:rclpy.spin(n)
     finally:n.destroy_node();rclpy.shutdown()
