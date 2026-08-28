@@ -7,6 +7,12 @@ node's own status message.
 
 `ROS 2 Jazzy | MoveIt 2 | Gazebo Harmonic | C++ | Python | RGB-D Perception`
 
+<p align="center">
+  <img src="docs/assets/ur5e_perception_pickplace.png"
+       alt="Perception-driven UR5e manipulation in Gazebo Harmonic"
+       width="900">
+</p>
+
 ## Demo
 
 <p align="center">
@@ -65,6 +71,15 @@ flowchart LR
   data (`object_detector.cpp`), and a separate node transforms it into the
   world frame with TF2 (`object_position_world.cpp`). Neither node reads
   Gazebo's ground-truth object pose.
+
+<p align="center">
+  <img src="docs/assets/rgbd_object_detection.png"
+       alt="RGB-D object detection with bounding box and detected centroid"
+       width="700">
+</p>
+
+*RGB-D object detection showing the detected object bounding box and 2D/3D centroid.*
+
 - **Deterministic pregrasp / IK branch selection.** Multiple IK solutions
   can reach the same pregrasp pose; a fixed selection rule picks one so the
   same scene always produces the same approach, rather than depending on
