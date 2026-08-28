@@ -111,7 +111,7 @@ mkdir -p "$ROS_LOG_DIR"
 echo "=== Starting Gazebo + sim control ==="
 start_group "$OUT_DIR/sim.log" ros2 launch ur5e_robotiq_description \
   ur5e_robotiq_sim_control.launch.py gripper_model:=parallel_jaw \
-  enable_camera:=true gazebo_gui:=false || exit 9
+  enable_camera:=true gazebo_gui:=${GAZEBO_GUI:-false} || exit 9
 SIM_PGID="$STARTED_PGID"
 wait_for_command "arm_controller" bash -c \
   "ros2 control list_controllers 2>/dev/null | grep -q '^arm_controller.*active'" || exit 3
