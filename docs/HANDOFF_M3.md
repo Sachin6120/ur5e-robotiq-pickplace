@@ -3729,7 +3729,7 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
 
 ## M4: full loop incl. place and retreat — one annotated run log, placement measured not inferred
 
-Written 2026-08-12. Spec wording (`UR5E_PROJECT_START_PROMPT.md`): "M4: full
+Written 2026-08-12. Spec wording (`docs/archive/UR5E_PROJECT_START_PROMPT.md`): "M4: full
 loop incl. place and retreat -- one annotated run log."
 
 `m3_grasp.cpp`/`transport.cpp` have executed this full sequence since the
