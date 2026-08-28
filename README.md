@@ -1,269 +1,277 @@
-# UR5e + Robotiq 2F-85 Pick-and-Place (MoveIt 2 / Gazebo Harmonic)
+# Perception-Driven Robotic Manipulation with UR5e
 
-A ROS 2 Jazzy + Gazebo Harmonic pick-and-place simulation: a UR5e with a
-Robotiq 2F-85 gripper picks a known object from a fixed pose on a table and
-places it at a second fixed pose. All motion goes through MoveIt 2. There is
-no custom IK, no MoveIt Task Constructor and no perception, and that scope was
-fixed in the spec before any code was written — see
-`UR5E_PROJECT_START_PROMPT.md`.
+A simulated UR5e arm that finds an object with an overhead RGB-D camera,
+plans a grasp with MoveIt 2, and picks it up, transports it, and places it
+down, with every result checked against Gazebo ground truth rather than a
+node's own status message.
 
-**Status: v1 complete.** M-1 through M5 are all closed. The full loop
-(approach, friction grasp, lift, transport, place, release, retreat) runs end
-to end. Every result below comes from a Gazebo ground-truth measurement rather
-than from a node's own status message. "Known limitations" covers what
-"complete" does and doesn't mean here.
+`ROS 2 Jazzy | MoveIt 2 | Gazebo Harmonic | C++ | Python | RGB-D Perception`
 
-> **Note on language mix:** GitHub's language detector shows Shell as the
-> largest language in this repo. That reflects the verification harness,
-> not the core system. The actual pick-and-place control logic is a
-> compact ~2,900-line C++ core (`m1_joint_goal.cpp`, `m2_cartesian_approach.cpp`,
-> `m3_grasp.cpp`, `transport.cpp`). The larger shell/Python layer under
-> `scripts/` is deliberate: automated environment bootstrap, launch
-> orchestration, and ground-truth measurement tooling used to generate the
-> evidence in `runs/` that the milestone table below references. The size
-> of that layer is a direct consequence of working falsification-first —
-> every claimed result here is independently measured and checkable rather
-> than asserted.
+## Overview
 
-## What this is not
+The scene is a UR5e on a table with one object at a fixed height. A camera
+mounted above the workspace looks straight down. The pipeline:
 
-- **No perception.** Object pose is read from `config/scene.yaml`, not a
-  camera. Out of scope from the spec's first paragraph.
-- **No MoveIt Task Constructor.** Left out on purpose; the reasoning is in
-  `docs/M-1_reference_report.md` §2.
-- **No custom grasp planner.** One object, one pick pose, one place pose.
-  This demonstrates pick-and-place; it doesn't plan grasps.
+1. **Localize** the object from RGB-D data, without using its known simulated
+   pose.
+2. **Select a grasp approach** — one of several IK solutions for the
+   pregrasp pose, chosen deterministically rather than by whatever the
+   planner returns first.
+3. **Plan and execute** the approach and a Cartesian descent with MoveIt 2.
+4. **Grasp** with a simulated parallel-jaw gripper, **lift**, **transport**,
+   and **place** the object at a second location, then **release**.
+5. **Evaluate** the result against the object's actual simulated pose —
+   never against the pipeline's own reported success.
 
-## Stack
+The gripper is a simplified single-DOF parallel-jaw model, not the vendor
+Robotiq linkage. `docs/GRIPPER_REDESIGN_DESIGN.md` explains why: Gazebo's
+default physics engine (DART) does not enforce mimic-joint constraints, which
+made the original multi-link gripper's finger motion depend on a software
+workaround that could fail under contact load. The parallel-jaw model has
+exactly one actuated joint and two flat pads, so its geometry is provable
+offline instead of measured after the fact.
 
-- ROS 2 Jazzy Jalisco, Ubuntu 24.04 Noble
-- Gazebo Harmonic (`dartsim` physics; see "Known limitations", item 1)
-- UR5e via `Universal_Robots_ROS2_GZ_Simulation` / `..._Description`
-- Robotiq 2F-85 via `ros-jazzy-robotiq-description`, merged in (M-1)
-- MoveIt 2, two planning groups (`arm`, `gripper`), config built fresh via
-  Setup Assistant against the merged URDF
+## System Pipeline
 
-## Gripper Control Architecture & Validated M10 Root Cause
-
-```text
-Gripper control path:
-ROS 2 effort command
-  → effort_controllers/GripperActionController (PID: P=50.0, D=2.0)
-  → gz_ros2_control
-  → gz::sim::components::JointForceCmd
-  → DART ActuatorType::FORCE
+```mermaid
+flowchart LR
+    A[RGB-D Camera] --> B[Object Detection]
+    B --> C[Camera-to-World Transform]
+    C --> D[Grasp Target Construction]
+    D --> E[Deterministic Pregrasp / IK Selection]
+    E --> F[MoveIt 2 Planning]
+    F --> G[Cartesian Descent]
+    G --> H[Grasp]
+    H --> I[Lift]
+    I --> J[Transport]
+    J --> K[Release]
+    K --> L[Ground-Truth Evaluation]
 ```
 
-- **Root Cause of World-X / 90° Instability**: Position-mode gripper control used `gz_ros2_control`'s
-  velocity command law, which DART solved as a `ServoMotorConstraint` (velocity equality constraint).
-  When external lift reactions in the World-X orientation opposed closing velocity, the solver suffered
-  contact-constraint chatter (18–43 Hz limit cycle), effort collapse, contact dropout, and severe slip.
-- **Validated Fix**: Direct effort control completely bypasses `ServoMotorConstraint`, providing continuous
-  holding torque (+1.000 N·m) directly into DART dynamics, eliminating the limit cycle and cutting velocity
-  reversals from 594 → 26. Full pick-place regression passed across all tested orientations ($0^\circ, 90^\circ, 180^\circ$).
+## Key Features
 
-## Repo layout
+- **Perception-driven object localization.** A depth-plane segmentation
+  detector estimates the object's visible top-surface position from RGB-D
+  data (`object_detector.cpp`), and a separate node transforms it into the
+  world frame with TF2 (`object_position_world.cpp`). Neither node reads
+  Gazebo's ground-truth object pose.
+- **Deterministic pregrasp / IK branch selection.** Multiple IK solutions
+  can reach the same pregrasp pose; a fixed selection rule picks one so the
+  same scene always produces the same approach, rather than depending on
+  planner internals.
+- **MoveIt 2 / OMPL planning** for the free-space legs (pregrasp, transit,
+  transport), and a **Cartesian path** for the final descent and the
+  place-descent, so the last few centimetres of motion are a straight line
+  rather than a planned trajectory.
+- **Parallel-jaw grasp geometry** with a closed-form aperture/TCP-offset
+  relationship (`scripts/lib/parallel_jaw_geometry.py`), instead of a
+  numerically-fit constant.
+- **Quantitative ground-truth validation.** Every run is checked against
+  Gazebo's own object and flange poses — perception error, grasp aperture,
+  lift/transport slip, placement error, and final orientation error are all
+  measured, not inferred from a status flag.
+- **Repeatability and position-generalization campaigns** (below), plus
+  diagnostic tooling for isolating planner, controller, and perception
+  behavior independently (`scripts/`, `scripts/perception/`).
+
+## Validation Results
+
+All reported results are from simulation.
+
+| Check | Result |
+|---|---|
+| Scene-A repeatability | **5 / 5 cycles PASS** (2026-08-27, fixed object pose) |
+| Position generalization (G1–G5) | **5 / 5 poses PASS** (2026-08-27/28, five distinct XY object positions) |
+| Post-cleanup regression | **1 / 1 PASS** (2026-08-28) — confirms the cleaned repository still reproduces the validated cycle; not an additional repeatability or generalization data point |
+| Perception error | acceptance threshold < 3 mm; measured 1.47–1.76 mm across G1–G5, 1.6134 mm in the repeatability campaign |
+| Cartesian descent fraction | 1.0000 in every cited run |
+| Grasp aperture | 29.9995 mm, against a 30 ± 1 mm target |
+| Lift slip | sub-millimetre in every cited run (max 0.0521 mm) |
+| Transport slip | sub-millimetre in every cited run (max 0.0815 mm) |
+| Placement error | approximately 2 mm in every cited run (range 1.89–2.20 mm) |
+
+**On G1–G5 homogeneity:** G1–G4 ran with MoveIt's `plan_attempts = 20`; the
+final G5 qualification ran with `plan_attempts = 1` (a diagnosability change,
+not a planning-quality change — see Known Limitations). The five-pose
+campaign is therefore evidence of position generalization under two
+adjacent planner-attempt settings, not one strictly uniform configuration.
+
+Full per-run figures are in `HANDOFF.md` and `PROJECT_STATE.md`.
+
+## Stage-1 Experimental Scope
+
+Stage 1 demonstrated perception-driven pick-and-place across **five distinct
+XY object positions**, with the object's geometry, height, and orientation
+held fixed and the same manipulation task repeated at each position.
+
+**Not yet demonstrated:**
+
+- perception or manipulation under arbitrary object **orientation** (yaw) —
+  planned as Stage 2, not started;
+- object **size** variation beyond the two configurations already tested
+  (30 mm / 45 mm cube);
+- transfer to a **real robot** — everything above is simulation-only;
+- robustness to broader **environmental** variation (lighting, clutter,
+  multiple objects, occlusion).
+
+## Architecture / Packages
+
+- **`ur5e_pick_place`** — the application layer: the perception nodes
+  (`object_detector`, `object_position_world`), the pick-place state machine
+  (`m3_grasp.cpp`, `transport.cpp`), and the launch files that wire them
+  together.
+- **`ur5e_robotiq_description`** — the robot model: the merged UR5e +
+  gripper URDF/xacro (both the vendor Robotiq linkage and the parallel-jaw
+  model, selected by a launch argument), the overhead camera, controller
+  configuration, and the Gazebo world.
+- **`ur5e_robotiq_moveit_config`** — the MoveIt 2 configuration for both
+  gripper models: planning groups, kinematics, and controller mapping.
+
+## Repository Structure
 
 ```
-config/scene.yaml            single source of truth: object pose, place pose,
-                              object dimensions, gripper/grasp parameters —
-                              read by both the Gazebo world spawn and the TF
-                              publisher, so they cannot silently disagree
-ur5e_robotiq_description/    merged URDF/xacro, sim launch, ros2_control config
-ur5e_robotiq_moveit_config/  MoveIt config (arm + gripper planning groups)
-ur5e_pick_place/             application code: m3_grasp.cpp (the pick-place
-                              node), transport.cpp (lift/transport/place/
-                              release/retreat), failure.hpp (typed failure enum)
-scripts/                     numbered setup/verification scripts (00-11) plus
-                              scripts/lib/ (gz_settle, sample_pose, slip —
-                              the shared ground-truth measurement tooling)
-docs/HANDOFF_M3.md           the full session-by-session narrative: every
-                              measurement, dead end and fix, in the order it
-                              happened. This README indexes the evidence;
-                              that file explains it.
-UR5E_PROJECT_START_PROMPT.md the original spec (repo root) — milestone
-                              definitions and pass criteria quoted below
-                              come from here
-runs/                        milestone-level CSV + per-attempt log evidence for
-                              the M3/M5 20-cycle sweep (`docs/evidence/` holds
-                              the M1 planning sweep). New runs from the
-                              commands below land here too but are gitignored
-                              by default — see "Running it"
+config/                       scene.yaml — single source of truth for object
+                               pose, grasp geometry, and pipeline thresholds
+docs/                         design documents and milestone handoffs
+scripts/                      setup, diagnostic, and validation tooling
+  scripts/perception/         the perception-milestone and campaign harnesses
+ur5e_pick_place/               application code and launch files
+ur5e_robotiq_description/      robot model, controllers, Gazebo world
+ur5e_robotiq_moveit_config/    MoveIt 2 configuration
 ```
 
-**Workspace note:** this repo's three ROS packages are symlinked into
-`~/ur5e_ws/src/`, not copied. A copy silently desynced from the repo once
-already — see `docs/HANDOFF_M3.md`'s "repo/workspace desync" entry. Build with
-`colcon build --symlink-install` from `~/ur5e_ws`.
+Raw experiment output under `evidence/` (Gazebo pose streams, per-run logs,
+CSVs — several gigabytes) is intentionally excluded from Git. Durable
+results are recorded as text in `HANDOFF.md` and `PROJECT_STATE.md`, not as
+committed raw data.
 
-## Running it
+## Requirements
 
-**Single-command demo:**
+- Ubuntu 24.04 (Noble)
+- ROS 2 Jazzy Jalisco
+- Gazebo Harmonic
+- MoveIt 2
+- colcon
+- OpenCV, `cv_bridge`, `message_filters` (for the perception nodes)
+
+`scripts/02_bootstrap_noble.sh` installs the full ROS/Gazebo environment on a
+clean Ubuntu 24.04 machine, including `rosdep`-resolved package
+dependencies.
+
+## Build
+
+The repository root is itself the colcon workspace — the three ROS packages
+live directly under it, with no separate `src/` layout required.
 
 ```bash
 cd ~/ur5e_pickplace
 source /opt/ros/jazzy/setup.bash
-source ~/ur5e_ws/install/setup.bash
-ros2 launch ur5e_pick_place full_cycle.launch.py
+colcon build --symlink-install
+source install/setup.bash
 ```
 
-This one command brings up the whole stack in order — Gazebo, the UR5e +
-Robotiq model with its controllers, MoveIt's `move_group`, the pick object —
-and then runs the M3 pick-and-place cycle (approach, grasp, lift, transport,
-place, release, retreat) to completion. It's an orchestration launch
-(`ur5e_pick_place/launch/full_cycle.launch.py`) that reuses the existing
-`ur5e_robotiq_sim_control.launch.py`, `move_group.launch.py`,
-`scripts/08_spawn_pick_object.sh`, and `m3_grasp.launch.py` rather than
-duplicating them, gated on real readiness checks (controllers active,
-`/move_group` present) instead of fixed sleeps. Like `m3_grasp.launch.py` on
-its own, the launch tree doesn't exit by itself once the cycle finishes —
-end the session with Ctrl+C.
+## Running the System
 
-The rest of this section covers the harness used to collect the CSV evidence
-the milestone table below cites; use the single command above just to watch
-the robot move.
+The validated baseline requires the parallel-jaw gripper and perception
+explicitly enabled — the launch files default to the older vendor gripper
+with perception off, for backward compatibility with the classical
+(non-perception) pipeline described in `docs/HANDOFF_M3.md`.
 
-Both commands below must be run **from the repo root**. `--trial-cmd` and
-`--out` are relative paths, and `scripts/11_m3_cycles.sh` resolves them
-against the current working directory rather than against the script's own
-location.
-
-Nothing needs to be sourced first. `docs/m3_run_full_cycle_trial_live.sh`
-(what `--trial-cmd` invokes below) sources `/opt/ros/jazzy/setup.bash` and
-`~/ur5e_ws/install/setup.bash` as its first action, and
-`scripts/11_m3_cycles.sh` makes no `ros2` or `gz` calls of its own. Only
-`python3` and the `gz` CLI need to be on `PATH` already.
-
-`--trial-cmd` is required and has no default. The harness has no built-in
-notion of what one cycle is; it knows how to watch for stage markers and how
-to retry after a pre-grasp gate failure.
-
-**One full cycle, annotated:**
+**One complete perception-driven cycle, single command:**
 
 ```bash
-cd ~/ur5e_pickplace   # repo root — see note above
-bash scripts/11_m3_cycles.sh --cycles 1 \
-  --trial-cmd "bash docs/m3_run_full_cycle_trial_live.sh" \
-  --out runs/single_cycle_$(date +%Y%m%d_%H%M%S).csv
+cd ~/ur5e_pickplace
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+REPEATABILITY_CYCLES=1 python3 scripts/perception/run_5_cycles.py
 ```
 
-This launches the sim and move_group, spawns the object, and runs the full
-pick → lift → transport → place → release → retreat sequence, streaming
-`m3_grasp`'s stage markers (`M3 STAGE 3 LIFT_BEGIN`, and so on) live.
+This is the same harness that produced the 5/5 repeatability and Stage-1
+results: it brings up the simulation and controllers with
+`gripper_model:=parallel_jaw`, starts MoveIt, spawns the object, starts the
+perception nodes, runs one full perception-driven cycle, evaluates the
+result against Gazebo ground truth, and shuts everything down. Set
+`REPEATABILITY_CYCLES` to a higher number to repeat it.
 
-Run it through the harness even for a single cycle: the trial script needs
-`M3_MARKER_PREFIX` in its environment and the harness supplies it.
-`docs/HANDOFF_M3.md`'s M4 entry covers what happens if you skip that.
-
-**20-cycle repeatability sweep (M5's own check):**
+**The same sequence by hand, to watch each stage in the Gazebo GUI** (four
+terminals, run in order):
 
 ```bash
-cd ~/ur5e_pickplace   # repo root — see note above
-bash scripts/11_m3_cycles.sh --cycles 20 \
-  --trial-cmd "bash docs/m3_run_full_cycle_trial_live.sh" \
-  --out runs/m3_cycles_$(date +%Y%m%d_%H%M%S).csv
+# Terminal 1 — simulation, controllers, camera
+ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py \
+  gripper_model:=parallel_jaw enable_camera:=true gazebo_gui:=true
+
+# Terminal 2 — MoveIt (after the controllers report active)
+ros2 launch ur5e_robotiq_moveit_config move_group.launch.py \
+  gripper_model:=parallel_jaw
+
+# Terminal 3 — perception nodes (after move_group is up)
+ros2 run ur5e_pick_place object_detector --ros-args -p use_sim_time:=true
+ros2 run ur5e_pick_place object_position_world --ros-args -p use_sim_time:=true
+
+# Terminal 4 — spawn the object, then run the pick-place cycle
+bash scripts/08_spawn_pick_object.sh
+ros2 launch ur5e_pick_place m3_grasp.launch.py \
+  gripper_model:=parallel_jaw use_perceived_position:=true require_perception:=true
 ```
 
-Produces one CSV row per cycle: slip (Gazebo ground truth, relative to the
-flange), ejection flag, gripper result, achieved grip angle. It never silently
-retries a measurement. The retry policy is documented in
-`scripts/11_m3_cycles.sh`'s own header: pre-grasp gate failures are retried,
-because a gate that fires before the grasp can't have selected on the outcome;
-anything from the grasp onward counts as it stands.
+`m3_grasp.launch.py` does not exit on its own once the cycle finishes — end
+the session with Ctrl+C.
 
-**Not verified against a clean shell.** The claims above come from reading the
-scripts' own sourcing and path-resolution logic, not from tearing down the
-accumulated session state (workspace symlinks, sourced profiles, running
-processes) and starting over. Worth a real cold-shell run before trusting this
-section.
+## Validation / Reproduction
 
-Every run logs its grasp mode at startup — `GRASP MODE: friction (physics)` —
-as the spec requires, so it is never ambiguous later which mode a log came
-from.
+`scripts/perception/run_5_cycles.py` (above) is the general-purpose
+reproduction path — it accepts `REPEATABILITY_CYCLES` for a repeatability
+run at the fixed Scene-A pose. The Stage-1 position-generalization campaign
+used the same underlying harness, `scripts/perception/milestone_f1_harness.py`,
+with the object spawned at each of the five G1–G5 positions in turn.
+`scripts/perception/evaluate_placement.py` scores a completed run's
+placement against the configured target.
 
-## Milestones
+These campaigns generate substantial ground-truth logging; the single-cycle
+command above is the right default rather than a multi-cycle sweep.
 
-Criteria are quoted from `UR5E_PROJECT_START_PROMPT.md` rather than restated
-from memory. The evidence and reasoning behind each result are in
-`docs/HANDOFF_M3.md`; this table is the index.
+## Known Limitations
 
-| Milestone | Criterion | Result | Evidence |
-|---|---|---|---|
-| M-1 | combined URDF+MoveIt config assembled, spawns cleanly | closed | `docs/M-1_reference_report.md` |
-| M0 | stack verification A/B/C — pass/fail note with log lines | PASS | `docs/HANDOFF_M3.md` M0 row |
-| M1 | MoveIt executes a joint goal — 20/20 planning success, logged | PASS | `docs/evidence/m1_planning.csv` |
-| M2 | TF-derived pre-grasp/grasp reached, no gripper — TCP pose vs commanded, ground truth | PASS — `tcp_error_m=0.0000` | `docs/HANDOFF_M3.md` M2 row |
-| M3 | friction grasp tuning — 20 cycles, ≥18 with slip <5mm, zero ejection/penetration | **PASS** — 20/20, slip 0.227–0.442mm (45mm cube, `gripper_roll` 0) | `runs/m3_cycles_retry20_20260812_034544.csv` + `runs/attempt_001.log`…`attempt_020.log` |
-| M4 | full loop incl. place and retreat — one annotated run log | **PASS** — placement measured, 0.162mm from commanded place pose (45mm cube, `gripper_roll` 0) | `docs/m3_cyclelive_grasp_20260812_113952_14404.log`, `docs/m4_placement_20260812_113952_14404.txt` |
-| M5 | repeatability — 20 cycles, CSV | **PASS** — same sweep as M3 (45mm cube, `gripper_roll` 0) | `runs/m3_cycles_retry20_20260812_034544.csv` |
+- **Simulation only.** Nothing here has run on physical hardware.
+- **Object orientation was fixed during Stage 1.** All five validated
+  positions used the same object yaw; the perception pipeline has not been
+  evaluated against orientation variation.
+- **Perception currently validates position, not orientation.** The
+  detector estimates the object's top-surface position; no yaw or
+  orientation estimation exists in the current pipeline.
+- **One historical planner anomaly remains open.** A single MoveIt/OMPL
+  transport-planning attempt took 15.001 s and returned `PLAN_FAILURE`
+  during an earlier G5 trial, after perception, grasp, and lift had already
+  succeeded. It did not reproduce across two later G5 runs, and an offline
+  investigation ruled out IK goal-sampling starvation as the cause. It
+  remains unexplained. A related configuration change
+  (`plan_attempts: 20 → 1`) was made for diagnosability — so a future
+  recurrence would produce a usable planner status — not as a fix, and is
+  not claimed as one.
+- **Stage 2 (object orientation generalization) has not started.**
 
-These figures were measured on a 45 mm cube at `gripper_roll` 0. The committed
-default is now a 30 mm cube at `gripper_roll` π/2, which the M10 regression
-recorded at 22.261 mm transport slip (`docs/HANDOFF_M3.md`, Test C) — so the
-single-command demo above does not reproduce the M3 slip figure, and is not
-expected to.
+## Current Status
 
-**M3, M4 and M5 are not three independently-earned checkmarks.** M3 and M5 are
-the same 20-cycle sweep read two ways, and M4 is one additional ground-truth
-measurement (object placement) taken on top of the same stack.
-`docs/HANDOFF_M3.md`'s M4/M5 entries say so explicitly. It is repeated here
-because a table like the one above would otherwise read as three separate
-proofs.
+- **Stage 1 — Position generalization: COMPLETE / PASS.**
+- **Stage 2 — Orientation generalization: planned, not started.**
 
-## Known limitations
+## Documentation
 
-These aren't TODOs. They are the boundary of what this v1 demonstrates, and
-each one was found by measurement rather than left open for lack of time.
+- [`PROJECT_STATE.md`](PROJECT_STATE.md) — current validated state, updated
+  as results change.
+- [`HANDOFF.md`](HANDOFF.md) — full session-by-session record of every
+  measurement and decision behind the current state.
+- [`docs/HANDOFF_RGBD_PERCEPTION.md`](docs/HANDOFF_RGBD_PERCEPTION.md) —
+  the perception pipeline's validation record, milestone by milestone.
+- [`docs/GRIPPER_REDESIGN_DESIGN.md`](docs/GRIPPER_REDESIGN_DESIGN.md) —
+  the architecture analysis and design rationale behind the parallel-jaw
+  gripper.
 
-**1. Grasp rigidity is a modelling choice, not a physics constraint.** Gazebo
-Harmonic's default engine, `dartsim`, does not implement mimic joint
-constraints at all. It says so at every spawn (`[Err] ... the chosen physics
-engine does not support mimic constraints, so no constraint will be created`),
-and the open upstream issue is `gz-physics#432`. The gripper's three remaining
-follower joints (`right_knuckle` and both inner knuckles — the two fingertip
-followers were removed entirely, see item 2) track the actuated master
-(`robotiq_85_left_knuckle_joint`) because `gz_ros2_control` writes each
-follower's velocity command from the mimic formula every control cycle. That
-is a software override standing in for a linkage the physics engine doesn't
-enforce. In free space it tracks to float precision; under contact load the
-solver can perturb or override it (see item 2). Every "the fingers closed
-rigidly" claim in this project rests on that override holding, not on a real
-four-bar mechanism.
+## Author
 
-**2. The fingertip degrees of freedom were removed, not fixed.** Both
-fingertip joints were, for most of this project, `continuous` joints mimicking
-the master. Under load, one of them received a correctly-computed command and
-moved in the opposite direction anyway: 97.5% of samples during a runaway
-window had commanded and measured velocity of opposite sign, sustained rather
-than transient. That came from a purpose-built `gz-sim` plugin reading
-`JointVelocityCmd` straight out of the simulator's entity-component data, not
-inferred from `/joint_states`. It is a `dartsim` contact-resolution behavior
-this project measured precisely and did not explain at the engine-internals
-level. The fix in place — `robotiq_2f_85_macro.urdf.xacro`'s "TENTH OVERRIDE"
-— changes both fingertip joints from `continuous`+mimic to `fixed`, at an
-angle (`fingertip_grasp_theta`) chosen so the pad sits parallel *at this
-project's object width*. It removes the degree of freedom the mechanism was
-acting on rather than resolving the mechanism itself. That angle is derived
-per object width by `scripts/lib/gripper_geometry.py`'s `theta_for_width()`,
-so a different object size needs a re-derived angle rather than a reused
-constant.
+Sachin Kumar Pal
+M.Sc. Mechatronics and Cyber-Physical Systems
+Deggendorf Institute of Technology
 
-**3. A freshly-launched sim occasionally fails its own preflight for an
-unknown reason.** `gz_assert_gripper_responsive`, run before every cycle,
-sometimes reports the gripper unresponsive on a sim instance with no prior
-heavy use, no orphaned processes and normal (7–12s) controller activation
-timing — which rules out every previously-identified degradation cause. One
-20-cycle sweep hit this on 3 of 20 attempts; the very next hit it on 0 of 20.
-`scripts/11_m3_cycles.sh`'s retry harness treats it as a precondition failure
-and retries, which is defensible because the gate fires before the grasp
-attempt and so cannot be selecting on an outcome. But that is a policy for
-surviving the failure, not a diagnosis of it. Anyone running this tooling at
-scale should expect the occasional fresh launch to fail its own health check
-and be silently retried; the underlying cause is still open.
-
-**4. The production gripper controller is deprecated upstream.** The
-direct-effort grasp runs on `effort_controllers/GripperActionController`,
-which ros2_control logs at startup as deprecated in favour of
-`parallel_gripper_controllers/GripperActionController` — harmless on ROS 2
-Jazzy, but the baseline will need migrating before it can move to a release
-that removes it.
+[GitHub](https://github.com/Sachin6120)
