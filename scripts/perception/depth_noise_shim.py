@@ -39,6 +39,7 @@ def main():
     p=argparse.ArgumentParser(description="Publish deterministic noisy depth from /overhead_camera/depth_image.")
     p.add_argument("--sigma-mm",type=float,default=0.);p.add_argument("--dropout-fraction",type=float,default=0.);p.add_argument("--outlier-fraction",type=float,default=0.);p.add_argument("--outlier-magnitude-mm",type=float,default=50.);p.add_argument("--seed",type=int,required=True);p.add_argument("--audit-out",required=True);a=p.parse_args()
     import rclpy
+    from rclpy._rclpy_pybind11 import RCLError
     from rclpy.node import Node
     from sensor_msgs.msg import Image
     class Shim(Node):
@@ -51,9 +52,14 @@ def main():
             src=np.frombuffer(m.data,dtype=np.float32).reshape(m.height,m.width);out,s=perturb_depth(src,a.sigma_mm,a.dropout_fraction,a.outlier_fraction,a.outlier_magnitude_mm,self.rng);raw=out.tobytes();self.frames+=1;self.ih.update(m.data);self.oh.update(raw)
             for k in self.totals:self.totals[k]+=s[k]
             if a.sigma_mm==a.dropout_fraction==a.outlier_fraction==0. and (not bits_equal(src,out) or s["max_abs_input_output_diff_m"]!=0.):self.bad+=1
-            r=Image();r.header=m.header;r.height=m.height;r.width=m.width;r.encoding="32FC1";r.is_bigendian=False;r.step=m.step;r.data=raw;self.pub.publish(r);self.audit(s)
+            r=Image();r.header=m.header;r.height=m.height;r.width=m.width;r.encoding="32FC1";r.is_bigendian=False;r.step=m.step;r.data=raw
+            try:self.pub.publish(r)
+            except RCLError:
+                if not rclpy.ok():return
+                raise
+            self.audit(s)
             if self.frames==1 or self.frames%25==0:self.get_logger().info(f"frame={self.frames} seed={a.seed} cumulative={self.totals}")
     rclpy.init();n=Shim()
     try:rclpy.spin(n)
-    finally:n.destroy_node();rclpy.shutdown()
+    finally:n.destroy_node();rclpy.try_shutdown()
 if __name__=="__main__":main()

@@ -17,6 +17,40 @@ def insert(buf,k,v):
     if k in buf:raise ValueError("duplicate pending timestamp")
     if len(buf)>=MAX_BUFFER:raise ValueError("timestamp buffer overflow")
     buf[k]=v
+class SyncState:
+    """Exact timestamp state machine: warm-up is discard-only; armed is strict."""
+    def __init__(self):
+        self.buffers={n:OrderedDict() for n in ("rgb","src","noisy","mask")};self.contracted=set();self.done=set();self.armed=False;self.first_armed_timestamp=None;self.warmup_discards={n:0 for n in self.buffers};self.stamp_contract_failures=[];self.exact_pair_count=0
+    def add(self,name,k,value,now):
+        if k in self.done:raise ValueError("duplicate completed timestamp")
+        insert(self.buffers[name],k,(now,value));self.contract()
+    def contract(self):
+        rgb,src=self.buffers["rgb"],self.buffers["src"]
+        for k in list(contract_keys(rgb,src)):rgb.pop(k);self.contracted.add(k)
+    def ready_keys(self):return sorted(set(self.buffers["mask"])&set(self.buffers["noisy"])&set(self.buffers["src"])&self.contracted)
+    def pop_ready(self):
+        pairs=[]
+        for k in self.ready_keys():
+            ma=self.buffers["mask"].pop(k)[1];no=self.buffers["noisy"].pop(k)[1];so=self.buffers["src"].pop(k)[1];self.contracted.remove(k);self.done.add(k);self.exact_pair_count+=1
+            if not self.armed:
+                self.armed=True;self.first_armed_timestamp=k;self.clear_older(k)
+            pairs.append((k,ma,no,so))
+        return pairs
+    def clear_older(self,k):
+        for name,b in self.buffers.items():
+            for old in [x for x in b if x<k]:b.pop(old);self.warmup_discards[name]+=1
+        self.contracted={x for x in self.contracted if x>=k}
+    def expire(self,now,timeout_s=2.):
+        failures=[]
+        for name,b in self.buffers.items():
+            for k in [x for x,v in b.items() if v[0]<now-timeout_s]:
+                was_contracted=k in self.contracted;b.pop(k);self.contracted.discard(k)
+                if not self.armed:self.warmup_discards[name]+=1;continue
+                if name=="rgb" or (name=="src" and not was_contracted):
+                    msg=f"RGB/source stamp-contract failure at {k} ({name} unmatched)";self.stamp_contract_failures.append(msg)
+                else:msg=f"stale unmatched {name} timestamp {k}"
+                failures.append(msg)
+        return failures
 def stats(mask,depth,k):
     if mask.shape!=depth.shape:raise ValueError("mask/depth shape mismatch")
     selected=mask!=0; z=np.asarray(depth,np.float32)[selected];valid=z[np.isfinite(z)&(z>0)];n=valid.size;ys,xs=np.nonzero(selected)
@@ -44,25 +78,25 @@ def main():
     from tf2_ros import Buffer,TransformListener,TransformException
     class P(Node):
         def __init__(self):
-            super().__init__("depth_stats_probe");self.rgb=OrderedDict();self.src=OrderedDict();self.noisy=OrderedDict();self.mask=OrderedDict();self.contracted=set();self.done=set();self.rows=[];self.raw=[];self.failure=None;self.info=None;self.M=None;self.started=time.monotonic();self.n0bad=0;self.n0frames=0;self.sh=hashlib.sha256();self.nh=hashlib.sha256();self.tf=Buffer(node=self);self.listener=TransformListener(self.tf,self);self.create_subscription(Image,"/overhead_camera/image",self.rgb_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image",self.src_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image_noisy",self.noisy_cb,20);self.create_subscription(Image,"object_detector/mask",self.mask_cb,20);self.create_subscription(CameraInfo,"/overhead_camera/camera_info",self.info_cb,5);self.timer=self.create_timer(.1,self.tick)
+            super().__init__("depth_stats_probe");self.sync=SyncState();self.rows=[];self.raw=[];self.failure=None;self.info=None;self.M=None;self.started=time.monotonic();self.n0bad=0;self.n0frames=0;self.sh=hashlib.sha256();self.nh=hashlib.sha256();self.tf=Buffer(node=self);self.listener=TransformListener(self.tf,self);self.create_subscription(Image,"/overhead_camera/image",self.rgb_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image",self.src_cb,20);self.create_subscription(Image,"/overhead_camera/depth_image_noisy",self.noisy_cb,20);self.create_subscription(Image,"object_detector/mask",self.mask_cb,20);self.create_subscription(CameraInfo,"/overhead_camera/camera_info",self.info_cb,5);self.timer=self.create_timer(.1,self.tick)
         def fail(self,s):
             if not self.failure:self.failure=s;self.get_logger().error(f"HARD_ABORT: {s}")
         def decode(self,m,d,e):
             if m.encoding!=e:raise ValueError(f"encoding {m.encoding}, expected {e}")
             if m.is_bigendian or m.step!=m.width*np.dtype(d).itemsize or len(m.data)!=m.height*m.step:raise ValueError("invalid image layout")
             return np.frombuffer(m.data,dtype=d).reshape(m.height,m.width)
-        def add(self,b,k,v):
-            try:insert(b,k,(time.monotonic(),v))
+        def add(self,name,k,v):
+            try:self.sync.add(name,k,v,time.monotonic())
             except ValueError as e:self.fail(str(e))
-        def rgb_cb(self,m):self.add(self.rgb,stamp(m.header),None);self.contract()
+        def rgb_cb(self,m):self.add("rgb",stamp(m.header),None);self.pair()
         def src_cb(self,m):
-            try:self.add(self.src,stamp(m.header),self.decode(m,np.float32,"32FC1"));self.contract();self.pair()
+            try:self.add("src",stamp(m.header),self.decode(m,np.float32,"32FC1"));self.pair()
             except ValueError as e:self.fail(str(e))
         def noisy_cb(self,m):
-            try:self.add(self.noisy,stamp(m.header),self.decode(m,np.float32,"32FC1"));self.pair()
+            try:self.add("noisy",stamp(m.header),self.decode(m,np.float32,"32FC1"));self.pair()
             except ValueError as e:self.fail(str(e))
         def mask_cb(self,m):
-            try:self.add(self.mask,stamp(m.header),self.decode(m,np.uint8,"mono8"));self.pair()
+            try:self.add("mask",stamp(m.header),self.decode(m,np.uint8,"mono8"));self.pair()
             except ValueError as e:self.fail(str(e))
         def info_cb(self,m):
             self.info=m
@@ -70,19 +104,15 @@ def main():
                 try:
                     t=self.tf.lookup_transform("world",m.header.frame_id,Time());self.M=matrix_from_transform(t);atomic_json(a.calibration_out,{"target_frame":"world","source_frame":m.header.frame_id,"intrinsics":{"fx":m.k[0],"fy":m.k[4],"cx":m.k[2],"cy":m.k[5],"width":m.width,"height":m.height},"world_from_camera":self.M.tolist()})
                 except TransformException:pass
-        def contract(self):
-            for k in list(contract_keys(self.rgb,self.src)):self.rgb.pop(k);self.contracted.add(k)
         def pair(self):
-            for k in sorted(set(self.mask)&set(self.noisy)&set(self.src)&self.contracted):
-                if k in self.done:self.fail("duplicate completed timestamp");return
-                if self.M is None:return
-                ma=self.mask.pop(k)[1];no=self.noisy.pop(k)[1];so=self.src.pop(k)[1];self.contracted.remove(k);self.done.add(k);self.n0frames+=1;self.sh.update(so.tobytes());self.nh.update(no.tobytes())
+            if self.M is None:return
+            for k,ma,no,so in self.sync.pop_ready():
+                self.n0frames+=1;self.sh.update(so.tobytes());self.nh.update(no.tobytes())
                 if a.require_n0_identity and not bits_equal(so,no):self.n0bad+=1;self.fail("N0 source/noisy bit mismatch")
                 r,x,y,z=stats(ma,no,k);r.update(fx=self.info.k[0],fy=self.info.k[4],cx=self.info.k[2],cy=self.info.k[5]);self.rows.append(r);self.raw.append((k,x,y,z))
         def tick(self):
-            now=time.monotonic();cut=now-2.
-            for b,name in ((self.rgb,"RGB"),(self.src,"source depth"),(self.noisy,"noisy depth"),(self.mask,"mask")):
-                for k in [k for k,v in b.items() if v[0]<cut]:b.pop(k);self.contracted.discard(k);self.fail(f"stale unmatched {name} timestamp {k}")
+            now=time.monotonic()
+            for failure in self.sync.expire(now):self.fail(failure)
             if (self.info is None or self.M is None) and now-self.started>10:self.fail("camera intrinsics/world_from_camera unavailable")
         def finalize(self):
             Path(a.out).parent.mkdir(parents=True,exist_ok=True);fields=list(self.rows[0]) if self.rows else ["stamp_sec","stamp_nanosec","mask_area","valid_count","invalid_count"];tmp=Path(a.out).with_suffix(".tmp")
@@ -91,10 +121,10 @@ def main():
             for k,x,y,z in self.raw:ss.append(k);xs.append(x);ys.append(y);zs.append(z);offs.append(offs[-1]+len(z))
             rawtmp=str(a.raw_out)+".tmp"
             with open(rawtmp,"wb") as f:np.savez_compressed(f,stamp=np.asarray(ss,np.int64),offsets=np.asarray(offs,np.int64),u=np.concatenate(xs) if xs else np.empty(0,np.int32),v=np.concatenate(ys) if ys else np.empty(0,np.int32),depth_m=np.concatenate(zs) if zs else np.empty(0,np.float32))
-            os.replace(rawtmp,a.raw_out);atomic_json(a.audit_out,{"frames_compared":self.n0frames,"n0_identity_failures":self.n0bad,"source_sha256":self.sh.hexdigest(),"noisy_sha256":self.nh.hexdigest(),"stamp_contract_pass":not(self.failure and "timestamp" in self.failure),"failure":self.failure,"complete_rows":len(self.rows)})
+            os.replace(rawtmp,a.raw_out);atomic_json(a.audit_out,{"armed":self.sync.armed,"first_armed_timestamp":self.sync.first_armed_timestamp,"warmup_discard_counts":self.sync.warmup_discards,"stamp_contract_failures":self.sync.stamp_contract_failures,"stamp_contract_pass":not self.sync.stamp_contract_failures,"exact_pair_count":self.sync.exact_pair_count,"frames_compared":self.n0frames,"n0_identity_failures":self.n0bad,"source_sha256":self.sh.hexdigest(),"noisy_sha256":self.nh.hexdigest(),"failure":self.failure,"complete_rows":len(self.rows)})
     rclpy.init();n=P();signal.signal(signal.SIGTERM,lambda *_:setattr(n,"failure",n.failure or "terminated"))
     try:
         while rclpy.ok() and not n.failure and len(n.rows)<a.frames:rclpy.spin_once(n,timeout_sec=.2)
-    finally:n.finalize();n.destroy_node();rclpy.shutdown()
+    finally:n.finalize();n.destroy_node();rclpy.try_shutdown()
     if n.failure or len(n.rows)<a.frames:raise SystemExit(n.failure or "fewer than requested paired frames")
 if __name__=="__main__":main()
