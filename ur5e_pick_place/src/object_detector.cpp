@@ -40,6 +40,8 @@
 #include <std_msgs/msg/int32_multi_array.hpp>
 #include <std_msgs/msg/u_int32.hpp>
 
+#include "ur5e_pick_place/d10_trimmed_mean.hpp"
+
 namespace
 {
 using Image = sensor_msgs::msg::Image;
@@ -53,9 +55,9 @@ struct Position3D
   std::size_t mask_pixels{0};
   std::size_t valid_points{0};
   std::size_t invalid_points{0};
-  double median_x{std::numeric_limits<double>::quiet_NaN()};
-  double median_y{std::numeric_limits<double>::quiet_NaN()};
-  double median_z{std::numeric_limits<double>::quiet_NaN()};
+  double d10_x{std::numeric_limits<double>::quiet_NaN()};
+  double d10_y{std::numeric_limits<double>::quiet_NaN()};
+  double d10_z{std::numeric_limits<double>::quiet_NaN()};
   double mean_x{std::numeric_limits<double>::quiet_NaN()};
   double mean_y{std::numeric_limits<double>::quiet_NaN()};
   double mean_z{std::numeric_limits<double>::quiet_NaN()};
@@ -63,22 +65,6 @@ struct Position3D
   double std_y{std::numeric_limits<double>::quiet_NaN()};
   double std_z{std::numeric_limits<double>::quiet_NaN()};
 };
-
-// Sample median: mean of the two central order statistics for an even count.
-// Declared here rather than inline so the estimator's definition is one
-// readable line at the call site.
-double median_of(std::vector<double> & values)
-{
-  const std::size_t n = values.size();
-  const std::size_t mid = n / 2;
-  std::nth_element(values.begin(), values.begin() + mid, values.end());
-  const double upper = values[mid];
-  if (n % 2 != 0) {
-    return upper;
-  }
-  const double lower = *std::max_element(values.begin(), values.begin() + mid);
-  return 0.5 * (lower + upper);
-}
 
 struct Detection
 {
@@ -242,7 +228,8 @@ private:
   // deliberately no empirical XYZ gating and no ground-truth-derived offset:
   // any such filter would make the estimate a function of the answer.
   Position3D backproject(
-    const cv::Mat & depth, const cv::Mat & mask, const CameraInfo & info) const
+    const cv::Mat & depth, const cv::Mat & mask, const CameraInfo & info,
+    const cv::Point2d & centroid) const
   {
     Position3D out;
     const double fx = info.k[0];
@@ -298,12 +285,16 @@ private:
     moments(ys, out.mean_y, out.std_y);
     moments(zs, out.mean_z, out.std_z);
 
-    // The estimator is the median.  Mean/stddev above are diagnostics only.
-    // median_of reorders its argument, so it is called on the vectors after
-    // the moments are taken.
-    out.median_x = median_of(xs);
-    out.median_y = median_of(ys);
-    out.median_z = median_of(zs);
+    // D10: symmetrically trim floor(10% * N) samples from each sorted depth
+    // tail, then back-project the selected component's subpixel centroid.
+    // The per-pixel XYZ moments above remain diagnostics only.
+    const auto d10_z = ur5e_pick_place::d10_trimmed_mean(zs);
+    if (!d10_z.has_value()) {
+      return out;
+    }
+    out.d10_z = *d10_z;
+    out.d10_x = (centroid.x - cx) * out.d10_z / fx;
+    out.d10_y = (centroid.y - cy) * out.d10_z / fy;
     out.valid = true;
     return out;
   }
@@ -367,7 +358,7 @@ private:
     auto recon_finished = seg_finished;
     if (detection.found) {
       recon_started = std::chrono::steady_clock::now();
-      position = backproject(depth, mask, *info_msg);
+      position = backproject(depth, mask, *info_msg, detection.centroid);
       recon_finished = std::chrono::steady_clock::now();
     }
     const double seg_ms =
@@ -409,9 +400,9 @@ private:
         geometry_msgs::msg::PointStamped camera_position;
         camera_position.header.stamp = rgb_msg->header.stamp;
         camera_position.header.frame_id = info_msg->header.frame_id;
-        camera_position.point.x = position.median_x;
-        camera_position.point.y = position.median_y;
-        camera_position.point.z = position.median_z;
+        camera_position.point.x = position.d10_x;
+        camera_position.point.y = position.d10_y;
+        camera_position.point.z = position.d10_z;
         position_pub_->publish(camera_position);
       }
     }
@@ -443,11 +434,11 @@ private:
       RCLCPP_INFO(
         get_logger(),
         "POSITION3D stamp=%.9f frame=%s mask_px=%zu valid=%zu invalid=%zu valid_pct=%.4f "
-        "median=[%.9f,%.9f,%.9f] mean=[%.9f,%.9f,%.9f] std=[%.9f,%.9f,%.9f] "
+        "d10=[%.9f,%.9f,%.9f] mean=[%.9f,%.9f,%.9f] std=[%.9f,%.9f,%.9f] "
         "seg_ms=%.3f recon_ms=%.3f total_ms=%.3f",
         rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
         position.mask_pixels, position.valid_points, position.invalid_points, valid_pct,
-        position.median_x, position.median_y, position.median_z,
+        position.d10_x, position.d10_y, position.d10_z,
         position.mean_x, position.mean_y, position.mean_z,
         position.std_x, position.std_y, position.std_z, seg_ms, recon_ms, latency_ms);
     } else if (detection.found) {

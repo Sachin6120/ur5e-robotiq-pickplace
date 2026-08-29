@@ -109,6 +109,12 @@ ament_target_dependencies(object_detector
 )
 target_link_libraries(object_detector ${OpenCV_LIBRARIES})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(object_detector_d10_test test/test_object_detector_d10.cpp)
+  target_include_directories(object_detector_d10_test PRIVATE include)
+endif()
+
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
 # Deliberately a separate executable from object_detector: the Milestone C/D
 # estimator stays byte-identical, and no TF listener is pulled into it.
