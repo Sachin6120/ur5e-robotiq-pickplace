@@ -276,9 +276,29 @@
                     </contact>
                 </surface>
             </collision>
+            <!-- DIAGNOSTIC-ONLY NAME FIX, 2026-08-29. The collision name below
+                 must be the name the collision has AFTER the URDF->SDF
+                 conversion, not the URDF-side name. pad_fixed_link is the
+                 child of a FIXED joint, so sdformat's URDF parser lumps it
+                 into wrist_3_link and renames its collision; it does NOT
+                 rewrite this <contact><collision> reference to match.
+                 Verified with `gz sdf -p` on the generated parallel_jaw URDF:
+                 the model contains
+                   wrist_3_link_fixed_joint_lump__pad_fixed_link_collision_2
+                 and contains NO collision named pad_fixed_link_collision, so
+                 gz::sim::systems::Contact matched nothing and this sensor
+                 published no data at all. That silence is why every Stage-2A
+                 case so far has had to reconstruct pad contact geometrically
+                 instead of measuring it.
+                 The trailing _2 is sdformat's per-link collision counter for
+                 wrist_3_link (wrist_3_link_collision, ..._lump__ur_to_robotiq_link_collision_1,
+                 then this one). If a collision is ever added to or removed
+                 from wrist_3_link, that index moves and this reference goes
+                 silent again, so any run relying on this stream must assert
+                 that contact messages actually arrived, never assume it. -->
             <sensor name="${prefix}pad_fixed_contact" type="contact">
                 <contact>
-                    <collision>${prefix}pad_fixed_link_collision</collision>
+                    <collision>${prefix}wrist_3_link_fixed_joint_lump__${prefix}pad_fixed_link_collision_2</collision>
                 </contact>
                 <update_rate>500</update_rate>
                 <topic>${prefix}pad_fixed_link/contact</topic>
@@ -370,9 +390,15 @@
                     </contact>
                 </surface>
             </collision>
+            <!-- DIAGNOSTIC-ONLY NAME FIX, 2026-08-29: same lumping issue as
+                 pad_fixed_contact above. pad_moving_link is lumped into
+                 jaw_moving_link; `gz sdf -p` shows the collision is named
+                 jaw_moving_link_fixed_joint_lump__pad_moving_link_collision
+                 (no numeric suffix, being the only collision on that link).
+                 See the pad_fixed_contact comment for the full rationale. -->
             <sensor name="${prefix}pad_moving_contact" type="contact">
                 <contact>
-                    <collision>${prefix}pad_moving_link_collision</collision>
+                    <collision>${prefix}jaw_moving_link_fixed_joint_lump__${prefix}pad_moving_link_collision</collision>
                 </contact>
                 <update_rate>500</update_rate>
                 <topic>${prefix}pad_moving_link/contact</topic>
