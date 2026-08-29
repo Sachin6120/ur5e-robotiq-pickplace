@@ -236,6 +236,7 @@ def run_case(
     evidence_dir=None,
     target_source="perceived",
     record_diagnostics=False,
+    fixed_side_clearance_m=None,
 ):
     yaw_rad = math.radians(yaw_deg)
     case_dir = (
@@ -284,6 +285,7 @@ def run_case(
                 "yaw_rad": yaw_rad,
                 "target_source": target_source,
                 "record_diagnostics": record_diagnostics,
+                "fixed_side_clearance_m_override": fixed_side_clearance_m,
                 "configured_object_centre_world": [
                     float(scene["object"]["pick_pose"]["x"]),
                     float(scene["object"]["pick_pose"]["y"]),
@@ -543,6 +545,16 @@ def run_case(
     # live Gazebo ground truth -- m3_grasp reads it from TF, published by
     # static_scene_tf out of this run's own case scene YAML.
     use_perceived = "true" if target_source == "perceived" else "false"
+    # DIAGNOSTIC-ONLY, 2026-08-29: forwards to m3_grasp.launch.py's own
+    # parallel_jaw_fixed_side_clearance_m argument, which defaults to empty
+    # (production value, unchanged) when this stays None. See that
+    # argument's own DeclareLaunchArgument description for exactly what it
+    # does and does not touch.
+    clearance_arg = ""
+    if fixed_side_clearance_m is not None:
+        clearance_arg = (
+            f" parallel_jaw_fixed_side_clearance_m:={fixed_side_clearance_m}"
+        )
     cmd_m3 = (
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
         f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
@@ -551,6 +563,7 @@ def run_case(
         f"require_perception:={use_perceived} "
         f"perceived_position_timeout_s:=15.0 pregrasp_joint_target:=\"[]\" "
         f"csv_path:=\"{csv_file}\" marker_file_prefix:=\"{marker_prefix}\""
+        f"{clearance_arg}"
     )
     print(f"Executing m3_grasp for {case_name}...", flush=True)
     m3_proc = start_process(
@@ -668,6 +681,14 @@ def main():
         help="Also record both pad contact streams, the gripper joint "
              "position/velocity/effort trace, and the perceived-position stream",
     )
+    parser.add_argument(
+        "--fixed-side-clearance-m",
+        type=float,
+        default=None,
+        help="DIAGNOSTIC-ONLY. Overrides m3_grasp.launch.py's "
+             "parallel_jaw_fixed_side_clearance_m (default: unset, which "
+             "leaves the production 0.0015 m value untouched).",
+    )
     args = parser.parse_args()
 
     run_case(
@@ -677,6 +698,7 @@ def main():
         evidence_dir=args.evidence_dir,
         target_source=args.target_source,
         record_diagnostics=args.record_diagnostics,
+        fixed_side_clearance_m=args.fixed_side_clearance_m,
     )
 
 
