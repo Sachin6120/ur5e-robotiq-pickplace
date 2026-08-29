@@ -7,6 +7,29 @@ configured yaw to static_scene_tf / m3_grasp via an isolated case scene YAML.
 
 Stage-1 baseline (perception XYZ, parallel-jaw geometry, controller gains,
 plan_attempts=1) remains 100% frozen and unmodified.
+
+2026-08-29 DIAGNOSTIC ADDITIONS (opt-in only; every default below reproduces
+the previous behaviour exactly):
+
+  --evidence-dir       write to an explicit directory instead of the
+                       evidence/stage2a_orientation/<case> default, so a
+                       diagnostic control cannot overwrite or be confused with
+                       the authoritative case evidence.
+  --target-source      "perceived" (default, unchanged) or "configured".
+                       "configured" runs m3_grasp with
+                       use_perceived_position:=false require_perception:=false,
+                       i.e. the manipulation target is the CONFIGURED scene
+                       object centre from the case scene YAML.  Live Gazebo
+                       ground truth is never queried as a target in either
+                       mode -- the configured centre comes from the same
+                       scene file the spawner uses, not from the simulator.
+  --record-diagnostics start the extra passive recorders (both pad contact
+                       streams, the gripper joint position/velocity/effort
+                       trace, and the perceived-position stream).  All are
+                       subscribe-only.
+
+Nothing here changes TCP, clearance, gripper command, commanded effort,
+friction, controllers, or trajectories.
 """
 import argparse
 import csv
@@ -186,9 +209,40 @@ def spawn_object_yaw(x, y, yaw_rad):
     return (r.stdout + r.stderr).strip()
 
 
-def run_case(case_name, yaw_deg, gazebo_gui=False):
+def discover_contact_topics():
+    """Return (mapping, full_topic_list_text).
+
+    The pad contact sensors' advertised topic names are resolved by Gazebo,
+    not by us, so they are discovered rather than assumed.  The full list is
+    returned for the evidence directory so a miss is diagnosable after the
+    fact instead of being a silent gap.
+    """
+    out, rc = run_cmd("gz topic -l", timeout=20)
+    topics = [t.strip() for t in out.splitlines() if t.strip().startswith("/")]
+    found = {}
+    for key, needle in (("pad_fixed", "pad_fixed"), ("pad_moving", "pad_moving")):
+        hits = [t for t in topics if needle in t and "contact" in t]
+        if len(hits) == 1:
+            found[key] = hits[0]
+        elif hits:
+            found[key] = sorted(hits)[0]
+    return found, "\n".join(topics)
+
+
+def run_case(
+    case_name,
+    yaw_deg,
+    gazebo_gui=False,
+    evidence_dir=None,
+    target_source="perceived",
+    record_diagnostics=False,
+):
     yaw_rad = math.radians(yaw_deg)
-    case_dir = REPO / f"evidence/stage2a_orientation/{case_name}"
+    case_dir = (
+        Path(evidence_dir).resolve()
+        if evidence_dir
+        else REPO / f"evidence/stage2a_orientation/{case_name}"
+    )
     if case_dir.exists():
         print(
             f"ERROR: Evidence directory already exists for {case_name}: {case_dir}\n"
@@ -218,6 +272,29 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
     with open(case_scene_path, "w") as f:
         yaml.dump(scene, f, default_flow_style=False)
     print(f"Case scene YAML written: {case_scene_path}", flush=True)
+
+    # Self-describing evidence: what this run actually was, recorded before it
+    # happened, so the directory cannot later be mistaken for an authoritative
+    # Stage-2A case run.
+    with open(case_dir / "control_setup.json", "w") as f:
+        json.dump(
+            {
+                "case": case_name,
+                "yaw_deg": yaw_deg,
+                "yaw_rad": yaw_rad,
+                "target_source": target_source,
+                "record_diagnostics": record_diagnostics,
+                "configured_object_centre_world": [
+                    float(scene["object"]["pick_pose"]["x"]),
+                    float(scene["object"]["pick_pose"]["y"]),
+                    float(scene["object"]["pick_pose"]["z"]),
+                ],
+                "gripper_model": "parallel_jaw",
+                "evidence_dir": str(case_dir),
+            },
+            f,
+            indent=2,
+        )
 
     # 2. Check contamination
     contamination = subprocess.run(
@@ -324,6 +401,57 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
         sys.exit(1)
     print("Camera topics available.", flush=True)
 
+    # ------------------------------------------------------------------
+    # Opt-in diagnostic recorders.  Started HERE -- after the model exists
+    # so the contact sensors are advertised, but before the object is
+    # spawned and before any arm motion -- so the streams cover the whole
+    # descent / close / lift / dwell sequence with margin on both sides.
+    # All are subscribe-only; none of them can influence the run.
+    # ------------------------------------------------------------------
+    diag_procs = []
+    if record_diagnostics:
+        contact_topics, topic_list_text = discover_contact_topics()
+        (case_dir / "gz_topic_list.txt").write_text(topic_list_text + "\n")
+        with open(case_dir / "contact_topics.json", "w") as f:
+            json.dump(contact_topics, f, indent=2)
+        missing = [k for k in ("pad_fixed", "pad_moving") if k not in contact_topics]
+        if missing:
+            # Do NOT proceed pretending contact was recorded.  A control whose
+            # stated purpose includes measuring pad contact directly is not
+            # worth spending a run on if the streams are absent.
+            print(
+                "ERROR: contact topics not advertised for "
+                f"{missing}. See {case_dir}/gz_topic_list.txt. Refusing to run a "
+                "contact-diagnostic control with no contact stream.",
+                flush=True,
+            )
+            stop_process(sim_proc)
+            stop_process(observer_proc)
+            sys.exit(1)
+        print(f"Contact topics discovered: {contact_topics}", flush=True)
+        for key, topic in contact_topics.items():
+            diag_procs.append(
+                start_process(
+                    f"python3 {REPO}/scripts/perception/gz_contact_observer.py "
+                    f"--topic {topic} --out {case_dir}/contact_{key}.csv"
+                )
+            )
+        diag_procs.append(
+            start_process(
+                f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+                f"python3 {REPO}/scripts/joint_trajectory_recorder.py "
+                f"--out {case_dir}/gripper_joint_trace.csv --joint gripper_jaw_joint"
+            )
+        )
+        diag_procs.append(
+            start_process(
+                f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+                f"python3 {REPO}/scripts/perception/pointstamped_recorder.py "
+                f"--out {case_dir}/perceived_points.csv"
+            )
+        )
+        print(f"Diagnostic recorders started ({len(diag_procs)}).", flush=True)
+
     # 6. Launch move_group
     print("Launching move_group...", flush=True)
     mg_cmd = (
@@ -350,6 +478,8 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
         stop_process(mg_proc)
         stop_process(sim_proc)
         stop_process(observer_proc)
+        for proc in diag_procs:
+            stop_process(proc)
         sys.exit(1)
     print("move_group ready.", flush=True)
 
@@ -366,6 +496,8 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
         stop_process(mg_proc)
         stop_process(sim_proc)
         stop_process(observer_proc)
+        for proc in diag_procs:
+            stop_process(proc)
         sys.exit(1)
     init_pose = harness.instantaneous_object_pose()
     with open(case_dir / "init_settled_pose.json", "w") as f:
@@ -396,6 +528,8 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
         stop_process(mg_proc)
         stop_process(sim_proc)
         stop_process(observer_proc)
+        for proc in diag_procs:
+            stop_process(proc)
         sys.exit(1)
     print(f"Perception ready: {perception_sample['xyz']}", flush=True)
 
@@ -404,11 +538,17 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
     marker_prefix = case_dir / "stage"
     m3_log_file = case_dir / "m3_grasp.log"
 
+    # Target source.  "configured" hands m3_grasp the configured scene object
+    # centre (the same value the spawner used), NOT the perceived XY and NOT
+    # live Gazebo ground truth -- m3_grasp reads it from TF, published by
+    # static_scene_tf out of this run's own case scene YAML.
+    use_perceived = "true" if target_source == "perceived" else "false"
     cmd_m3 = (
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
         f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
         f"scene_file:=\"{case_scene_path}\" "
-        f"gripper_model:=parallel_jaw use_perceived_position:=true require_perception:=true "
+        f"gripper_model:=parallel_jaw use_perceived_position:={use_perceived} "
+        f"require_perception:={use_perceived} "
         f"perceived_position_timeout_s:=15.0 pregrasp_joint_target:=\"[]\" "
         f"csv_path:=\"{csv_file}\" marker_file_prefix:=\"{marker_prefix}\""
     )
@@ -455,6 +595,8 @@ def run_case(case_name, yaw_deg, gazebo_gui=False):
     stop_process(sim_proc)
     time.sleep(1.0)
     stop_process(observer_proc)
+    for proc in diag_procs:
+        stop_process(proc)
 
     # 10. Post-hoc Analysis
     place_xyz = [
@@ -508,9 +650,34 @@ def main():
         action="store_true",
         help="Run Gazebo in visible GUI mode (default: headless)",
     )
+    parser.add_argument(
+        "--evidence-dir",
+        default=None,
+        help="Explicit evidence directory (default: evidence/stage2a_orientation/<case>)",
+    )
+    parser.add_argument(
+        "--target-source",
+        choices=("perceived", "configured"),
+        default="perceived",
+        help="Manipulation target source. 'configured' uses the configured scene "
+             "object centre and never the perceived XY (default: perceived)",
+    )
+    parser.add_argument(
+        "--record-diagnostics",
+        action="store_true",
+        help="Also record both pad contact streams, the gripper joint "
+             "position/velocity/effort trace, and the perceived-position stream",
+    )
     args = parser.parse_args()
 
-    run_case(args.case, CASES[args.case], gazebo_gui=args.gui)
+    run_case(
+        args.case,
+        CASES[args.case],
+        gazebo_gui=args.gui,
+        evidence_dir=args.evidence_dir,
+        target_source=args.target_source,
+        record_diagnostics=args.record_diagnostics,
+    )
 
 
 if __name__ == "__main__":
