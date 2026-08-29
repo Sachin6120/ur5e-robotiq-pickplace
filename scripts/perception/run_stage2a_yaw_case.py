@@ -237,6 +237,9 @@ def run_case(
     target_source="perceived",
     record_diagnostics=False,
     fixed_side_clearance_m=None,
+    close_and_hold_only=False,
+    lift_only=False,
+    p_gain_override=None,
 ):
     yaw_rad = math.radians(yaw_deg)
     case_dir = (
@@ -286,6 +289,9 @@ def run_case(
                 "target_source": target_source,
                 "record_diagnostics": record_diagnostics,
                 "fixed_side_clearance_m_override": fixed_side_clearance_m,
+                "close_and_hold_only": close_and_hold_only,
+                "lift_only": lift_only,
+                "p_gain_override": p_gain_override,
                 "configured_object_centre_world": [
                     float(scene["object"]["pick_pose"]["x"]),
                     float(scene["object"]["pick_pose"]["y"]),
@@ -351,10 +357,18 @@ def run_case(
     # 5. Launch Gazebo sim control
     gui_flag = "true" if gazebo_gui else "false"
     print(f"Launching Gazebo sim_control (gazebo_gui:={gui_flag})...", flush=True)
+    # DIAGNOSTIC-ONLY, 2026-08-29: forwards to
+    # ur5e_robotiq_sim_control.launch.py's own parallel_jaw_p_gain_override,
+    # which defaults to empty (production gains.gripper_jaw_joint.p = 50.0,
+    # unchanged) when this stays None.
+    p_gain_arg = ""
+    if p_gain_override is not None:
+        p_gain_arg = f" parallel_jaw_p_gain_override:={p_gain_override}"
     sim_cmd = (
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
         f"ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py "
         f"gripper_model:=parallel_jaw enable_camera:=true gazebo_gui:={gui_flag}"
+        f"{p_gain_arg}"
     )
     sim_proc = start_process(sim_cmd)
 
@@ -556,6 +570,15 @@ def run_case(
         clearance_arg = (
             f" parallel_jaw_fixed_side_clearance_m:={fixed_side_clearance_m}"
         )
+    # close_and_hold_only:=true is an EXISTING m3_grasp.launch.py argument
+    # (default false, unchanged behaviour) -- not new. It stops after the
+    # gripper close/stall result is recorded: no lift, no transport, no
+    # place, no release.
+    hold_arg = " close_and_hold_only:=true" if close_and_hold_only else ""
+    # lift_only:=true is an existing m3_grasp.launch.py boundary mode. It
+    # performs Stage 3 including its post-lift dwell, then stops before
+    # transport, place, release, or retreat.
+    lift_arg = " lift_only:=true" if lift_only else ""
     cmd_m3 = (
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
         f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
@@ -564,7 +587,7 @@ def run_case(
         f"require_perception:={use_perceived} "
         f"perceived_position_timeout_s:=15.0 pregrasp_joint_target:=\"[]\" "
         f"csv_path:=\"{csv_file}\" marker_file_prefix:=\"{marker_prefix}\""
-        f"{clearance_arg}"
+        f"{clearance_arg}{hold_arg}{lift_arg}"
     )
     print(f"Executing m3_grasp for {case_name}...", flush=True)
     m3_proc = start_process(
@@ -690,6 +713,27 @@ def main():
              "parallel_jaw_fixed_side_clearance_m (default: unset, which "
              "leaves the production 0.0015 m value untouched).",
     )
+    parser.add_argument(
+        "--close-and-hold-only",
+        action="store_true",
+        help="Pass close_and_hold_only:=true to m3_grasp.launch.py (an "
+             "existing argument): stop after the gripper close/stall "
+             "result, no lift/transport/place/release.",
+    )
+    parser.add_argument(
+        "--lift-only",
+        action="store_true",
+        help="Pass lift_only:=true to m3_grasp.launch.py: execute the existing "
+             "lift and post-lift dwell, then stop before transport/place/release.",
+    )
+    parser.add_argument(
+        "--p-gain-override",
+        type=float,
+        default=None,
+        help="DIAGNOSTIC-ONLY. Overrides ur5e_robotiq_sim_control.launch.py's "
+             "parallel_jaw_p_gain_override (default: unset, which leaves "
+             "gains.gripper_jaw_joint.p at controllers.yaml's own 50.0).",
+    )
     args = parser.parse_args()
 
     run_case(
@@ -700,6 +744,9 @@ def main():
         target_source=args.target_source,
         record_diagnostics=args.record_diagnostics,
         fixed_side_clearance_m=args.fixed_side_clearance_m,
+        close_and_hold_only=args.close_and_hold_only,
+        lift_only=args.lift_only,
+        p_gain_override=args.p_gain_override,
     )
 
 
