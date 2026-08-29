@@ -147,6 +147,14 @@ def launch_setup(context, *args, **kwargs):
     fingertip_grasp_theta = LaunchConfiguration("fingertip_grasp_theta")
     enable_diagnostic_contacts = LaunchConfiguration("enable_diagnostic_contacts")
     gripper_model = LaunchConfiguration("gripper_model")
+    # DIAGNOSTIC-ONLY OVERRIDE, 2026-08-29. Default "" (see its own
+    # DeclareLaunchArgument below) leaves parallel_jaw_gripper_controller_
+    # spawner's parameters list byte-for-byte identical to before this
+    # existed -- perform()ed here, not left as a LaunchConfiguration, so the
+    # "is it set" branch below is a plain Python string check.
+    parallel_jaw_p_gain_override_raw = LaunchConfiguration(
+        "parallel_jaw_p_gain_override"
+    ).perform(context)
     controllers_file = LaunchConfiguration("controllers_file")
     description_file = LaunchConfiguration("description_file")
     model_name = LaunchConfiguration("model_name")
@@ -260,6 +268,31 @@ def launch_setup(context, *args, **kwargs):
     # exactly gripper_jaw_joint via parallel_jaw_gripper_controller
     # (config/../controllers.yaml) -- no mimic/follower controller exists to
     # spawn alongside it.
+    # DIAGNOSTIC-ONLY, 2026-08-29: when parallel_jaw_p_gain_override_raw is
+    # set, this appends one entry to the spawner's own `parameters=` list.
+    # launch_ros writes any raw-dict entry there to a temp YAML file and
+    # appends it to the spawner's `--params-file` CLI args; `ros2 run
+    # controller_manager spawner` (controller_manager/spawner.py's
+    # get_ros_params_files / set_controller_parameters_from_param_files,
+    # both installed under /opt/ros/jazzy) collects EVERY --params-file it
+    # was given and layers them onto parallel_jaw_gripper_controller's own
+    # params_file list before that controller node is constructed. This
+    # project's own run log already shows this exact mechanism firing for
+    # use_sim_time ("Controller 'parallel_jaw_gripper_controller' node
+    # arguments: --params-file .../controllers.yaml ... --params-file
+    # /tmp/launch_params_...",
+    # evidence/stage2a_o1_configured_center_control/run_combined.log). This
+    # reuses that same path to carry one more key: gains.gripper_jaw_joint.p,
+    # which HardwareInterfaceAdapter<HW_IF_EFFORT>::init()
+    # (gripper_controllers/hardware_interface_adapter.hpp, installed) reads
+    # via auto_declare() at controller construction -- when the params file
+    # already declares it, that value wins over controllers.yaml's own 50.0.
+    # controllers.yaml itself is NEVER written to by this path.
+    parallel_jaw_spawner_params = [{"use_sim_time": True}]
+    if parallel_jaw_p_gain_override_raw != "":
+        parallel_jaw_spawner_params.append(
+            {"gains.gripper_jaw_joint.p": float(parallel_jaw_p_gain_override_raw)}
+        )
     parallel_jaw_gripper_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -268,7 +301,7 @@ def launch_setup(context, *args, **kwargs):
             "--controller-manager",
             "/controller_manager",
         ],
-        parameters=[{"use_sim_time": True}],
+        parameters=parallel_jaw_spawner_params,
         condition=IfCondition(
             PythonExpression(["'", gripper_model, "' == 'parallel_jaw'"])
         ),
@@ -487,6 +520,19 @@ def generate_launch_description():
             "unchanged behavior) or parallel_jaw (V1, opt-in only -- see "
             "docs/GRIPPER_REDESIGN_DESIGN.md). Selects both the xacro "
             "expansion and which gripper controller spawner runs."),
+        DeclareLaunchArgument(
+            "parallel_jaw_p_gain_override",
+            default_value="",
+            description="DIAGNOSTIC-ONLY, 2026-08-29. Empty (default) leaves "
+            "parallel_jaw_gripper_controller's gains.gripper_jaw_joint.p "
+            "exactly as controllers.yaml declares it (50.0) -- every "
+            "existing and future run that does not pass this argument is "
+            "byte-for-byte unaffected, and controllers.yaml is never edited "
+            "by this path. When set, overrides ONLY that one PID gain via a "
+            "layered --params-file at controller construction (see the "
+            "spawner definition's own comment for the mechanism). Ignored "
+            "when gripper_model is not parallel_jaw.",
+        ),
         DeclareLaunchArgument(
             "model_name",
             default_value="ur5e_robotiq",
