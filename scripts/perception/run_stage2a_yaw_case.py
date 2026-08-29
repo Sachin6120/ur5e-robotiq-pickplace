@@ -435,7 +435,8 @@ def run_case(
             diag_procs.append(
                 start_process(
                     f"python3 {REPO}/scripts/perception/gz_contact_observer.py "
-                    f"--topic {topic} --out {case_dir}/contact_{key}.csv"
+                    f"--topic {topic} --out {case_dir}/contact_{key}.csv "
+                    f"--closing-axis-yaw-deg {yaw_deg}"
                 )
             )
         diag_procs.append(
