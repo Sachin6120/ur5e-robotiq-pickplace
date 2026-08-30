@@ -113,6 +113,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(object_detector_d10_test test/test_object_detector_d10.cpp)
   target_include_directories(object_detector_d10_test PRIVATE include)
+  ament_add_gtest(mask_orientation_test test/test_mask_orientation.cpp)
+  target_include_directories(mask_orientation_test PRIVATE include)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
