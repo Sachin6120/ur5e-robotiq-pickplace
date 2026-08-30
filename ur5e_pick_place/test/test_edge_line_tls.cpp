@@ -168,15 +168,33 @@ TEST(EdgeLineTLS, RefusalTinyOrDegenerateMask)
   EXPECT_FALSE(estimate_edgelines_tls(tiny_mask).valid);
 }
 
-TEST(EdgeLineTLS, SquareNearIsotropicMaskBehavior)
+TEST(EdgeLineTLS, SquareNearIsotropicMaskRefusal)
 {
-  // For an exact square, principal axis orientation is ambiguous.
-  // We explicitly log and verify structural estimator behavior.
-  cv::Mat square_mask = rasterize_rectangle_mask(20.0, 20.0, rad(15.0), 65.0, 65.0, k3X_Grid);
-  const auto result = estimate_edgelines_tls(square_mask);
-  std::cout << "[Square Mask Test] valid=" << result.valid
-            << " theta=" << (result.valid ? deg(result.theta_image_rad) : 0.0)
-            << " boundary_pixels=" << result.boundary_pixel_count << std::endl;
+  // Exact axis-aligned square: orientation unobservable -> invalid
+  cv::Mat square_mask = rasterize_rectangle_mask(20.0, 20.0, rad(0.0), 65.0, 65.0, k3X_Grid);
+  const auto res_square = estimate_edgelines_tls(square_mask);
+  EXPECT_FALSE(res_square.valid);
+  EXPECT_LT(res_square.eccentricity, 0.10);
+
+  // Rotated exact square (15, 30, 45 deg): orientation unobservable -> invalid
+  for (const double rot_deg : {15.0, 30.0, 45.0}) {
+    cv::Mat rot_square = rasterize_rectangle_mask(20.0, 20.0, rad(rot_deg), 65.0, 65.0, k3X_Grid);
+    const auto res_rot = estimate_edgelines_tls(rot_square);
+    EXPECT_FALSE(res_rot.valid);
+    EXPECT_LT(res_rot.eccentricity, 0.10);
+  }
+
+  // Near-square below threshold (e.g. 20 x 20.5 px, aspect ratio ~1.025) -> invalid
+  cv::Mat near_square = rasterize_rectangle_mask(20.5 / 2.0, 20.0 / 2.0, rad(10.0), 65.0, 65.0, k3X_Grid);
+  const auto res_near = estimate_edgelines_tls(near_square);
+  EXPECT_FALSE(res_near.valid);
+  EXPECT_LT(res_near.eccentricity, 0.10);
+
+  // Target object (30x45 mm) half-spans 34.973 x 23.315 px (aspect ratio 1.5) -> eccentricity ~0.38
+  cv::Mat target_mask = rasterize_rectangle_mask(k3X_Hx, k3X_Hy, rad(0.0), 65.0, 65.0, k3X_Grid);
+  const auto res_target = estimate_edgelines_tls(target_mask);
+  EXPECT_TRUE(res_target.valid);
+  EXPECT_GT(res_target.eccentricity, 0.35);
 }
 
 // ===========================================================================
@@ -266,27 +284,27 @@ TEST(EdgeLineTLSParityBenchmark, Exhaustive0To179Deg7Phases)
 TEST(EdgeLineTLSFrameMapping, OpticalToWorldYawMapping)
 {
   const std::vector<std::pair<double, double>> test_pairs_deg = {
-    {15.0, -15.0},
-    {-30.0, 30.0},
-    {85.0, -85.0},
-    {0.0, 0.0},
-    {45.0, -45.0},
-    {-45.0, 45.0}
+    {15.0, 75.0},
+    {-30.0, -60.0},
+    {85.0, 5.0},
+    {0.0, -90.0},
+    {45.0, 45.0},
+    {-45.0, -45.0}
   };
 
   for (const auto & pair : test_pairs_deg) {
     const double world_yaw_rad = rad(pair.first);
     const double expected_img_rad = canonicalize_axial_angle(rad(pair.second));
 
-    // Optical frame projection: theta_image = -yaw_world (mod 180)
-    const double derived_img_rad = canonicalize_axial_angle(-world_yaw_rad);
+    // Optical frame projection: theta_image = canonicalize(pi/2 - yaw_world)
+    const double derived_img_rad = canonicalize_axial_angle(kMaskOrientationPi / 2.0 - world_yaw_rad);
     const double err_img = std::abs(deg(axial_difference(derived_img_rad, expected_img_rad)));
-    EXPECT_LT(err_img, 1e-5);
+    EXPECT_LT(err_img, 1e-5) << "world_yaw=" << pair.first;
 
     // Inverse mapping helper test: image_axial_to_world_yaw
     const double derived_world_rad = image_axial_to_world_yaw(derived_img_rad);
     const double err_world = std::abs(deg(axial_difference(derived_world_rad, canonicalize_axial_angle(world_yaw_rad))));
-    EXPECT_LT(err_world, 1e-5);
+    EXPECT_LT(err_world, 1e-5) << "world_yaw=" << pair.first;
   }
 }
 

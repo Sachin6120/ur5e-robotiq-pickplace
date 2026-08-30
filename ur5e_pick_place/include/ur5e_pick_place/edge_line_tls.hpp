@@ -21,6 +21,7 @@ struct EdgeLineTLSResult
 {
   bool valid{false};
   double theta_image_rad{std::numeric_limits<double>::quiet_NaN()};  // canonical [-pi/2, +pi/2)
+  double eccentricity{std::numeric_limits<double>::quiet_NaN()};     // normalized second-moment anisotropy
   std::size_t boundary_pixel_count{0};
   std::array<std::size_t, 4> family_support_counts{0, 0, 0, 0};     // right, left, top, bottom
   double quality_score{0.0};                                         // sum of support counts of valid fitted clusters
@@ -34,12 +35,12 @@ struct EdgeLineTLSResult
  *   +Y_opt = -X_world (image down)
  *   +Z_opt = -Z_world (camera forward)
  * 
- * The 2D projection reflection (det = -1) inverts rotational handedness:
- *   theta_image = -yaw_world (mod 180 deg)
+ * Major axis projection yields:
+ *   yaw_world_axial = canonicalize_axial_angle(pi/2 - theta_image_rad)
  */
 inline double image_axial_to_world_yaw(double theta_image_rad)
 {
-  return canonicalize_axial_angle(-theta_image_rad);
+  return canonicalize_axial_angle(kMaskOrientationPi / 2.0 - theta_image_rad);
 }
 
 /**
@@ -152,6 +153,21 @@ inline EdgeLineTLSResult estimate_edgelines_tls(const cv::Mat & mask_u8)
   mu20 /= n_fill;
   mu02 /= n_fill;
   mu11 /= n_fill;
+
+  const double denom = mu20 + mu02;
+  if (!(denom > 0.0)) {
+    return out;
+  }
+  const double eccentricity =
+    std::sqrt((mu20 - mu02) * (mu20 - mu02) + 4.0 * mu11 * mu11) / denom;
+  out.eccentricity = eccentricity;
+
+  // Structural anisotropy gate: refuse isotropic / near-isotropic shapes (eccentricity < 0.10)
+  // where axial orientation is physically unobservable.
+  constexpr double kMinEccentricity = 0.10;
+  if (!(eccentricity >= kMinEccentricity)) {
+    return out;
+  }
 
   const double theta0 = canonicalize_axial_angle(0.5 * std::atan2(2.0 * mu11, mu20 - mu02));
 
