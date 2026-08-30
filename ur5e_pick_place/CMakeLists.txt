@@ -115,6 +115,9 @@ if(BUILD_TESTING)
   target_include_directories(object_detector_d10_test PRIVATE include)
   ament_add_gtest(mask_orientation_test test/test_mask_orientation.cpp)
   target_include_directories(mask_orientation_test PRIVATE include)
+  ament_add_gtest(edge_line_tls_test test/test_edge_line_tls.cpp)
+  target_include_directories(edge_line_tls_test PRIVATE include)
+  target_link_libraries(edge_line_tls_test ${OpenCV_LIBRARIES})
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
