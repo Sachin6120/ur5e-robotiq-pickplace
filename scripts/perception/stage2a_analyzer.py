@@ -71,6 +71,43 @@ def quaternion_to_yaw(q):
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def canonicalize_axial_angle(theta_rad):
+    """Return the rectangle-axis representative in [-pi/2, +pi/2)."""
+    wrapped = math.fmod(theta_rad, math.pi)
+    if wrapped < 0.0:
+        wrapped += math.pi
+    if wrapped >= math.pi / 2.0:
+        wrapped -= math.pi
+    return wrapped
+
+
+def axial_difference(a_rad, b_rad):
+    """Shortest axial a-b difference; yaw and yaw+pi are equivalent."""
+    return canonicalize_axial_angle(a_rad - b_rad)
+
+
+def axial_error_deg(a_rad, b_rad):
+    return abs(math.degrees(axial_difference(a_rad, b_rad)))
+
+
+def quaternion_upright_tilt_deg(q):
+    """Angle between object-local +Z and world +Z, independent of yaw."""
+    qx, qy, _qz, _qw = q
+    world_z_dot_local_z = 1.0 - 2.0 * (qx * qx + qy * qy)
+    return math.degrees(math.acos(min(1.0, max(-1.0, world_z_dot_local_z))))
+
+
+def finite_csv_float(csv_data, name):
+    value = csv_data.get(name)
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def load_pose_stream(path):
     obj, fla = [], []
     if not Path(path).is_file():
@@ -123,7 +160,14 @@ def parse_stage_timestamps(log_lines):
     return ev
 
 
-def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_yaw_deg):
+def analyze_case(
+    case_dir,
+    configured_yaw_deg,
+    target_place_xyz,
+    target_place_yaw_deg,
+    require_perceived_yaw=False,
+    use_axial_placement_yaw=False,
+):
     case_path = Path(case_dir)
     log_file = case_path / "m3_grasp.log"
     csv_file = case_path / "m3_grasp.csv"
@@ -189,23 +233,25 @@ def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_ya
 
     # 3. CSV metrics
     m3_res = csv_data.get("result", "UNKNOWN")
-    cartesian_fraction = (
-        float(csv_data["cartesian_fraction"])
-        if "cartesian_fraction" in csv_data and csv_data["cartesian_fraction"] not in ("", "N/A")
-        else None
-    )
-    tcp_error_m = (
-        float(csv_data["tcp_error_m"])
-        if "tcp_error_m" in csv_data and csv_data["tcp_error_m"] not in ("", "N/A")
-        else None
-    )
+    yaw_source = csv_data.get("yaw_source") or None
+    configured_object_yaw_deg = finite_csv_float(csv_data, "configured_object_yaw_deg")
+    perceived_object_yaw_deg = finite_csv_float(csv_data, "perceived_object_yaw_deg")
+    yaw_delta_deg = finite_csv_float(csv_data, "yaw_delta_deg")
+    commanded_grasp_yaw_deg = finite_csv_float(csv_data, "commanded_grasp_yaw_deg")
+
+    perceived_yaw_err_deg = None
+    if perceived_object_yaw_deg is not None and spawned_yaw_deg is not None:
+        # Ground-truth spawned orientation is the evaluation reference. The
+        # configured frame is intentionally absent from this calculation.
+        perceived_yaw_err_deg = axial_error_deg(
+            math.radians(perceived_object_yaw_deg), math.radians(spawned_yaw_deg)
+        )
+
+    cartesian_fraction = finite_csv_float(csv_data, "cartesian_fraction")
+    tcp_error_m = finite_csv_float(csv_data, "tcp_error_m")
     stage2_tcp_err_mm = tcp_error_m * 1000.0 if tcp_error_m is not None else None
 
-    achieved_q = (
-        float(csv_data["achieved_q"])
-        if "achieved_q" in csv_data and csv_data["achieved_q"] not in ("", "N/A")
-        else None
-    )
+    achieved_q = finite_csv_float(csv_data, "achieved_q")
     achieved_aperture_mm = (0.085 - achieved_q) * 1000.0 if achieved_q is not None else None
 
     # 4. Stream analysis: Slip and Tilt
@@ -267,12 +313,20 @@ def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_ya
 
     placement_pos_err_mm = None
     placement_orient_err_deg = None
+    placement_yaw_err_deg = None
+    final_upright_tilt_deg = None
     if final_pose and len(final_pose) >= 7:
         final_xyz = final_pose[:3]
         final_q = final_pose[3:7]
         target_q = rpy_to_quaternion(0.0, 0.0, math.radians(target_place_yaw_deg))
         placement_pos_err_mm = math.dist(final_xyz, target_place_xyz) * 1000.0
+        # Diagnostic only in Stage-2C: this remains the historical full SO(3)
+        # quaternion error, so a 180-degree axial equivalent reads as 180.
         placement_orient_err_deg = math.degrees(quaternion_angle_error(final_q, target_q))
+        placement_yaw_err_deg = axial_error_deg(
+            quaternion_to_yaw(final_q), math.radians(target_place_yaw_deg)
+        )
+        final_upright_tilt_deg = quaternion_upright_tilt_deg(final_q)
 
     # 6. Evaluation against Authoritative Gates
     gate_checks = {
@@ -307,11 +361,28 @@ def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_ya
             placement_pos_err_mm is not None
             and placement_pos_err_mm < GATES["placement_pos_err_mm_max"]
         ),
-        "placement_orient_err": (
+    }
+    if require_perceived_yaw:
+        gate_checks["perceived_yaw"] = (
+            yaw_source == "perceived"
+            and perceived_yaw_err_deg is not None
+        )
+    if use_axial_placement_yaw:
+        # Keep the existing 5-degree placement-orientation threshold.  In
+        # Stage-2C it applies independently to axial yaw and upright tilt.
+        gate_checks["placement_yaw_err"] = (
+            placement_yaw_err_deg is not None
+            and placement_yaw_err_deg < GATES["placement_orient_err_deg_max"]
+        )
+        gate_checks["final_upright_tilt"] = (
+            final_upright_tilt_deg is not None
+            and final_upright_tilt_deg < GATES["placement_orient_err_deg_max"]
+        )
+    else:
+        gate_checks["placement_orient_err"] = (
             placement_orient_err_deg is not None
             and placement_orient_err_deg < GATES["placement_orient_err_deg_max"]
-        ),
-    }
+        )
 
     all_passed = all(gate_checks.values())
     verdict = "PASS" if all_passed else "FAIL"
@@ -320,6 +391,12 @@ def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_ya
         "configured_yaw_deg": configured_yaw_deg,
         "configured_yaw_rad": math.radians(configured_yaw_deg),
         "spawned_yaw_deg": spawned_yaw_deg,
+        "yaw_source": yaw_source,
+        "configured_object_yaw_deg": configured_object_yaw_deg,
+        "perceived_object_yaw_deg": perceived_object_yaw_deg,
+        "yaw_delta_deg": yaw_delta_deg,
+        "commanded_grasp_yaw_deg": commanded_grasp_yaw_deg,
+        "perceived_yaw_err_deg": perceived_yaw_err_deg,
         "result": m3_res,
         "percept_err_mm": percept_err_mm,
         "selected_pregrasp_q": sel_q,
@@ -334,6 +411,9 @@ def analyze_case(case_dir, configured_yaw_deg, target_place_xyz, target_place_ya
         "transport_slip_mm": transport_slip_mm,
         "placement_pos_err_mm": placement_pos_err_mm,
         "placement_orient_err_deg": placement_orient_err_deg,
+        "placement_yaw_err_deg": placement_yaw_err_deg,
+        "final_upright_tilt_deg": final_upright_tilt_deg,
+        "placement_yaw_scoring": "axial" if use_axial_placement_yaw else "full_quaternion",
         "planning_time_s": plan_time_s,
         "gates": gate_checks,
         "verdict": verdict,

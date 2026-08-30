@@ -173,6 +173,134 @@ def wait_for_perception_point(timeout_s=15.0):
     return {"stamp_s": stamp_s, "xyz": xyz}, detail
 
 
+def wait_for_perception_pose(timeout_s=15.0):
+    """Return a fresh, valid pose_world sample, or no sample and diagnostics.
+
+    The probe subscribes only after discovery, so it cannot pass on a latched
+    or pre-subscription message.  m3_grasp independently enforces freshness
+    relative to its Stage-1 stationary timestamp when it consumes this topic.
+    """
+    probe_path = REPO / "scripts/perception/posestamped_readiness_probe.py"
+    output, returncode = run_cmd(
+        "source /opt/ros/jazzy/setup.bash && source install/setup.bash && "
+        f"python3 {probe_path} --timeout {timeout_s}",
+        timeout=timeout_s + 5.0,
+    )
+    detail_lines = []
+    sample = None
+    for line in output.splitlines():
+        if line.startswith("POSE_PROBE_SAMPLE_JSON="):
+            sample = json.loads(line.split("=", 1)[1])
+        elif line.strip():
+            detail_lines.append(line.strip())
+    detail = "; ".join(detail_lines)
+    if returncode != 0 or sample is None:
+        return None, f"returncode={returncode} {detail}"
+
+    xyz = (sample["x"], sample["y"], sample["z"])
+    quaternion = (sample["qx"], sample["qy"], sample["qz"], sample["qw"])
+    stamp_s = sample["stamp_sec"] + sample["stamp_nanosec"] * 1e-9
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    yaw = analyzer.quaternion_to_yaw(quaternion)
+    if (
+        sample["frame_id"] != "world"
+        or stamp_s <= 0.0
+        or not all(math.isfinite(value) for value in (*xyz, *quaternion))
+        or abs(norm - 1.0) > 1e-3
+        or not math.isfinite(yaw)
+    ):
+        return None, f"invalid PoseStamped sample={sample} {detail}"
+    return {"stamp_s": stamp_s, "xyz": xyz, "quaternion": quaternion, "yaw_rad": yaw}, detail
+
+
+def resolve_yaw_inputs(
+    legacy_yaw_deg,
+    configured_pick_yaw_deg=None,
+    spawned_yaw_deg=None,
+    target_place_yaw_deg=None,
+):
+    """Resolve Stage-2C's three independent yaw inputs without breaking 2A."""
+    configured = legacy_yaw_deg if configured_pick_yaw_deg is None else configured_pick_yaw_deg
+    spawned = legacy_yaw_deg if spawned_yaw_deg is None else spawned_yaw_deg
+    target_place = legacy_yaw_deg if target_place_yaw_deg is None else target_place_yaw_deg
+    values = (configured, spawned, target_place)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("configured pick, spawned, and target place yaw must be finite")
+    return values
+
+
+def make_control_setup(
+    *,
+    case_name,
+    configured_pick_yaw_deg,
+    spawned_yaw_deg,
+    target_place_yaw_deg,
+    use_perceived_position,
+    use_perceived_yaw,
+    target_source,
+    record_diagnostics,
+    fixed_side_clearance_m,
+    close_and_hold_only,
+    lift_only,
+    p_gain_override,
+    configured_object_centre_world,
+    case_dir,
+):
+    """Return explicit control metadata; measured spawn yaw is filled post-settle."""
+    return {
+        # Keep the historical fields for Stage-2A evidence readers.
+        "case": case_name,
+        "yaw_deg": configured_pick_yaw_deg,
+        "yaw_rad": math.radians(configured_pick_yaw_deg),
+        # Stage-2C: these are intentionally independent controls.
+        "configured_pick_yaw_deg": configured_pick_yaw_deg,
+        "spawn_request_yaw_deg": spawned_yaw_deg,
+        "measured_spawned_yaw_deg": None,
+        "target_place_yaw_deg": target_place_yaw_deg,
+        "use_perceived_position": use_perceived_position,
+        "use_perceived_yaw": use_perceived_yaw,
+        "target_source": target_source,
+        "record_diagnostics": record_diagnostics,
+        "fixed_side_clearance_m_override": fixed_side_clearance_m,
+        "close_and_hold_only": close_and_hold_only,
+        "lift_only": lift_only,
+        "p_gain_override": p_gain_override,
+        "configured_object_centre_world": configured_object_centre_world,
+        "gripper_model": "parallel_jaw",
+        "evidence_dir": str(case_dir),
+    }
+
+
+def bool_launch_value(value):
+    return "true" if value else "false"
+
+
+def build_m3_command(
+    *,
+    case_scene_path,
+    csv_file,
+    marker_prefix,
+    use_perceived_position,
+    use_perceived_yaw,
+    clearance_arg="",
+    hold_arg="",
+    lift_arg="",
+):
+    """Build the launch command so its Stage-2C flag is testable without ROS."""
+    use_position = bool_launch_value(use_perceived_position)
+    use_yaw = bool_launch_value(use_perceived_yaw)
+    return (
+        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
+        f"scene_file:=\"{case_scene_path}\" "
+        f"gripper_model:=parallel_jaw use_perceived_position:={use_position} "
+        f"require_perception:={use_position} use_perceived_yaw:={use_yaw} "
+        f"perceived_position_timeout_s:=15.0 pregrasp_joint_target:=\"[]\" "
+        f"csv_path:=\"{csv_file}\" marker_file_prefix:=\"{marker_prefix}\""
+        f"{clearance_arg}{hold_arg}{lift_arg}"
+    )
+
+
 def spawn_object_yaw(x, y, yaw_rad):
     """Spawns the pick_target in Gazebo with specified (x, y, yaw)."""
     sx, sy, sz = harness.OBJ_SIZE
@@ -240,12 +368,29 @@ def run_case(
     close_and_hold_only=False,
     lift_only=False,
     p_gain_override=None,
+    configured_pick_yaw_deg=None,
+    spawned_yaw_deg=None,
+    target_place_yaw_deg=None,
+    use_perceived_yaw=False,
+    evidence_root="evidence/stage2a_orientation",
+    stage2c_mode=False,
 ):
-    yaw_rad = math.radians(yaw_deg)
+    configured_pick_yaw_deg, spawned_yaw_deg, target_place_yaw_deg = resolve_yaw_inputs(
+        yaw_deg,
+        configured_pick_yaw_deg,
+        spawned_yaw_deg,
+        target_place_yaw_deg,
+    )
+    use_perceived_position = target_source == "perceived"
+    if use_perceived_yaw and not use_perceived_position:
+        raise ValueError("use_perceived_yaw requires target_source='perceived'")
+
+    configured_pick_yaw_rad = math.radians(configured_pick_yaw_deg)
+    spawned_yaw_rad = math.radians(spawned_yaw_deg)
     case_dir = (
         Path(evidence_dir).resolve()
         if evidence_dir
-        else REPO / f"evidence/stage2a_orientation/{case_name}"
+        else REPO / f"{evidence_root}/{case_name}"
     )
     if case_dir.exists():
         print(
@@ -259,7 +404,13 @@ def run_case(
     case_dir.mkdir(parents=True, exist_ok=False)
 
     print(f"\n=======================================================", flush=True)
-    print(f"       STAGE-2A TRIAL: {case_name} (yaw = {yaw_deg:+.1f} deg / {yaw_rad:+.4f} rad)", flush=True)
+    stage_label = "STAGE-2C" if stage2c_mode else "STAGE-2A"
+    print(
+        f"       {stage_label} TRIAL: {case_name} "
+        f"(configured pick={configured_pick_yaw_deg:+.1f}, "
+        f"spawn={spawned_yaw_deg:+.1f}, place={target_place_yaw_deg:+.1f} deg)",
+        flush=True,
+    )
     print(f"       Evidence dir: {case_dir}", flush=True)
     print(f"=======================================================", flush=True)
 
@@ -268,9 +419,10 @@ def run_case(
     with open(base_scene_path, "r") as f:
         scene = yaml.safe_load(f)
 
-    # Set both pick_pose and place_pose to the case yaw (Stage 2A isolates grasp feasibility)
-    scene["object"]["pick_pose"]["yaw"] = float(yaw_rad)
-    scene["object"]["place_pose"]["yaw"] = float(yaw_rad)
+    # Stage-2C keeps configured pick, spawned, and placement yaw independent.
+    # Only the generated case scene is changed; config/scene.yaml remains frozen.
+    scene["object"]["pick_pose"]["yaw"] = float(configured_pick_yaw_rad)
+    scene["object"]["place_pose"]["yaw"] = float(math.radians(target_place_yaw_deg))
 
     case_scene_path = case_dir / "scene_case.yaml"
     with open(case_scene_path, "w") as f:
@@ -280,29 +432,28 @@ def run_case(
     # Self-describing evidence: what this run actually was, recorded before it
     # happened, so the directory cannot later be mistaken for an authoritative
     # Stage-2A case run.
+    control_setup = make_control_setup(
+        case_name=case_name,
+        configured_pick_yaw_deg=configured_pick_yaw_deg,
+        spawned_yaw_deg=spawned_yaw_deg,
+        target_place_yaw_deg=target_place_yaw_deg,
+        use_perceived_position=use_perceived_position,
+        use_perceived_yaw=use_perceived_yaw,
+        target_source=target_source,
+        record_diagnostics=record_diagnostics,
+        fixed_side_clearance_m=fixed_side_clearance_m,
+        close_and_hold_only=close_and_hold_only,
+        lift_only=lift_only,
+        p_gain_override=p_gain_override,
+        configured_object_centre_world=[
+            float(scene["object"]["pick_pose"]["x"]),
+            float(scene["object"]["pick_pose"]["y"]),
+            float(scene["object"]["pick_pose"]["z"]),
+        ],
+        case_dir=case_dir,
+    )
     with open(case_dir / "control_setup.json", "w") as f:
-        json.dump(
-            {
-                "case": case_name,
-                "yaw_deg": yaw_deg,
-                "yaw_rad": yaw_rad,
-                "target_source": target_source,
-                "record_diagnostics": record_diagnostics,
-                "fixed_side_clearance_m_override": fixed_side_clearance_m,
-                "close_and_hold_only": close_and_hold_only,
-                "lift_only": lift_only,
-                "p_gain_override": p_gain_override,
-                "configured_object_centre_world": [
-                    float(scene["object"]["pick_pose"]["x"]),
-                    float(scene["object"]["pick_pose"]["y"]),
-                    float(scene["object"]["pick_pose"]["z"]),
-                ],
-                "gripper_model": "parallel_jaw",
-                "evidence_dir": str(case_dir),
-            },
-            f,
-            indent=2,
-        )
+        json.dump(control_setup, f, indent=2)
 
     # 2. Check contamination
     contamination = subprocess.run(
@@ -450,7 +601,7 @@ def run_case(
                 start_process(
                     f"python3 {REPO}/scripts/perception/gz_contact_observer.py "
                     f"--topic {topic} --out {case_dir}/contact_{key}.csv "
-                    f"--closing-axis-yaw-deg {yaw_deg}"
+                    f"--closing-axis-yaw-deg {spawned_yaw_deg}"
                 )
             )
         diag_procs.append(
@@ -500,13 +651,17 @@ def run_case(
         sys.exit(1)
     print("move_group ready.", flush=True)
 
-    # 7. Spawn object with requested yaw
+    # 7. Spawn object with the independent physical spawn yaw.  It must not
+    # feed the configured pick TF or the target placement yaw.
     pick_x = float(scene["object"]["pick_pose"]["x"])
     pick_y = float(scene["object"]["pick_pose"]["y"])
-    print(f"Spawning object at ({pick_x}, {pick_y}) with yaw={yaw_deg:+.1f} deg...", flush=True)
+    print(
+        f"Spawning object at ({pick_x}, {pick_y}) with yaw={spawned_yaw_deg:+.1f} deg...",
+        flush=True,
+    )
     harness.remove_object()
     time.sleep(1.0)
-    spawn_object_yaw(pick_x, pick_y, yaw_rad)
+    spawn_object_yaw(pick_x, pick_y, spawned_yaw_rad)
     settled, msg = harness.settle_object()
     if not settled:
         print(f"ERROR: Object failed to settle! msg={msg}", flush=True)
@@ -519,6 +674,12 @@ def run_case(
     init_pose = harness.instantaneous_object_pose()
     with open(case_dir / "init_settled_pose.json", "w") as f:
         json.dump(init_pose, f, indent=2)
+    # Ground truth is evidence-only.  This measured yaw is never sent to m3.
+    control_setup["measured_spawned_yaw_deg"] = math.degrees(
+        analyzer.quaternion_to_yaw(init_pose[3:7])
+    )
+    with open(case_dir / "control_setup.json", "w") as f:
+        json.dump(control_setup, f, indent=2)
     print(f"Object settled at: {init_pose}", flush=True)
 
     # 8. Launch perception nodes
@@ -550,6 +711,24 @@ def run_case(
         sys.exit(1)
     print(f"Perception ready: {perception_sample['xyz']}", flush=True)
 
+    if use_perceived_yaw:
+        perception_pose, perception_pose_detail = wait_for_perception_pose()
+        if perception_pose is None:
+            print(f"PERCEPTION_YAW_FAILURE: {perception_pose_detail}", flush=True)
+            stop_process(pos_proc)
+            stop_process(det_proc)
+            stop_process(mg_proc)
+            stop_process(sim_proc)
+            stop_process(observer_proc)
+            for proc in diag_procs:
+                stop_process(proc)
+            sys.exit(1)
+        print(
+            "Perception yaw ready: "
+            f"{math.degrees(perception_pose['yaw_rad']):+.3f} deg",
+            flush=True,
+        )
+
     # 9. Launch m3_grasp for full cycle
     csv_file = case_dir / "m3_grasp.csv"
     marker_prefix = case_dir / "stage"
@@ -559,7 +738,6 @@ def run_case(
     # centre (the same value the spawner used), NOT the perceived XY and NOT
     # live Gazebo ground truth -- m3_grasp reads it from TF, published by
     # static_scene_tf out of this run's own case scene YAML.
-    use_perceived = "true" if target_source == "perceived" else "false"
     # DIAGNOSTIC-ONLY, 2026-08-29: forwards to m3_grasp.launch.py's own
     # parallel_jaw_fixed_side_clearance_m argument, which defaults to empty
     # (production value, unchanged) when this stays None. See that
@@ -579,15 +757,15 @@ def run_case(
     # performs Stage 3 including its post-lift dwell, then stops before
     # transport, place, release, or retreat.
     lift_arg = " lift_only:=true" if lift_only else ""
-    cmd_m3 = (
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
-        f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
-        f"scene_file:=\"{case_scene_path}\" "
-        f"gripper_model:=parallel_jaw use_perceived_position:={use_perceived} "
-        f"require_perception:={use_perceived} "
-        f"perceived_position_timeout_s:=15.0 pregrasp_joint_target:=\"[]\" "
-        f"csv_path:=\"{csv_file}\" marker_file_prefix:=\"{marker_prefix}\""
-        f"{clearance_arg}{hold_arg}{lift_arg}"
+    cmd_m3 = build_m3_command(
+        case_scene_path=case_scene_path,
+        csv_file=csv_file,
+        marker_prefix=marker_prefix,
+        use_perceived_position=use_perceived_position,
+        use_perceived_yaw=use_perceived_yaw,
+        clearance_arg=clearance_arg,
+        hold_arg=hold_arg,
+        lift_arg=lift_arg,
     )
     print(f"Executing m3_grasp for {case_name}...", flush=True)
     m3_proc = start_process(
@@ -643,13 +821,15 @@ def run_case(
     ]
     metrics = analyzer.analyze_case(
         case_dir,
-        configured_yaw_deg=yaw_deg,
+        configured_yaw_deg=configured_pick_yaw_deg,
         target_place_xyz=place_xyz,
-        target_place_yaw_deg=yaw_deg,
+        target_place_yaw_deg=target_place_yaw_deg,
+        require_perceived_yaw=use_perceived_yaw,
+        use_axial_placement_yaw=stage2c_mode,
     )
 
     print("\n=======================================================", flush=True)
-    print(f"          STAGE-2A {case_name} RESULTS SUMMARY", flush=True)
+    print(f"          {stage_label} {case_name} RESULTS SUMMARY", flush=True)
     print("=======================================================", flush=True)
     print(f"Configured Yaw:      {metrics['configured_yaw_deg']:+.1f} deg")
     print(f"Spawned Yaw (GT):    {metrics['spawned_yaw_deg'] if metrics['spawned_yaw_deg'] is not None else 'N/A'}")
@@ -663,7 +843,8 @@ def run_case(
     print(f"Lift Slip:           {metrics['lift_slip_mm']:.4f} mm" if metrics['lift_slip_mm'] is not None else "Lift Slip:           N/A")
     print(f"Transport Slip:      {metrics['transport_slip_mm']:.4f} mm" if metrics['transport_slip_mm'] is not None else "Transport Slip:      N/A")
     print(f"Placement Pos Error: {metrics['placement_pos_err_mm']:.4f} mm" if metrics['placement_pos_err_mm'] is not None else "Placement Pos Error: N/A")
-    print(f"Placement Yaw Error: {metrics['placement_orient_err_deg']:.4f} deg" if metrics['placement_orient_err_deg'] is not None else "Placement Yaw Error: N/A")
+    print(f"Placement Orient Diag:{metrics['placement_orient_err_deg']:.4f} deg" if metrics['placement_orient_err_deg'] is not None else "Placement Orient Diag:N/A")
+    print(f"Placement Axial Yaw: {metrics['placement_yaw_err_deg']:.4f} deg" if metrics['placement_yaw_err_deg'] is not None else "Placement Axial Yaw: N/A")
     print(f"Planning Time:       {metrics['planning_time_s']} s" if metrics['planning_time_s'] is not None else "Planning Time:       N/A")
     print(f"\nGATES EVALUATION: {json.dumps(metrics['gates'], indent=2)}")
     print(f"\nFINAL CASE VERDICT:  {metrics['verdict']}")
