@@ -121,6 +121,10 @@ if(BUILD_TESTING)
   target_include_directories(edge_line_tls_test PRIVATE include)
   target_link_libraries(edge_line_tls_test ${OpenCV_LIBRARIES})
   ament_target_dependencies(edge_line_tls_test tf2)
+  ament_add_gtest(object_position_world_test test/test_object_position_world.cpp)
+  target_include_directories(object_position_world_test PRIVATE include)
+  ament_target_dependencies(object_position_world_test
+    rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
