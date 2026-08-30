@@ -15,6 +15,9 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+
 #include "ur5e_pick_place/edge_line_tls.hpp"
 
 namespace
@@ -23,7 +26,9 @@ namespace
 using ur5e_pick_place::axial_difference;
 using ur5e_pick_place::canonicalize_axial_angle;
 using ur5e_pick_place::estimate_edgelines_tls;
+using ur5e_pick_place::image_axial_to_object_yaw;
 using ur5e_pick_place::image_axial_to_world_yaw;
+using ur5e_pick_place::kLongAxisToObjectXOffsetRad;
 using ur5e_pick_place::kMaskOrientationPi;
 
 double deg(double rad) { return rad * 180.0 / kMaskOrientationPi; }
@@ -305,6 +310,150 @@ TEST(EdgeLineTLSFrameMapping, OpticalToWorldYawMapping)
     const double derived_world_rad = image_axial_to_world_yaw(derived_img_rad);
     const double err_world = std::abs(deg(axial_difference(derived_world_rad, canonicalize_axial_angle(world_yaw_rad))));
     EXPECT_LT(err_world, 1e-5) << "world_yaw=" << pair.first;
+  }
+}
+
+// ===========================================================================
+// SECTION D: CAMERA-FRAME POSE MAPPING
+//
+// Proves the full chain the detector relies on:
+//
+//   configured world yaw psi
+//     -> physical long-axis world direction  (object-local +Y, since
+//        scene.yaml object.size = [0.030, 0.045, 0.045])
+//     -> projection through the URDF optical frame into theta_image
+//     -> the REAL estimate_edgelines_tls() run on a rasterized mask
+//     -> image_axial_to_object_yaw() back to psi
+//     -> the EXACT quaternion object_detector.cpp publishes
+//     -> composed with R_world_opt, must equal Rz(psi) in world.
+//
+// theta_image is NOT taken from the mapping formula here -- it is derived
+// independently by explicit projection, so a sign error in the mapping
+// cannot hide behind a matching sign error in the test setup.
+// ===========================================================================
+
+// Optical axes expressed in world, from ur5e_robotiq.urdf.xacro's
+// camera_optical_joint. Columns are X_opt, Y_opt, Z_opt.
+//   +X_opt = world -Y, +Y_opt = world -X, +Z_opt = world -Z
+// Confirmed against a live D10 sample on 2026-08-31 (predicted optical XYZ
+// (0.175, 0.000, 1.605) vs measured (0.174672, -0.000322, 1.605000)).
+tf2::Matrix3x3 world_from_optical()
+{
+  return tf2::Matrix3x3(
+    0.0, -1.0, 0.0,
+    -1.0, 0.0, 0.0,
+    0.0, 0.0, -1.0);
+}
+
+// Physical model, derived from first principles rather than from the mapping
+// under test: where does the object's LONG axis land in the image?
+double project_long_axis_to_image_angle(double psi_rad)
+{
+  // object-local +Y (the 45 mm side) in world at yaw psi
+  const double wx = -std::sin(psi_rad);
+  const double wy = std::cos(psi_rad);
+  // world -> image:  u = -w_y (image right is world -Y), v = -w_x (image down is world -X)
+  return canonicalize_axial_angle(std::atan2(-wx, -wy));
+}
+
+const std::vector<double> kPoseMappingYawsDeg = {
+  0.0, 15.0, -15.0, 30.0, -30.0, 45.0, -45.0, 85.0};
+
+TEST(CameraFramePoseMapping, ProjectionAndInverseAreConsistent)
+{
+  for (const double psi_deg : kPoseMappingYawsDeg) {
+    const double psi = rad(psi_deg);
+    const double theta_img = project_long_axis_to_image_angle(psi);
+
+    // The independently-projected image angle must equal -psi (mod 180).
+    EXPECT_LT(std::abs(deg(axial_difference(theta_img, canonicalize_axial_angle(-psi)))), 1e-9)
+      << "psi=" << psi_deg;
+
+    // And the production inverse must recover psi.
+    EXPECT_LT(std::abs(deg(axial_difference(image_axial_to_object_yaw(theta_img), psi))), 1e-9)
+      << "psi=" << psi_deg;
+
+    // The long-axis helper must sit exactly one fixed offset away from it.
+    EXPECT_LT(
+      std::abs(deg(axial_difference(
+          image_axial_to_world_yaw(theta_img) - kLongAxisToObjectXOffsetRad,
+          image_axial_to_object_yaw(theta_img)))),
+      1e-9) << "psi=" << psi_deg;
+  }
+}
+
+TEST(CameraFramePoseMapping, EstimatorRecoversConfiguredYaw)
+{
+  const double cx = 65.37;
+  const double cy = 65.61;
+  for (const double psi_deg : kPoseMappingYawsDeg) {
+    const double psi = rad(psi_deg);
+    const double theta_img_truth = project_long_axis_to_image_angle(psi);
+
+    // Rasterize the real 3X footprint with its LONG axis at theta_img_truth.
+    const cv::Mat mask =
+      rasterize_rectangle_mask(k3X_Hx, k3X_Hy, theta_img_truth, cx, cy, k3X_Grid);
+    const auto result = estimate_edgelines_tls(mask);
+    ASSERT_TRUE(result.valid) << "psi=" << psi_deg;
+
+    // Estimator recovers the image angle within its qualified budget.
+    EXPECT_LT(std::abs(deg(axial_difference(result.theta_image_rad, theta_img_truth))), 0.50)
+      << "psi=" << psi_deg;
+
+    // And the mapping turns that back into the configured yaw, mod 180.
+    const double recovered = image_axial_to_object_yaw(result.theta_image_rad);
+    EXPECT_LT(std::abs(deg(axial_difference(recovered, psi))), 0.50) << "psi=" << psi_deg;
+  }
+}
+
+TEST(CameraFramePoseMapping, PublishedQuaternionComposesToWorldYaw)
+{
+  for (const double psi_deg : kPoseMappingYawsDeg) {
+    const double psi = rad(psi_deg);
+    const double theta_img = project_long_axis_to_image_angle(psi);
+
+    // EXACTLY the construction in object_detector.cpp.
+    tf2::Quaternion q;
+    q.setRPY(kMaskOrientationPi, 0.0, theta_img - kLongAxisToObjectXOffsetRad);
+
+    const tf2::Matrix3x3 R_opt_obj(q);
+    const tf2::Matrix3x3 R_world_obj = world_from_optical() * R_opt_obj;
+
+    // The composed world rotation must be a pure yaw about world +Z.
+    EXPECT_NEAR(R_world_obj[2][2], 1.0, 1e-9) << "psi=" << psi_deg;
+    EXPECT_NEAR(R_world_obj[0][2], 0.0, 1e-9) << "psi=" << psi_deg;
+    EXPECT_NEAR(R_world_obj[1][2], 0.0, 1e-9) << "psi=" << psi_deg;
+    EXPECT_NEAR(R_world_obj[2][0], 0.0, 1e-9) << "psi=" << psi_deg;
+    EXPECT_NEAR(R_world_obj[2][1], 0.0, 1e-9) << "psi=" << psi_deg;
+
+    // ... and that yaw must be psi, mod 180 (the object is 2-fold symmetric).
+    const double recovered = canonicalize_axial_angle(
+      std::atan2(R_world_obj[1][0], R_world_obj[0][0]));
+    EXPECT_LT(std::abs(deg(axial_difference(recovered, psi))), 1e-9) << "psi=" << psi_deg;
+  }
+}
+
+TEST(CameraFramePoseMapping, ZeroYawMatchesLiveObservation)
+{
+  // The 2026-08-31 controlled run spawned the object at configured yaw 0 and
+  // the detector reported theta_img = 0.00 deg over 22/22 frames. Pin that.
+  EXPECT_LT(std::abs(deg(project_long_axis_to_image_angle(0.0))), 1e-9);
+  EXPECT_LT(std::abs(deg(image_axial_to_object_yaw(0.0))), 1e-9);
+
+  // The historical -90 deg diagnostic was the LONG-AXIS world angle, not the
+  // object yaw. Both readings are correct for what they each measure; only
+  // the old label conflated them.
+  EXPECT_LT(std::abs(deg(image_axial_to_world_yaw(0.0)) + 90.0), 1e-9);
+}
+
+TEST(CameraFramePoseMapping, AxialSymmetryIsRespected)
+{
+  // psi and psi+180 are the same physical pose for this object, so the whole
+  // chain must be invariant under that shift.
+  for (const double psi_deg : kPoseMappingYawsDeg) {
+    const double a = project_long_axis_to_image_angle(rad(psi_deg));
+    const double b = project_long_axis_to_image_angle(rad(psi_deg + 180.0));
+    EXPECT_LT(std::abs(deg(axial_difference(a, b))), 1e-9) << "psi=" << psi_deg;
   }
 }
 

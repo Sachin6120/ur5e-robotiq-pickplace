@@ -106,6 +106,8 @@ ament_target_dependencies(object_detector
   geometry_msgs
   cv_bridge
   message_filters
+  tf2
+  tf2_geometry_msgs
 )
 target_link_libraries(object_detector ${OpenCV_LIBRARIES})
 
@@ -118,6 +120,7 @@ if(BUILD_TESTING)
   ament_add_gtest(edge_line_tls_test test/test_edge_line_tls.cpp)
   target_include_directories(edge_line_tls_test PRIVATE include)
   target_link_libraries(edge_line_tls_test ${OpenCV_LIBRARIES})
+  ament_target_dependencies(edge_line_tls_test tf2)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------

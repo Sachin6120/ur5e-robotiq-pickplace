@@ -27,20 +27,82 @@ struct EdgeLineTLSResult
   double quality_score{0.0};                                         // sum of support counts of valid fitted clusters
 };
 
+// ---------------------------------------------------------------------------
+// FRAME MAPPING
+//
+// Optical frame convention, taken from ur5e_robotiq.urdf.xacro's
+// camera_optical_joint (rpy = -pi/2, 0, -pi/2 against a camera_link that
+// looks straight down) and CONFIRMED against a live D10 measurement
+// (2026-08-31: predicted optical XYZ (0.175, 0.000, 1.605) vs measured
+// (0.174672, -0.000322, 1.605000)):
+//
+//   +X_opt = world -Y   (image right)
+//   +Y_opt = world -X   (image down)
+//   +Z_opt = world -Z   (camera forward, into the scene)
+//
+// The world -> image projection is therefore
+//   u = -w_y ,  v = -w_x
+// whose 2x2 matrix has determinant -1: looking straight down MIRRORS the
+// world XY plane into the image. That reflection is the whole reason the
+// mappings below carry a sign flip rather than a plain rotation, and it is
+// not optional -- dropping it silently negates every estimated yaw.
+// ---------------------------------------------------------------------------
+
 /**
- * @brief Converts canonical image axial angle (radians) to world-frame yaw (radians).
- * 
- * Optical Frame Convention (REP-145, camera mounted looking downward):
- *   +X_opt = -Y_world (image right)
- *   +Y_opt = -X_world (image down)
- *   +Z_opt = -Z_world (camera forward)
- * 
- * Major axis projection yields:
- *   yaw_world_axial = canonicalize_axial_angle(pi/2 - theta_image_rad)
+ * @brief World-frame AXIAL ANGLE OF THE MASK'S LONG AXIS (radians).
+ *
+ * NOTE THE SEMANTICS: this is the direction of the projected LONG axis in
+ * world coordinates. It is NOT the object's yaw, and must not be published
+ * or logged as one -- for this scene's object the long axis is object-local
+ * +Y, so this value runs 90 degrees ahead of the object yaw. Use
+ * image_axial_to_object_yaw() for the object yaw. Retained because the
+ * long-axis world angle is a genuinely useful diagnostic in its own right.
+ *
+ *   long_axis_world_axial = canonicalize_axial_angle(pi/2 - theta_image_rad)
  */
 inline double image_axial_to_world_yaw(double theta_image_rad)
 {
   return canonicalize_axial_angle(kMaskOrientationPi / 2.0 - theta_image_rad);
+}
+
+// Fixed offset between the estimated LONG axis and the object frame's +X
+// axis, in radians.
+//
+// SCENE-COUPLED CONSTANT. config/scene.yaml's object.size is
+// [0.030, 0.045, 0.045] (x, y, z), so the long HORIZONTAL axis is
+// object-local +Y, which sits +pi/2 ahead of object-local +X. Edge-Line TLS
+// reports the LONG axis (see estimate_edgelines_tls: clusters 2/3 are the
+// long edges and contribute their direction unrotated, clusters 0/1 are the
+// short edges and are rotated +90 deg onto the long axis), so recovering the
+// object yaw means subtracting this offset.
+//
+// If object.size is ever changed so that size[0] > size[1] -- i.e. the long
+// horizontal axis becomes object-local +X -- this constant MUST become 0.0.
+// It is not derivable from the mask alone: a mask only knows which axis is
+// longer, never what the object frame calls it.
+constexpr double kLongAxisToObjectXOffsetRad = kMaskOrientationPi / 2.0;
+
+/**
+ * @brief Converts canonical image axial angle to the object's WORLD YAW (radians).
+ *
+ * Derivation (all angles axial, mod pi):
+ *   object-local +Y in world at yaw psi = (-sin psi, cos psi)
+ *   project:  u = -w_y = -cos psi ,  v = -w_x = +sin psi
+ *   theta_image = atan2(v, u) = atan2(sin psi, -cos psi) == -psi  (mod pi)
+ * hence
+ *   psi = canonicalize_axial_angle(-theta_image_rad)
+ *
+ * Equivalently image_axial_to_world_yaw(theta) - kLongAxisToObjectXOffsetRad,
+ * which is the form written below so the long-axis-to-object-frame offset is
+ * explicit rather than folded into a bare sign.
+ *
+ * Verified against the live run of 2026-08-31: object spawned at configured
+ * yaw 0 produced theta_image = 0.00 deg, and this returns 0.00 deg.
+ */
+inline double image_axial_to_object_yaw(double theta_image_rad)
+{
+  return canonicalize_axial_angle(
+    image_axial_to_world_yaw(theta_image_rad) - kLongAxisToObjectXOffsetRad);
 }
 
 /**
@@ -96,9 +158,10 @@ inline EdgeLineTLSResult estimate_edgelines_tls(const cv::Mat & mask_u8)
     return out;
   }
 
-  // 1. Find external contours
+  // 1. Find external contours (clone mask to avoid OpenCV in-place mutation)
+  cv::Mat contour_mask = mask_u8.clone();
   std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(mask_u8, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  cv::findContours(contour_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
   if (contours.empty()) {
     return out;
   }

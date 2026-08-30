@@ -28,6 +28,7 @@
 
 #include <cv_bridge/cv_bridge.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
@@ -39,8 +40,11 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
 #include <std_msgs/msg/u_int32.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "ur5e_pick_place/d10_trimmed_mean.hpp"
+#include "ur5e_pick_place/edge_line_tls.hpp"
 
 namespace
 {
@@ -111,8 +115,10 @@ public:
     // valid back-projected point; never a placeholder, never [0,0,0].
     position_pub_ =
       create_publisher<geometry_msgs::msg::PointStamped>("object_detector/position_camera", 10);
+    pose_pub_ =
+      create_publisher<geometry_msgs::msg::PoseStamped>("object_detector/pose_camera", 10);
 
-    sync_.setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.05));
+    sync_.setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.20));
     sync_.registerCallback(
       std::bind(&ObjectDetector::callback, this, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3));
@@ -199,6 +205,13 @@ private:
       }
     }
     if (selected < 0) {
+      for (int label = 1; label < count; ++label) {
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        const int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
+        const int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+        RCLCPP_DEBUG(get_logger(), "NO_OBJECT component label=%d area=%d (gate=[%d,%d]) w=%d h=%d (gates=[%d,%d])",
+          label, area, min_component_area_, max_component_area_, width, height, min_component_width_, min_component_height_);
+      }
       return result;
     }
 
@@ -422,6 +435,64 @@ private:
         camera_position.point.y = position.d10_y;
         camera_position.point.z = position.d10_z;
         position_pub_->publish(camera_position);
+
+        // Stage-2B: Edge-Line TLS orientation estimation and camera-frame pose publication
+        const auto tls_result = ur5e_pick_place::estimate_edgelines_tls(mask);
+        if (tls_result.valid && std::isfinite(tls_result.theta_image_rad)) {
+          geometry_msgs::msg::PoseStamped camera_pose;
+          camera_pose.header = camera_position.header;
+          camera_pose.pose.position = camera_position.point;
+
+          // CONTRACT: pose_camera.orientation is the orientation of the
+          // perceived OBJECT frame expressed in camera_optical_frame -- never
+          // a world-frame yaw smuggled into a camera-frame message.
+          //
+          //   R_opt_obj = Rz(theta_image - pi/2) * Rx(pi)
+          //
+          // The Rz term carries the estimated yaw with the long-axis ->
+          // object-+X offset already removed; the Rx(pi) term is mandatory,
+          // not cosmetic -- the object's +Z points world-UP while optical +Z
+          // points DOWN into the scene, so without it the published frame is
+          // improper for a downward camera. tf2's setRPY(r, p, y) builds
+          // Rz(y)*Ry(p)*Rx(r), which is exactly this product.
+          //
+          // Composed with the URDF's R_world_opt this yields Rz(psi) in world
+          // for every angle -- proven in test_edge_line_tls.cpp's
+          // CameraFramePoseMapping suite, not assumed here.
+          tf2::Quaternion q;
+          q.setRPY(
+            ur5e_pick_place::kMaskOrientationPi, 0.0,
+            tls_result.theta_image_rad - ur5e_pick_place::kLongAxisToObjectXOffsetRad);
+          camera_pose.pose.orientation = tf2::toMsg(q);
+          pose_pub_->publish(camera_pose);
+
+          const double object_yaw_deg =
+            ur5e_pick_place::image_axial_to_object_yaw(tls_result.theta_image_rad) * 180.0 /
+            ur5e_pick_place::kMaskOrientationPi;
+          const double long_axis_world_deg =
+            ur5e_pick_place::image_axial_to_world_yaw(tls_result.theta_image_rad) * 180.0 /
+            ur5e_pick_place::kMaskOrientationPi;
+          const double theta_img_deg = tls_result.theta_image_rad * 180.0 / ur5e_pick_place::kMaskOrientationPi;
+
+          RCLCPP_INFO(
+            get_logger(),
+            "EDGE_LINE_TLS stamp=%.9f frame=%s valid=true theta_img=%.2f deg "
+            "object_yaw_axial=%.2f deg long_axis_world_axial=%.2f deg "
+            "eccentricity=%.4f boundary_pixels=%zu supports=[%zu,%zu,%zu,%zu] quality=%.1f",
+            rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
+            theta_img_deg, object_yaw_deg, long_axis_world_deg,
+            tls_result.eccentricity, tls_result.boundary_pixel_count,
+            tls_result.family_support_counts[0], tls_result.family_support_counts[1],
+            tls_result.family_support_counts[2], tls_result.family_support_counts[3],
+            tls_result.quality_score);
+        } else {
+          RCLCPP_INFO(
+            get_logger(),
+            "EDGE_LINE_TLS stamp=%.9f frame=%s refused: valid=%s eccentricity=%.4f (yaw unobservable / mask degenerate); "
+            "pose_camera omitted, position_camera published",
+            rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
+            tls_result.valid ? "true" : "false", tls_result.eccentricity);
+        }
       }
     }
     auto debug_msg = cv_bridge::CvImage(rgb_msg->header, "bgr8", debug).toImageMsg();
@@ -492,6 +563,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr centroid_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr area_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr position_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   bool camera_info_reported_{false};
 };
 
