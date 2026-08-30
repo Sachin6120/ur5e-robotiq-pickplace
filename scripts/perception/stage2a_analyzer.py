@@ -7,7 +7,7 @@ Extracts:
   - Deterministic pregrasp IK solution
   - Cartesian descent fraction & Stage-2 TCP error
   - Achieved grasp aperture
-  - Quiescent-windowed lift slip, transport slip, and max grasp tilt (via slip.py)
+  - Quiescent-windowed lift slip, transport slip, and grasp-orientation evidence (via slip.py)
   - Placement position error and placement orientation error
   - Planning time
   - Authoritative PASS/FAIL evaluation
@@ -261,6 +261,7 @@ def analyze_case(
     lift_slip_mm = None
     transport_slip_mm = None
     max_grasp_tilt_deg = None
+    max_grasp_orientation_change_deg = None
 
     if (
         obj_stream
@@ -294,16 +295,34 @@ def analyze_case(
                 trans_slip = slipmod.slip_m(post_f, post_o, tran_f, tran_o)
                 transport_slip_mm = trans_slip * 1000.0
 
-            # Tilt analysis: maximum orientation deviation of object during lift & transport
+            # Stage-2A's historical metric was full SO(3) displacement from
+            # the pre-lift quaternion.  Retain it as a diagnostic: it includes
+            # an intentional yaw change.  Stage-2C instead gates on upright
+            # tilt only: the angle of object-local +Z away from world +Z.
             if base_o:
                 base_q = base_o[3:7]
-                tilt_samples = [
+                orientation_change_samples = [
                     math.degrees(quaternion_angle_error(p[3:7], base_q))
                     for t, p in obj_stream
                     if lb <= t <= td + dwell_offset_s + win_s
                 ]
-                if tilt_samples:
-                    max_grasp_tilt_deg = max(tilt_samples)
+                upright_tilt_samples = [
+                    quaternion_upright_tilt_deg(p[3:7])
+                    for t, p in obj_stream
+                    if lb <= t <= td + dwell_offset_s + win_s
+                ]
+                if orientation_change_samples:
+                    max_grasp_orientation_change_deg = max(orientation_change_samples)
+                if use_axial_placement_yaw:
+                    # A rectangle may yaw about world +Z while remaining
+                    # upright.  That yaw is not a physical grasp tilt.
+                    max_grasp_tilt_deg = (
+                        max(upright_tilt_samples) if upright_tilt_samples else None
+                    )
+                else:
+                    # Default Stage-2A behavior remains byte-for-byte
+                    # equivalent in meaning to its historical gate.
+                    max_grasp_tilt_deg = max_grasp_orientation_change_deg
 
     # 5. Final Placement
     final_pose = None
@@ -407,6 +426,7 @@ def analyze_case(
         "achieved_q": achieved_q,
         "achieved_aperture_mm": achieved_aperture_mm,
         "max_grasp_tilt_deg": max_grasp_tilt_deg,
+        "max_grasp_orientation_change_deg": max_grasp_orientation_change_deg,
         "lift_slip_mm": lift_slip_mm,
         "transport_slip_mm": transport_slip_mm,
         "placement_pos_err_mm": placement_pos_err_mm,

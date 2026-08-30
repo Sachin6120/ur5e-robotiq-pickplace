@@ -91,6 +91,68 @@ def test_axial_equivalence():
     assert analyzer.axial_error_deg(math.radians(30.0), math.radians(210.0)) < 1e-9
 
 
+def test_upright_tilt_is_yaw_invariant():
+    def tilt(roll_deg=0.0, pitch_deg=0.0, yaw_deg=0.0):
+        return analyzer.quaternion_upright_tilt_deg(
+            analyzer.rpy_to_quaternion(
+                math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg)
+            )
+        )
+
+    assert tilt() < 1e-9
+    assert tilt(yaw_deg=30.0) < 1e-9
+    assert tilt(yaw_deg=90.0) < 1e-9
+    assert abs(tilt(roll_deg=2.0) - 2.0) < 1e-9
+    assert abs(tilt(pitch_deg=2.0) - 2.0) < 1e-9
+    assert abs(tilt(roll_deg=2.0, yaw_deg=30.0) - 2.0) < 1e-9
+    assert abs(tilt(pitch_deg=2.0, yaw_deg=90.0) - 2.0) < 1e-9
+
+
+def test_stage2c_uses_upright_tilt_but_retains_full_orientation_diagnostic():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        case_dir = Path(temp_dir)
+        write_evidence(
+            case_dir,
+            spawned_yaw_deg=30.0,
+            perceived_yaw_deg=30.0,
+            final_yaw_deg=0.0,
+        )
+        fields = [
+            "wall_ns",
+            *(f"pick_target_{axis}" for axis in ("x", "y", "z", "qx", "qy", "qz", "qw")),
+            *(f"wrist_3_link_{axis}" for axis in ("x", "y", "z", "qx", "qy", "qz", "qw")),
+        ]
+        with open(case_dir / "gz_pose_stream.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for index in range(53):
+                t = 100.2 + index * 0.1
+                sample_q = q_from_yaw_deg(0.0 if t < 101.0 else 30.0)
+                writer.writerow(
+                    {
+                        "wall_ns": int(t * 1e9),
+                        **dict(zip((f"pick_target_{a}" for a in ("x", "y", "z")), (0.4, 0.0, 0.75))),
+                        **dict(zip((f"pick_target_{a}" for a in ("qx", "qy", "qz", "qw")), sample_q)),
+                        **dict(zip((f"wrist_3_link_{a}" for a in ("x", "y", "z")), (0.0, 0.0, 0.0))),
+                        **dict(zip((f"wrist_3_link_{a}" for a in ("qx", "qy", "qz", "qw")), (0.0, 0.0, 0.0, 1.0))),
+                    }
+        )
+        (case_dir / "m3_grasp.log").write_text(
+            "[0000000101.000] M3 STAGE 3 LIFT_BEGIN cycle=0 sim=0 t=1.000\n"
+            "[0000000102.000] M3 STAGE 3 LIFT_DONE cycle=0 sim=0 t=2.000\n"
+            "[0000000104.000] M3 STAGE 4 TRANSPORT_DONE cycle=0 sim=0 t=4.000\n"
+        )
+        metrics = analyzer.analyze_case(
+            case_dir,
+            configured_yaw_deg=0.0,
+            target_place_xyz=[0.45, 0.2, 0.7725],
+            target_place_yaw_deg=0.0,
+            use_axial_placement_yaw=True,
+        )
+        assert metrics["max_grasp_tilt_deg"] < 1e-9
+        assert metrics["max_grasp_orientation_change_deg"] > 28.0
+
+
 def test_metrics_use_spawned_yaw_and_propagate_telemetry():
     with tempfile.TemporaryDirectory() as temp_dir:
         case_dir = Path(temp_dir)
@@ -136,6 +198,8 @@ def main():
     test_decoupled_inputs_and_metadata()
     test_yaw_forwarding()
     test_axial_equivalence()
+    test_upright_tilt_is_yaw_invariant()
+    test_stage2c_uses_upright_tilt_but_retains_full_orientation_diagnostic()
     test_metrics_use_spawned_yaw_and_propagate_telemetry()
     print("Stage-2C yaw evidence tests passed")
 
