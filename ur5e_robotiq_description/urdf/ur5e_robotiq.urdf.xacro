@@ -84,6 +84,8 @@
        in with enable_camera:=true. See the CAMERA block near the end of this
        file for the mount derivation. -->
   <xacro:arg name="enable_camera" default="false"/>
+  <xacro:arg name="camera_width" default="960"/>
+  <xacro:arg name="camera_height" default="720"/>
 
   <!-- Where the arm base is bolted, in the world frame. Keep consistent with
        the table pose in config/scene.yaml. -->
@@ -462,8 +464,8 @@
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
           <image>
-            <width>960</width>
-            <height>720</height>
+            <width>$(arg camera_width)</width>
+            <height>$(arg camera_height)</height>
             <format>R8G8B8</format>
           </image>
           <clip>

@@ -189,8 +189,10 @@ private:
       const int area = stats.at<int>(label, cv::CC_STAT_AREA);
       const int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
       const int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+      const int max_dim = std::max(width, height);
+      const int min_dim = std::min(width, height);
       if (area >= min_component_area_ && area <= max_component_area_ &&
-        width >= min_component_width_ && height >= min_component_height_ &&
+        max_dim >= min_component_width_ && min_dim >= min_component_height_ &&
         (selected < 0 || area > stats.at<int>(selected, cv::CC_STAT_AREA)))
       {
         selected = label;
@@ -305,21 +307,37 @@ private:
       return;
     }
     camera_info_reported_ = true;
-    const bool resolution_ok = (info.width == 960u && info.height == 720u);
+    const double sx = static_cast<double>(info.width) / 960.0;
+    const double sy = static_cast<double>(info.height) / 720.0;
+    const bool isotropic = (std::abs(sx - sy) < 1e-4);
+
+    if (!isotropic) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "CAMERA_INFO non-isotropic scaling rejected: width=%u height=%u (sx=%.4f, sy=%.4f)",
+        info.width, info.height, sx, sy);
+      return;
+    }
+
+    if (std::abs(sx - 1.0) > 1e-4) {
+      min_component_area_ = static_cast<int>(std::round(min_component_area_ * sx * sy));
+      max_component_area_ = static_cast<int>(std::round(max_component_area_ * sx * sy));
+      min_component_width_ = static_cast<int>(std::round(min_component_width_ * sx));
+      min_component_height_ = static_cast<int>(std::round(min_component_height_ * sx));
+    }
+
     RCLCPP_INFO(
       get_logger(),
-      "CAMERA_INFO frame=%s width=%u height=%u expected=960x720 resolution_match=%s "
+      "CAMERA_INFO frame=%s width=%u height=%u scale=%.2fx (sx=%.4f, sy=%.4f) "
+      "scaled_gates: area=[%d,%d] width_min=%d height_min=%d "
       "fx=%.9f fy=%.9f cx=%.9f cy=%.9f "
       "K=[%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f] "
       "optical_convention=+X_image_right,+Y_image_down,+Z_camera_forward",
-      info.header.frame_id.c_str(), info.width, info.height, resolution_ok ? "yes" : "NO",
+      info.header.frame_id.c_str(), info.width, info.height, sx, sx, sy,
+      min_component_area_, max_component_area_, min_component_width_, min_component_height_,
       info.k[0], info.k[4], info.k[2], info.k[5],
       info.k[0], info.k[1], info.k[2], info.k[3], info.k[4], info.k[5],
       info.k[6], info.k[7], info.k[8]);
-    if (!resolution_ok) {
-      RCLCPP_ERROR(
-        get_logger(), "CAMERA_INFO resolution is not the frozen 960x720; estimates are suspect");
-    }
   }
 
   void callback(

@@ -161,6 +161,8 @@ def launch_setup(context, *args, **kwargs):
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     world_file = LaunchConfiguration("world_file")
     enable_camera = LaunchConfiguration("enable_camera")
+    camera_width = LaunchConfiguration("camera_width")
+    camera_height = LaunchConfiguration("camera_height")
 
     # See design note 5 above. Every ROS prefix's share/ dir goes on
     # GZ_SIM_RESOURCE_PATH so package://robotiq_description/... resolves.
@@ -219,6 +221,12 @@ def launch_setup(context, *args, **kwargs):
             " ",
             "enable_camera:=",
             enable_camera,
+            " ",
+            "camera_width:=",
+            camera_width,
+            " ",
+            "camera_height:=",
+            camera_height,
         ]
     )
     # ParameterValue(..., value_type=str) is required, not cosmetic: launch_ros
@@ -592,6 +600,16 @@ def generate_launch_description():
             ),
             description="World name inside this becomes 'empty', matching "
             "scripts/m0_verify.sh's WORLD default.",
+        ),
+        DeclareLaunchArgument(
+            "camera_width",
+            default_value="960",
+            description="Overhead camera image width in pixels (diagnostic override).",
+        ),
+        DeclareLaunchArgument(
+            "camera_height",
+            default_value="720",
+            description="Overhead camera image height in pixels (diagnostic override).",
         ),
     ]
 
