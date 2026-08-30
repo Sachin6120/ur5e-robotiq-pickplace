@@ -76,6 +76,7 @@
 #include <tf2/exceptions.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <control_msgs/action/gripper_command.hpp>
@@ -89,6 +90,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -100,6 +102,7 @@
 
 #include "ur5e_pick_place/failure.hpp"
 #include "ur5e_pick_place/gz_topic_utils.hpp"
+#include "ur5e_pick_place/mask_orientation.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
 #include <moveit/robot_state/robot_state.hpp>
 #include "ur5e_pick_place/transport.hpp"
@@ -138,6 +141,97 @@ struct PregraspCandidate {
 
 static double wrap_angle(double a) {
   return std::atan2(std::sin(a), std::cos(a));
+}
+
+// Stage-2C intentionally supports yaw changes only for the existing vertical
+// pick geometry. General tilted-approach composition is a separate problem:
+// rejecting it here keeps the validated local-Z/downward contract explicit.
+constexpr double kYawGeometryToleranceRad = 1.0e-4;
+constexpr double kYawQuaternionNormTolerance = 1.0e-3;
+
+bool perceived_yaw_configuration_valid(bool use_perceived_yaw, bool use_perceived_position)
+{
+  return !use_perceived_yaw || use_perceived_position;
+}
+
+Result perceived_yaw_sample_result(bool have_sample)
+{
+  return have_sample ? Result::SUCCESS : Result::PERCEPTION_TIMEOUT;
+}
+
+std::optional<double> planar_yaw_from_valid_quaternion(
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  const auto & q_msg = pose.pose.orientation;
+  if (!std::isfinite(q_msg.x) || !std::isfinite(q_msg.y) ||
+    !std::isfinite(q_msg.z) || !std::isfinite(q_msg.w))
+  {
+    return std::nullopt;
+  }
+  const double norm_sq = q_msg.x * q_msg.x + q_msg.y * q_msg.y +
+    q_msg.z * q_msg.z + q_msg.w * q_msg.w;
+  if (!std::isfinite(norm_sq) || std::abs(norm_sq - 1.0) > kYawQuaternionNormTolerance) {
+    return std::nullopt;
+  }
+  tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
+  q.normalize();
+  const tf2::Matrix3x3 basis(q);
+  const double yaw = std::atan2(basis[1][0], basis[0][0]);
+  return std::isfinite(yaw) ? std::optional<double>(yaw) : std::nullopt;
+}
+
+bool is_fresh_world_pose(
+  const geometry_msgs::msg::PoseStamped & pose,
+  const std::string & world_frame,
+  const rclcpp::Time & m1_stationary_stamp)
+{
+  return pose.header.frame_id == world_frame &&
+    rclcpp::Time(pose.header.stamp) > m1_stationary_stamp;
+}
+
+bool configured_yaw_reference_supported(
+  const tf2::Transform & T_world_object,
+  const tf2::Transform & T_world_grasp,
+  double & configured_yaw,
+  std::string & error)
+{
+  double roll = 0.0;
+  double pitch = 0.0;
+  double yaw = 0.0;
+  T_world_object.getBasis().getRPY(roll, pitch, yaw);
+  if (!std::isfinite(roll) || !std::isfinite(pitch) || !std::isfinite(yaw) ||
+    std::abs(roll) > kYawGeometryToleranceRad ||
+    std::abs(pitch) > kYawGeometryToleranceRad)
+  {
+    error = "configured object frame is not level (roll/pitch must be approximately zero)";
+    return false;
+  }
+
+  const tf2::Vector3 local_z_in_world =
+    T_world_grasp.getBasis() * tf2::Vector3(0.0, 0.0, 1.0);
+  const tf2::Vector3 expected_world_down(0.0, 0.0, -1.0);
+  if (!std::isfinite(local_z_in_world.x()) || !std::isfinite(local_z_in_world.y()) ||
+    !std::isfinite(local_z_in_world.z()) ||
+    (local_z_in_world - expected_world_down).length() > kYawGeometryToleranceRad)
+  {
+    error = "grasp approach local +Z is not approximately world -Z";
+    return false;
+  }
+  configured_yaw = yaw;
+  return true;
+}
+
+tf2::Matrix3x3 grasp_basis_with_perceived_yaw(
+  const tf2::Matrix3x3 & existing_basis,
+  bool use_perceived_yaw,
+  double perceived_yaw,
+  double configured_yaw)
+{
+  if (!use_perceived_yaw) {
+    return existing_basis;
+  }
+  const double delta = ur5e_pick_place::axial_difference(perceived_yaw, configured_yaw);
+  return R_from_rpy(0.0, 0.0, delta) * existing_basis;
 }
 
 static bool select_deterministic_pregrasp_branch(
@@ -596,6 +690,7 @@ GripperCloseResult gripper_close_and_hold(
 
 }  // namespace
 
+#ifndef UR5E_PICK_PLACE_M3_GRASP_UNIT_TEST
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -706,8 +801,11 @@ int main(int argc, char ** argv)
   bool close_and_hold_only = false;
   bool use_perceived_position = false;
   std::string perceived_position_topic = "object_detector/position_world";
+  bool use_perceived_yaw = false;
+  std::string perceived_pose_topic = "object_detector/pose_world";
   double perceived_position_timeout_s = 2.0;
   double object_height_m = 0.0;
+  std::string object_frame_name = "object_frame";
 
   // --- Milestone F1 (evidence-grade perception mode) ------------------------
   // require_perception turns the production-convenience fallback OFF. With it
@@ -777,8 +875,14 @@ int main(int argc, char ** argv)
   // so the evidence states the source instead of leaving it to be inferred
   // from commanded coordinates after the fact.
   std::string position_source = "configured";
+  std::string yaw_source = "configured";
+  double configured_object_yaw_deg = std::numeric_limits<double>::quiet_NaN();
+  double perceived_object_yaw_deg = std::numeric_limits<double>::quiet_NaN();
+  double yaw_delta_deg = std::numeric_limits<double>::quiet_NaN();
+  double commanded_grasp_yaw_deg = std::numeric_limits<double>::quiet_NaN();
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
+  node->get_parameter_or("object_frame_name", object_frame_name, object_frame_name);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
   node->get_parameter_or("place_frame_name", place_frame_name, place_frame_name);
   node->get_parameter_or("tool0_frame", tool0_frame, tool0_frame);
@@ -832,6 +936,8 @@ int main(int argc, char ** argv)
     "use_perceived_position", use_perceived_position, use_perceived_position);
   node->get_parameter_or(
     "perceived_position_topic", perceived_position_topic, perceived_position_topic);
+  node->get_parameter_or("use_perceived_yaw", use_perceived_yaw, use_perceived_yaw);
+  node->get_parameter_or("perceived_pose_topic", perceived_pose_topic, perceived_pose_topic);
   node->get_parameter_or(
     "perceived_position_timeout_s", perceived_position_timeout_s, perceived_position_timeout_s);
   node->get_parameter_or("object_height_m", object_height_m, object_height_m);
@@ -936,6 +1042,15 @@ int main(int argc, char ** argv)
       logger,
       "CONFIG_ERROR: object_height_m must be > 0 when use_perceived_position is true, got %.6f",
       object_height_m);
+    result = Result::CONFIG_ERROR;
+  }
+  if (ur5e_pick_place::ok(result) &&
+    !perceived_yaw_configuration_valid(use_perceived_yaw, use_perceived_position))
+  {
+    RCLCPP_ERROR(
+      logger,
+      "CONFIG_ERROR: use_perceived_yaw is true but use_perceived_position is false. "
+      "Perceived yaw is accepted only at the validated M1 perception boundary.");
     result = Result::CONFIG_ERROR;
   }
   if (ur5e_pick_place::ok(result) && require_perception && !use_perceived_position) {
@@ -1119,6 +1234,7 @@ int main(int argc, char ** argv)
 
   bool got_grasp_tf = false;
   tf2::Transform T_world_grasp;
+  double configured_object_yaw = std::numeric_limits<double>::quiet_NaN();
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener;
@@ -1150,6 +1266,45 @@ int main(int argc, char ** argv)
         world_frame.c_str(), grasp_frame_name.c_str(), tf_lookup_timeout_s,
         tf_error.c_str());
       result = Result::TF_LOOKUP_TIMEOUT;
+    }
+
+    if (ur5e_pick_place::ok(result) && use_perceived_yaw) {
+      bool got_object_tf = false;
+      tf2::Transform T_world_object;
+      const auto object_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(tf_lookup_timeout_s);
+      while (std::chrono::steady_clock::now() < object_deadline) {
+        if (tf_buffer->canTransform(world_frame, object_frame_name, tf2::TimePointZero, &tf_error)) {
+          auto stamped = tf_buffer->lookupTransform(world_frame, object_frame_name, tf2::TimePointZero);
+          tf2::fromMsg(stamped.transform, T_world_object);
+          got_object_tf = true;
+          break;
+        }
+        rclcpp::sleep_for(20ms);
+      }
+      if (!got_object_tf) {
+        RCLCPP_ERROR(
+          logger,
+          "TF_LOOKUP_TIMEOUT: could not resolve %s -> %s within %.1fs: %s",
+          world_frame.c_str(), object_frame_name.c_str(), tf_lookup_timeout_s,
+          tf_error.c_str());
+        result = Result::TF_LOOKUP_TIMEOUT;
+      } else {
+        std::string geometry_error;
+        if (!configured_yaw_reference_supported(
+            T_world_object, T_world_grasp, configured_object_yaw, geometry_error))
+        {
+          RCLCPP_ERROR(
+            logger, "CONFIG_ERROR: perceived-yaw targeting requires %s.", geometry_error.c_str());
+          result = Result::CONFIG_ERROR;
+        } else {
+          configured_object_yaw_deg = configured_object_yaw * 180.0 / M_PI;
+        }
+      }
+    }
+    if (got_grasp_tf) {
+      const auto & basis = T_world_grasp.getBasis();
+      commanded_grasp_yaw_deg = std::atan2(basis[1][0], basis[0][0]) * 180.0 / M_PI;
     }
   }
 
@@ -1197,7 +1352,8 @@ int main(int argc, char ** argv)
     move_group.setMaxAccelerationScalingFactor(acc_scale);
 
     // =====================================================================
-    // MILESTONE F1: M1 observation pose -> stationarity -> ONE fresh sample
+    // MILESTONE F1 / Stage-2C: M1 observation pose -> stationarity -> fresh
+    // position and (when enabled) independently subscribed yaw samples.
     // =====================================================================
     // Order matters and is not negotiable.  Milestones C, D and E were every
     // one of them validated with the arm at M1; a sample taken from any other
@@ -1309,10 +1465,12 @@ int main(int argc, char ** argv)
     // TOP-SURFACE centre, grasp_frame is anchored at the object CENTRE
     // (static_scene_tf.cpp publishes object_frame -> grasp_frame with zero
     // translation), hence the explicit half-height subtraction.  Only the
-    // translation is replaced; the rotation stays exactly as
-    // orientation_from_approach_axis derived it from approach_axis and
-    // gripper_roll.  object_height_m comes from the configured object size --
-    // nothing here is hardcoded, and no empirical correction is applied.
+    // translation is replaced. With the default yaw mode disabled, the
+    // rotation stays exactly as orientation_from_approach_axis derived it
+    // from approach_axis and gripper_roll. Stage-2C's separate yaw block
+    // below may pre-multiply only an axial world-Z delta. object_height_m
+    // comes from the configured object size -- nothing here is hardcoded,
+    // and no empirical correction is applied.
     //
     // MILESTONE F1 additions: the accepted sample must be stamped strictly
     // after the M1 stationarity boundary, and require_perception removes the
@@ -1414,6 +1572,88 @@ int main(int argc, char ** argv)
           stale_count, invalid_count,
           T_world_grasp.getOrigin().x(), T_world_grasp.getOrigin().y(),
           T_world_grasp.getOrigin().z());
+      }
+    }
+
+    // Stage-2C yaw is deliberately a separate subscription from the position
+    // path above. A valid position never authorises a configured-yaw fallback:
+    // if no fresh valid pose arrives, this run stops before target composition.
+    if (ur5e_pick_place::ok(result) && use_perceived_yaw) {
+      geometry_msgs::msg::PoseStamped::ConstSharedPtr perceived_pose;
+      std::mutex perceived_pose_mutex;
+      std::size_t rejected_stale = 0;
+      std::size_t rejected_invalid = 0;
+      auto pose_subscription = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+        perceived_pose_topic, 10,
+        [&perceived_pose, &perceived_pose_mutex, &rejected_stale, &rejected_invalid, &world_frame,
+        &m1_stationary_stamp](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+          if (msg->header.frame_id != world_frame || !planar_yaw_from_valid_quaternion(*msg)) {
+            std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+            ++rejected_invalid;
+            return;
+          }
+          if (!is_fresh_world_pose(*msg, world_frame, m1_stationary_stamp)) {
+            std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+            ++rejected_stale;
+            return;
+          }
+          std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+          if (!perceived_pose) {
+            perceived_pose = std::move(msg);
+          }
+        });
+
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(perceived_position_timeout_s);
+      while (std::chrono::steady_clock::now() < deadline) {
+        {
+          std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+          if (perceived_pose) {
+            break;
+          }
+        }
+        rclcpp::sleep_for(20ms);
+      }
+
+      geometry_msgs::msg::PoseStamped::ConstSharedPtr sample;
+      std::size_t stale_count = 0;
+      std::size_t invalid_count = 0;
+      {
+        std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+        sample = perceived_pose;
+        stale_count = rejected_stale;
+        invalid_count = rejected_invalid;
+      }
+      if (sample) {
+        const double perceived_yaw = *planar_yaw_from_valid_quaternion(*sample);
+        const double delta = ur5e_pick_place::axial_difference(
+          perceived_yaw, configured_object_yaw);
+        T_world_grasp.setBasis(grasp_basis_with_perceived_yaw(
+          T_world_grasp.getBasis(), true, perceived_yaw, configured_object_yaw));
+        perceived_object_yaw_deg = perceived_yaw * 180.0 / M_PI;
+        yaw_delta_deg = delta * 180.0 / M_PI;
+        const auto & basis = T_world_grasp.getBasis();
+        commanded_grasp_yaw_deg = std::atan2(basis[1][0], basis[0][0]) * 180.0 / M_PI;
+        yaw_source = "perceived";
+        RCLCPP_INFO(
+          logger,
+          "PERCEPTION_YAW_USED: stamp=%.9f (boundary %.9f) configured_object_yaw_deg=%.6f "
+          "perceived_object_yaw_deg=%.6f axial_delta_deg=%.6f "
+          "commanded_grasp_yaw_deg=%.6f; rejected_stale=%zu rejected_invalid=%zu",
+          rclcpp::Time(sample->header.stamp).seconds(), m1_stationary_stamp.seconds(),
+          configured_object_yaw_deg, perceived_object_yaw_deg, yaw_delta_deg,
+          commanded_grasp_yaw_deg, stale_count, invalid_count);
+      } else {
+        yaw_source = "perception_timeout";
+        RCLCPP_ERROR(
+          logger,
+          "PERCEPTION_TIMEOUT: no fresh valid %s PoseStamped in frame '%s' stamped after "
+          "the M1 stationarity boundary %.9f within %.2fs (rejected_stale=%zu "
+          "rejected_invalid=%zu). NOT falling back to configured yaw, NOT planning, "
+          "NOT executing.",
+          perceived_pose_topic.c_str(), world_frame.c_str(), m1_stationary_stamp.seconds(),
+          perceived_position_timeout_s, stale_count, invalid_count);
+        result = perceived_yaw_sample_result(false);
       }
     }
 
@@ -2358,7 +2598,9 @@ int main(int argc, char ** argv)
       // afterwards from commanded coordinates is not acceptable -- a fallback
       // run and a perceived run differ by ~1 mm, which is unreadable without
       // already knowing the configured value.
-      csv << "result,position_source,pregrasp_only,grasp_only,"
+      csv << "result,position_source,yaw_source,configured_object_yaw_deg,"
+             "perceived_object_yaw_deg,yaw_delta_deg,commanded_grasp_yaw_deg,"
+             "pregrasp_only,grasp_only,"
              "pregrasp_attempted,pregrasp_succeeded,descent_attempted,descent_succeeded,"
              "gripper_close_attempted,gripper_close_succeeded,f2_stop_reached,"
              "lift_attempted,transport_attempted,place_release_attempted,"
@@ -2392,7 +2634,9 @@ int main(int argc, char ** argv)
         ? (kParallelJawApertureFullOpenM - final_close_target_commanded) : -1.0;
       const double achieved_aperture_m = (is_parallel_jaw && have_grip_result)
         ? (kParallelJawApertureFullOpenM - grip.achieved_position) : -1.0;
-      csv << to_string(result) << ',' << position_source
+      csv << to_string(result) << ',' << position_source << ',' << yaw_source
+          << ',' << configured_object_yaw_deg << ',' << perceived_object_yaw_deg
+          << ',' << yaw_delta_deg << ',' << commanded_grasp_yaw_deg
           << ',' << (pregrasp_only ? 1 : 0) << ',' << (grasp_only ? 1 : 0)
           << ',' << (pregrasp_attempted ? 1 : 0) << ',' << (pregrasp_succeeded ? 1 : 0)
           << ',' << (descent_attempted ? 1 : 0) << ',' << (executed ? 1 : 0)
@@ -2433,7 +2677,9 @@ int main(int argc, char ** argv)
   RCLCPP_INFO(
     rclcpp::get_logger("m3_grasp"),
     "RUN SUMMARY: milestone=M3 gripper_model=%s command_units=%s result=%s "
-    "position_source=%s pregrasp_only=%s grasp_only=%s "
+    "position_source=%s yaw_source=%s configured_object_yaw_deg=%.4f "
+    "perceived_object_yaw_deg=%.4f yaw_delta_deg=%.4f commanded_grasp_yaw_deg=%.4f "
+    "pregrasp_only=%s grasp_only=%s "
     "lift_only=%s lift_only_stop_reached=%s "
     "pregrasp_attempted=%s pregrasp_succeeded=%s descent_attempted=%s "
     "descent_succeeded=%s gripper_close_attempted=%s gripper_close_succeeded=%s "
@@ -2443,7 +2689,9 @@ int main(int argc, char ** argv)
     "expected_grip_angle=%.4f within_tolerance=%s preclose_result=%s preclose_achieved=%.4f "
     "attempted_transport=%s transport_result=%s lift_result=%s",
     gripper_model.c_str(), is_parallel_jaw ? "m" : "rad",
-    to_string(result), position_source.c_str(), pregrasp_only ? "yes" : "no",
+    to_string(result), position_source.c_str(), yaw_source.c_str(), configured_object_yaw_deg,
+    perceived_object_yaw_deg, yaw_delta_deg, commanded_grasp_yaw_deg,
+    pregrasp_only ? "yes" : "no",
     grasp_only ? "yes" : "no", lift_only ? "yes" : "no",
     lift_only_stop_reached ? "yes" : "no", pregrasp_attempted ? "yes" : "no",
     pregrasp_succeeded ? "yes" : "no", descent_attempted ? "yes" : "no",
@@ -2482,3 +2730,4 @@ int main(int argc, char ** argv)
 
   return ur5e_pick_place::ok(result) ? 0 : 1;
 }
+#endif  // UR5E_PICK_PLACE_M3_GRASP_UNIT_TEST

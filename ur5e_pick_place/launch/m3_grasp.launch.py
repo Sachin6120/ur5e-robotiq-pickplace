@@ -95,6 +95,9 @@ def _setup(context, *args, **kwargs):
     use_perceived_position = (
         LaunchConfiguration("use_perceived_position").perform(context).lower() == "true"
     )
+    use_perceived_yaw = (
+        LaunchConfiguration("use_perceived_yaw").perform(context).lower() == "true"
+    )
     require_perception = (
         LaunchConfiguration("require_perception").perform(context).lower() == "true"
     )
@@ -356,6 +359,7 @@ def _setup(context, *args, **kwargs):
     node_params = {
         "use_sim_time": True,
         "world_frame": world_frame,
+        "object_frame_name": object_frame_name,
         "grasp_frame_name": grasp_frame_name,
         "place_frame_name": place_frame_name,
         "tool0_frame": flange_frame,
@@ -398,6 +402,8 @@ def _setup(context, *args, **kwargs):
         "close_and_hold_only": close_and_hold_only,
         "use_perceived_position": use_perceived_position,
         "perceived_position_topic": "object_detector/position_world",
+        "use_perceived_yaw": use_perceived_yaw,
+        "perceived_pose_topic": "object_detector/pose_world",
         "perceived_position_timeout_s": float(
             LaunchConfiguration("perceived_position_timeout_s").perform(context)
         ),
@@ -501,6 +507,13 @@ def generate_launch_description():
                 default_value="false",
                 description="Use one world-frame RGB-D position for the pick. "
                 "false preserves the configured classical pipeline.",
+            ),
+            DeclareLaunchArgument(
+                "use_perceived_yaw",
+                default_value="false",
+                description="Use one fresh world-frame object pose yaw for the pick. "
+                "Requires use_perceived_position:=true and never falls back to "
+                "configured yaw.",
             ),
             DeclareLaunchArgument(
                 "require_perception",

@@ -125,6 +125,11 @@ if(BUILD_TESTING)
   target_include_directories(object_position_world_test PRIVATE include)
   ament_target_dependencies(object_position_world_test
     rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(m3_perceived_yaw_test test/test_m3_perceived_yaw.cpp)
+  target_include_directories(m3_perceived_yaw_test PRIVATE include)
+  ament_target_dependencies(m3_perceived_yaw_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
+    tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
