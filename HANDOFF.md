@@ -1,19 +1,370 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The 2026-08-28 "Baseline Frozen" section
-> immediately below is current authority for repository state: the working
-> tree has been audited, cleaned, and committed as three commits on
-> `rgbd-perception` (production/tooling/docs). A local annotated tag
-> `stage1-generalization-pass` is intended as the final step of this same
-> baseline-freeze effort, once a post-commit build re-verification passes —
-> check `git tag -l` if this file is read before that step's own commit
-> lands. The section after it is current authority for results:
-> Generalization Stage-1 is RESOLVED, G1-G5 all PASS. Everything below the
-> "Historical record" heading is superseded chronology, kept for its
-> root-cause evidence. Sections dated 2026-08-23 further down record the F1
-> and F2 investigations in order.
+> READ THIS SECTION FIRST. The section immediately below, "2026-08-30
+> Stage-1 P200 Requalification + Stage-2A Yaw-Feasibility Complete — CURRENT
+> AUTHORITY", is the sole current-authority statement of repository state.
+> Every other "— Current Authority" label anywhere else in this file (all
+> dated 2026-08-29 or earlier) is superseded and has been relabelled
+> accordingly; their content is retained as historical evidence, not current
+> state — do not act on any instruction inside a superseded section without
+> checking it against the section below first.
 
-## 2026-08-28 Baseline Frozen — Stage-1 Commits + Local Tag — Current Authority
+## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Yaw-Feasibility Complete — CURRENT AUTHORITY
+
+### Production state
+
+- Repository: `~/ur5e_pickplace`, branch `stage2-orientation-generalization`,
+  HEAD `e37383e` (`control: raise parallel-jaw grasp gain to validated
+  value`). Every commit hash cited as "HEAD" in a section below this one
+  (e.g. `a056023`) is stale by several commits; treat `e37383e` as current.
+- `parallel_jaw_gripper_controller`'s `gains.gripper_jaw_joint.p` =
+  **200.0** is **production** in
+  `ur5e_robotiq_description/config/controllers.yaml` (commit `e37383e`,
+  `control: raise parallel-jaw grasp gain to validated value`). **It is no
+  longer diagnostic-only.** Every "P=200 remains diagnostic-only" /
+  "P=200 does not authorize a production gain change" statement in the
+  sections below this one describes a state that no longer holds — it was
+  true when written and is superseded now.
+- D10 XYZ position estimator (selected-component subpixel centroid + 10%
+  symmetric trimmed-mean depth) is production, unchanged since commit
+  `a056023`.
+- Fixed-side clearance remains **1.5 mm**
+  (`GRASP_TCP_FIXED_SIDE_CLEARANCE_M` in `parallel_jaw_geometry.py`),
+  unchanged — no clearance override is in production.
+- `thresholds.plan_attempts = 1` in `config/scene.yaml`, unchanged.
+- No diagnostic override (`p_gain_override`, `fixed_side_clearance_m_override`)
+  is required, or was used, for any result recorded in this section.
+
+### Stage-1: requalified under production P=200
+
+- **G1-G5 production-default P=200 regression: 5/5 PASS.** Evidence:
+  `evidence/stage1_g{1..5}_production_p200_regression_run*/`.
+- **Scene-A production-default P=200 repeatability: 5/5 PASS** — five
+  consecutive clean full cycles, no retries/tuning/config changes between
+  them, identical production configuration confirmed in every run's
+  `control_setup.json`. Evidence:
+  `evidence/stage1_scene_a_final_repeatability_20260830/R1..R5/`. Perception
+  error identical every run (1.6134 mm); lift slip 0.0068-0.0103 mm;
+  transport slip 0.0034-0.0044 mm; placement position error 1.88-1.99 mm;
+  placement yaw error <= 0.055 deg; measured gripper effort exactly 5.000 N
+  through lift and transport in every run; zero descent collisions; bilateral
+  pad seating before lift in every run.
+- **Stage-1 (position generalization G1-G5 + Scene-A repeatability) is
+  requalified end-to-end under production P=200.** This supersedes the
+  "Scene-A production-default repeatability remains pending" status that
+  stood before 2026-08-30, and supersedes the older P=50 versions of both
+  campaigns recorded further down this file (kept there as historical
+  evidence of the P=50 baseline, not as current state).
+
+### Stage-2A: configured-yaw manipulation feasibility COMPLETE
+
+**O0-O4 perception-driven-XY, production P=200, full-cycle: 5/5 physical
+PASS** (yaw = 0, +15, -15, +30, -30 deg; object centre still CONFIGURED from
+`scene.yaml`, not perceived — see "Current limitation" below). Evidence:
+`evidence/stage2a_o{0,1,2,3,4}_perceived_force_authority_full_cycle_control*/`.
+
+| Case | Yaw | Percept err | Aperture | Peak tilt | Lift slip | Stored verdict |
+|---|---:|---:|---:|---:|---:|---|
+| O0 | 0 deg | 1.6134 mm | 29.9995 mm | 0.0550 deg | 0.0072 mm | PASS |
+| O1 | +15 deg | 1.3895 mm | 29.9995 mm | 0.0382 deg | 0.0185 mm | PASS |
+| O2 | -15 deg | 1.4293 mm | 29.9995 mm | null (window artifact, see below) | null (window artifact, see below) | stored FAIL, physical PASS |
+| O3 | +30 deg | 1.3826 mm | 29.9995 mm | 0.0662 deg | 0.0101 mm | PASS |
+| O4 | -30 deg | 1.4200 mm | 29.9995 mm | 0.0675 deg | 0.0075 mm | PASS |
+
+- **O2-O4 are NOT blocked.** They have run and passed. The "O2-O4 remain
+  BLOCKED" statement in the 2026-08-29 "Stage-2A Orientation" section below
+  is superseded.
+- **The O1 configured-center / zero-clearance / force-authority diagnostic
+  controls are historical, completed work**, not a pending next task — they
+  are what led to the P=200 force-authority fix now in production. The
+  "Exact next task — one O1 configured-center diagnostic control" instruction
+  in the 2026-08-29 "Stage-2A Orientation" section below has already been
+  carried out and must **not** be rerun.
+- **Configured-yaw manipulation feasibility (+/-15 deg, +/-30 deg) is
+  therefore COMPLETE.**
+
+### Known evidence artifacts (documented; do not read as weakening the PASS verdicts above)
+
+- **G1 (`_run2`) and O2's stored `cycle_metrics.json` verdicts read `FAIL`**,
+  solely because `stage2a_analyzer.py`'s fixed `LIFT_BEGIN - 0.8s` pre-lift
+  quiescence window overlaps the intentional P=200 force-seating
+  displacement, so it declines to compute `lift_slip_mm`/`max_grasp_tilt_deg`
+  (nulls them) rather than reporting a bad number. This is a **measurement-
+  window artifact of the generic analyzer, not a physical failure** — the
+  analyzer itself was not modified and must not be.
+  - **G1 direct ground truth** (0.6 s late-anchored quiescent window, right-
+    anchored at `LIFT_BEGIN`): lift slip **0.00492 mm**, peak tilt
+    **0.0444 deg** — both far inside gates.
+  - **O2 direct ground truth** (0.25 s late-anchored window, already recorded
+    in the O2 section below): lift slip **0.0125 mm**, peak tilt
+    **0.0244 deg**, transport slip **0.0088 mm** — all inside gates.
+  - Every other G-pose and O-case resolved the standard 0.8 s window cleanly;
+    this artifact affects only these two runs.
+- **Some `evidence/stage2a_o{0,3}_..._run{1..4}/` directories are
+  infrastructure/preflight aborts, not repeated manipulation attempts.**
+  They contain only `control_setup.json` + `scene_case.yaml` (two of them
+  also a partial `gz_pose_stream.csv`) — no `m3_grasp.log`, no contact CSVs —
+  meaning the harness exited during Gazebo/controller startup, before
+  `m3_grasp` ever launched. The numeric suffixes are harness bookkeeping, not
+  tuned re-attempts. The PASS results cited above are each the run in its
+  family that actually completed (`_run5` for O0, `_run3` for O3; O1/O2/O4
+  completed on their first attempt).
+
+### Current limitation — why Stage-2A is not full orientation generalization
+
+XYZ is perception-driven (D10); **yaw is still read from
+`config/scene.yaml`'s `object.pick_pose.yaw`**, not estimated from sensor
+data. `m3_grasp.cpp`'s perception substitution
+(`T_world_grasp.setOrigin(...)`) replaces translation only; rotation is
+untouched — confirmed by direct source read, not inferred. Stage-2A therefore
+proves the manipulation pipeline *tolerates* a range of configured object
+yaws; it does not prove yaw can be *perceived*. True perception-driven yaw
+generalization is not yet validated.
+
+### Next stage
+
+- **Stage-2B = yaw perception implementation and perception-only
+  qualification.** Begin with an **isolated mask-orientation estimator plus
+  unit tests, before any ROS topic wiring**: a header-only second-moment
+  estimator (`atan2` of the mask's central moments) added alongside
+  `d10_trimmed_mean.hpp`, exercised by synthetic-mask gtests (angle sweep,
+  degenerate/near-square rejection, sub-pixel-shift robustness) with no node,
+  no topic, and no simulation. Only once that unit suite is green does
+  topic/node wiring (`object_detector` -> new `pose_camera` topic ->
+  `object_position_world` -> `m3_grasp`) begin.
+- **Stage-2B design caution:** object yaw is **axial, not directional** — a
+  2-fold-symmetric rectangle's orientation is observable only mod 180
+  degrees. Any yaw comparison (estimator-vs-ground-truth in tests, or
+  perceived-vs-configured delta inside `m3_grasp`) MUST use the **shortest
+  axial difference, canonicalised into `[-90, +90)` degrees** — NOT ordinary
+  `wrap_pi`/`[-180, +180)` angle wrapping, which would report a spurious
+  ~180 degree error for the identical physical orientation.
+- **Stage-2C = manipulation using perceived yaw, with configured yaw
+  deliberately decoupled from spawned yaw** (spawn the object at `yaw_true`
+  in Gazebo while leaving `scene.yaml`'s configured yaw at 0), so a passing
+  cycle is proof the yaw came from perception, not from the config file.
+  Stage-2C must not start before Stage-2B's perception-only qualification
+  passes its own acceptance criteria.
+
+Do not tune, do not modify `controllers.yaml`/`scene.yaml`, do not launch a
+new manipulation campaign, and do not push, until Stage-2B is authorized as
+a separate task.
+
+## 2026-08-29 Stage-2A O2 Perceived-Target Force-Authority Full Cycle — PASS — superseded 2026-08-30 (historical: P=200 was diagnostic-only when this ran; it is production now — see current-authority section above)
+
+Exactly one O2 (-15 deg) full cycle was completed with the D10 perceived
+target, production 1.5 mm fixed-side clearance, diagnostic P=200 N/m,
+commanded 5 N maximum effort, and corrected full-manifold contact recorders.
+It completed approach, pre-close, descent, close, lift, transport, place,
+release, and retreat. No O3/O4 run or tuning occurred.
+
+- Evidence: `evidence/stage2a_o2_perceived_force_authority_full_cycle_control/`.
+- Perception error was 1.4293 mm; its closing-axis component was +0.6946 mm.
+  Minimum measured fixed-side descent clearance was +0.7560 mm; there was no
+  pre-close/descent contact or object movement.
+- Moving/fixed contacts began at sim 42.007/42.017 s and bilateral seating was
+  present before `LIFT_BEGIN` at 42.664 s. At lift begin fixed/moving gaps were
+  -0.000991/+0.000031 mm. Aperture was 29.9995 mm and joint effort remained
+  exactly 5 N through grasp hold, lift, and transport.
+- The generic full-cycle analyzer reports O2 `FAIL` only because its fixed
+  `LIFT_BEGIN - 0.8 s` baseline spans the last 0.812 mm of the intended
+  closing-seat displacement, exceeding its 0.5 mm quiescence limit. It therefore
+  leaves lift slip and tilt unavailable; this is a measurement-window issue,
+  not a failed lift. A recorded late pre-lift 250 ms quiescent window and the
+  post-lift 800 ms quiescent window both have 0.000 mm spread: direct
+  ground-truth relative lift slip is 0.0125 mm, lift peak tilt 0.0244 deg,
+  and transport peak/retained tilt 0.0848/0.0847 deg. Transport slip is
+  0.0088 mm.
+- Moving contact was continuous until intended release. Fixed contact had the
+  established 17 isolated one-tick reappearance signatures (4 lift, 10
+  transport, 3 place), without a corresponding pose, slip, tilt, or retention
+  response.
+- The object remained retained through intended release and settled upright at
+  `[0.448296, 0.199120, 0.772500]` m: 1.9174 mm placement position error and
+  0.0274 deg yaw error.
+
+**O2 decision:** PASS on the directly recorded physical gates. P=200 remains
+diagnostic-only; do not change `controllers.yaml` or infer a real-hardware
+safety conclusion. Stop here; O3-O4 require separate authorization.
+
+## 2026-08-29 Stage-2A O1 Perceived-Target Force-Authority Lift-Only — PASS — superseded 2026-08-30 (historical: P=200 was diagnostic-only when this ran; it is production now — see current-authority section above)
+
+Exactly one guarded O1 (+15 deg) perception-driven diagnostic control was
+completed. It used the D10 production perception path (`require_perception`),
+the production 1.5 mm fixed-side clearance, P=200 N/m, commanded 5 N maximum
+effort, corrected full-manifold pad contact recorders, and `lift_only:=true`.
+It stopped after the full post-lift dwell; no transport, place, release, or
+O2-O4 run occurred.
+
+- Evidence: `evidence/stage2a_o1_perceived_force_authority_lift_only_control/`.
+- Perception used `[0.450936, -0.148973, 0.772499]` m instead of the configured
+  centre, a 1.3895 mm XY error with a +1.1698 mm closing-axis component. This
+  left a measured minimum fixed-side descent clearance of +0.2868 mm; there
+  was no descent contact or object translation.
+- Moving/fixed pad contacts first appeared at sim 46.852/46.857 s (fixed 5 ms
+  after moving). At `LIFT_BEGIN`, geometric gaps were -0.000810/+0.000326 mm
+  (fixed/moving), with four-point manifold summed forces +6.6982/-5.0000 N.
+  Final aperture was 29.9995 mm and the informational grasp check was within
+  tolerance.
+- The object translated 0.3311 mm during close, predominantly 0.3198 mm
+  toward the fixed pad, achieving bilateral seating. Measured gripper effort
+  was exactly 5.000 N throughout lift and dwell.
+- Lift slip was **0.0193 mm**, peak and retained tilt were **0.0111 deg**, the
+  object rose 119.996 mm, and it was retained throughout dwell (no drop).
+  The moving manifold was continuous. The fixed manifold had four isolated
+  one-physics-tick omissions with an immediate ~10.05 N reappearance; no
+  pose, slip, tilt, or retention response accompanied them, so they are a
+  transient fixed-pad reseat signature rather than sustained contact loss.
+- This improves directly on the prior P=50 perceived O1 run (30.2718 mm
+  aperture, 1.5656 mm lift slip, 3.3757 deg peak tilt, and fixed seating only
+  after lift began). The perception error itself is unchanged; close authority
+  is the causal difference.
+
+**Lift-only decision:** PASS. The force-authoritative close tolerates this
+measured D10 O1 perception error in this simulation lift-only control. P=200
+remains diagnostic-only and does not authorize a production gain change or a
+real-hardware safety conclusion. Do not tune or run O2-O4 from this result.
+
+## 2026-08-29 Stage-2A O1 Force-Authority Lift-Only Control — PASS — superseded 2026-08-30 (historical: P=200 was diagnostic-only when this ran; it is production now — see current-authority section above)
+
+Exactly one guarded diagnostic control was completed at O1 (+15 deg), with
+the configured scene centre as target (never perceived XY or live Gazebo GT),
+the production 1.5 mm fixed-side clearance, `parallel_jaw` geometry, P=200
+N/m, commanded max effort 5 N, and `lift_only:=true`. It executed approach,
+pre-close, descent, close, Stage-3 lift, and the full 2 s post-lift dwell;
+it stopped before transport, place, release, or retreat.
+
+- Primary evidence:
+  `evidence/stage2a_o1_force_authority_lift_only_control_run1/`.
+- `m3_grasp` result: `SUCCESS`; `lift_result=SUCCESS`;
+  `lift_only_stop_reached=yes`; `transport_attempted=no`;
+  `place_release_attempted=no`.
+- At `LIFT_BEGIN`, the geometric fixed/moving pad face gaps were
+  `-0.000934/-0.000062 mm`, and both corrected four-point manifold streams
+  were active (fixed/moving summed closing-axis forces `+6.8004/-5.0000 N`).
+- Ground-truth lift slip was **0.0636 mm** and peak object tilt was
+  **0.0167 deg**; retained post-lift tilt was also 0.0167 deg. The object rose
+  119.995 mm, stayed upright, and did not drop.
+- Gripper measured effort was exactly 5.000 N in every recorded lift and
+  dwell sample; final aperture was 29.9995 mm (`WITHIN TOLERANCE`).
+- Bilateral seating was continuous through the 2 s post-lift dwell. During
+  the 1.724 s lift, the fixed-pad stream had four one-physics-tick absences
+  at sim 46.104-46.106, 46.517-46.519, 46.855-46.857, and 47.351-47.353 s.
+  Each immediately resumed at about +10.05 N while the moving pad remained
+  present; no object slip, tip, or drop accompanied them. This is a
+  transient fixed-pad reseat signature, not persistent loss of grasp.
+- The generic Stage-2A full-cycle analyzer writes `FAIL` because perception,
+  transport, and placement metrics are intentionally unavailable in this
+  configured-centre lift-only control. That is not the lift-only verdict.
+
+**Lift-only decision:** PASS. The force-authoritative close remains securely
+grasped through lift under this one simulation control. P=200 remains a
+diagnostic-only gain; this does not establish real-hardware safety or
+authorize a production gain change. No additional run, tuning, or O2-O4 case
+is authorized by this result alone.
+
+Harness-only change used by this control: the existing
+`scripts/perception/run_stage2a_yaw_case.py` now exposes default-off
+`--lift-only`, forwarding the already-existing `m3_grasp.launch.py`
+`lift_only:=true` mode. Production defaults and controller configuration are
+unchanged.
+
+## 2026-08-29 Stage-2A Orientation — D10 Integrated, O1 Diagnostic Control Next — superseded 2026-08-30 (historical: HEAD was `a056023` here, now `e37383e`; "O2-O4 remain BLOCKED" and the "Exact next task" below are both superseded — O2-O4 have run and passed, and the O1 configured-center diagnostic has already been carried out. See current-authority section above)
+
+### Repository and production state
+
+- Repository: `~/ur5e_pickplace`
+- Branch: `stage2-orientation-generalization`
+- HEAD: `a056023` — `perception: use robust D10 object position estimator`
+- Production object position estimator:
+  - XY = selected connected-component subpixel centroid `(u, v)`;
+  - Z = deterministic 10% symmetric trimmed mean of finite, positive depths
+    under that selected mask;
+  - the centroid is back-projected using that D10 depth;
+  - segmentation, component selection, topics, and `PointStamped` interface
+    are unchanged.
+- `ur5e_pick_place` built successfully with tests enabled. All six focused D10
+  tests passed (exact trimming, odd/even and small sample counts, non-finite
+  filtering, insufficient finite samples, and deterministic input-order
+  behavior).
+
+### Verified Stage-2A state
+
+- Post-D10 perception-only yaw regression P0-P4: **5/5 PASS**.
+- Every tested yaw has positive predicted fixed-side pre-close clearance.
+- Evidence root: `evidence/stage2a_orientation/`.
+- O2-O4 remain **BLOCKED** and must not run until O1 is resolved.
+
+The post-D10 O1 (+15 degrees) full manipulation rerun produced:
+
+| Metric | Result |
+|---|---:|
+| manipulation node | `SUCCESS` |
+| perception error | 1.3895 mm |
+| Cartesian fraction | 1.0000 |
+| Stage-2 TCP error | approximately 0 mm |
+| achieved aperture | 30.2718 mm |
+| peak grasp tilt | **3.3757 deg — FAIL** |
+| lift slip | **1.5656 mm — FAIL** |
+| transport slip | 0.0364 mm — PASS |
+| placement position error | 1.8865 mm — PASS |
+| placement yaw error | 0.022 deg — PASS |
+| authoritative case verdict | **FAIL** |
+
+Current evidence: `evidence/stage2a_orientation/O1/`. Preserved historical
+comparison: `evidence/stage2a_orientation_pre_d10_baseline/O1/`.
+
+### O1 forensic conclusion
+
+The historical pre-D10 O1 and current post-D10 O1 have different failure
+mechanisms:
+
+- **Historical O1 mechanism eliminated:** its larger closing-axis perception
+  error caused fixed-pad interference during descent. The object moved and
+  tipped approximately 90 degrees before final close, and the jaw was forced
+  to an approximately 45.4 mm aperture. D10 reduced the closing-axis error and
+  restored positive pre-close clearance; the new O1 remains stationary and
+  upright through pre-close and descent and reaches a 30.2718 mm aperture.
+- **Current O1 mechanism:** lift-onset asymmetric seating. Residual perception
+  error is approximately 1.170 mm along the closing axis and 0.750 mm along
+  the orthogonal axis. At lift start the moving pad is touching while the
+  fixed pad retains an approximately 0.272 mm gap. Bilateral seating occurs
+  just after lift begins, and the object then rolls about the closing axis and
+  moves relative to the wrist by `[-0.272, +1.297, +0.833]` mm (norm 1.5656
+  mm). Peak tilt is transient at 3.3757 degrees, but approximately 2.8 degrees
+  remains through the post-lift dwell and transport. Additional transport
+  slip is only 0.0364 mm, so the object is stable after seating. Placement
+  contact returns it upright.
+- No measured joint-effort or direct pad-contact stream was preserved in this
+  O1 evidence. Contact timing/identity above was reconstructed geometrically
+  from the object, wrist, and jaw pose stream plus the known pad geometry.
+  The next control must record those signals directly.
+
+### Exact next task — one O1 configured-center diagnostic control
+
+Run **exactly one** diagnostic O1 control with all of these constraints:
+
+- yaw: +15 degrees;
+- manipulation target: the configured object center from the scene;
+- do **not** use perceived XY for the manipulation target;
+- do **not** query or substitute live Gazebo ground truth as the target;
+- retain the same TCP, clearance, gripper close command, commanded effort,
+  friction, controller, and arm trajectories;
+- do not tune any production or physics parameter;
+- record continuously from before descent through the post-lift dwell:
+  - object pose;
+  - TCP and/or `wrist_3_link` pose;
+  - gripper joint position, velocity, and measured effort if available;
+  - fixed-pad contact stream;
+  - moving-pad contact stream.
+
+Decision question: **does configured-center targeting remove the lift-onset
+tilt/slip?** If it does, residual perceived XY misregistration is confirmed as
+the initiating cause. If the same roll persists despite centered targeting,
+investigate pad/contact geometry or force-generation behavior next. Do not
+tune during this control, do not retry it silently, and do not run O2-O4.
+
+## 2026-08-28 Baseline Frozen — Stage-1 Commits + Local Tag — superseded 2026-08-30 (historical: this froze the P=50 baseline; Stage-1 was requalified under production P=200 on 2026-08-30 — see current-authority section above)
 
 The READ-ONLY working-tree audit, the D6/D7 forensic resolution, and the
 controlled baseline cleanup (all recorded in prior sessions this same day)
@@ -77,11 +428,12 @@ not pending.
   final step, pointing at this commit or later, once a post-commit build
   re-verification passes; check `git tag -l` / `git log --oneline -8` for
   the actual current tip. Nothing is to be pushed.
-- **Next research phase: Generalization Stage 2 — object orientation/yaw
-  variation.** Not started. Position generalization (G1-G5) and repeatability
-  are closed; Stage 2 is a new campaign, not a re-run of Stage 1.
+- **Historical next research phase:** Generalization Stage 2 had not started
+  when this 2026-08-28 baseline was frozen. The 2026-08-29 current-authority
+  section above supersedes that resume point. Position generalization (G1-G5)
+  and repeatability remain closed.
 
-## 2026-08-28 Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS — Current Authority
+## 2026-08-28 Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS — historical P=50 baseline (superseded by the 2026-08-30 P=200 requalification above; the G1-G5 PASS result itself still stands, at the gain in force at the time)
 
 This section supersedes the G5 verdict in the "2026-08-27 Generalization
 Stage-1 — Poses G1-G4" section immediately below (kept intact for its G1-G4
@@ -188,7 +540,7 @@ failure has yet recurred to trigger it.
 experimentally validated, with the planner-attempt configuration difference
 explicitly documented above.
 
-## 2026-08-27 Generalization Stage-1 — Poses G1-G4 — Current Authority
+## 2026-08-27 Generalization Stage-1 — Poses G1-G4 — historical (superseded first by the 2026-08-28 G1-G5 RESOLVED section, then by the 2026-08-30 P=200 requalification above)
 
 This section is the first durable record of the Generalization Stage-1 campaign; the underlying raw evidence for G1-G3 already existed on disk (`evidence/generalization_stage1/pose_G{1,2,3}/`) but had not previously been summarized here. G4 was run in this session using the unmodified perception-driven `parallel_jaw` baseline and the identical harness methodology as G1-G3 (per-pose driver script, one mechanical substitution of pose coordinates/labels only, no logic change). Harness scripts used: `/tmp/run_pose_g{1,2,3,4}.py` (not committed to the repo — recovered from `/tmp` for G1-G3, authored for G4 by direct mechanical substitution of G3's script) plus the shared observer `/tmp/m3_diag_observer.py` and `scripts/perception/milestone_f1_harness.py`. All four trials used `use_perceived_position:=true require_perception:=true gripper_model:=parallel_jaw`, full lifecycle (pregrasp -> descent -> grasp -> lift -> transport -> place -> release), object spawned and ground-truth-confirmed at each pose's configured XYZ before perception ran.
 
@@ -222,7 +574,7 @@ This is consistent with the transport-side stochastic OMPL/RRTConnect planning-f
 
 Per instruction, the trial was **not retried and no tuning was attempted**. Evidence preserved at `evidence/generalization_stage1/pose_G5/` (full logs, `gazebo_pose_stream.csv`, `gripper_joint_stream.csv`, `m3_grasp.csv`, `cycle_metrics.json` with `verdict: FAIL`). Zero stale ROS/Gazebo/MoveIt processes confirmed after teardown; `git diff --check` clean; no tracked file was modified by this trial (tracked `git status --short` diff identical to before the trial — same 20 modified files as at session start). **The Generalization Stage-1 campaign stops here; no further poses were run.**
 
-## 2026-08-27 Repeatability Campaign — Current Authority
+## 2026-08-27 Repeatability Campaign — historical P=50 baseline (superseded by the 2026-08-30 P=200 Scene-A repeatability requalification above; the 5/5 PASS result itself still stands, at the gain in force at the time)
 
 This section supersedes prior authority entries below. It records the final validated Scene-A perception-driven pick-and-place baseline and 5/5 repeatability campaign results.
 
@@ -253,7 +605,7 @@ This section supersedes prior authority entries below. It records the final vali
 2. **Grasp Descent Tipping:** Caused by fixed-pad overlap from the old `X = -0.027 m` offset. Adjusting to `X = -0.026 m` restored positive clearance and guaranteed an upright grasp.
 3. **Release Bug:** The full-open release failure was resolved by commanding full-open `q = 0`.
 
-## 2026-08-26 Execution Handoff — Current Authority
+## 2026-08-26 Execution Handoff — historical (MoveIt execution-watchdog / GOAL_TOLERANCE_VIOLATED debugging, long resolved; superseded by all sections above)
 
 The validation-wrapper lifecycle hang is fixed and validated. Perception-mode
 pre-grasp `PLAN_FAILURE` is cleared as stochastic OMPL/RRTConnect behaviour;
@@ -323,7 +675,7 @@ reproduction of the original `-0.093015 rad` goal-tolerance result. Evidence:
 controller and ROS joint streams, terminal result) and
 `evidence/direct_cartesian_replay_20260826/gz_native_joint_state.log`.
 
-## Current Objective
+## Historical Objective (2026-08-24, superseded — bullet-engine migration probe; see current-authority section at top of file)
 
 **Run the corrected bullet-featherstone project-compatibility probe, then
 decide only A / B / C.** Full statement in the dated "engine-capability probes"
@@ -357,7 +709,7 @@ geometry change, and no automatic rerun of anything is authorized. The Robotiq
 right-jaw fix is identified but must NOT be started until the friction
 hypothesis is formally closed.
 
-## Current Status
+## Historical Status Snapshot (2026-08-24, superseded — see current-authority section at top of file)
 
 ```
 MILESTONE F2 — perception-derived grasp    — PASS (2026-08-23)
