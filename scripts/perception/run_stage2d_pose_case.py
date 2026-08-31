@@ -84,6 +84,23 @@ def main():
         default=None,
         help="Explicit evidence directory (default: evidence/stage2d_pose/<case>)",
     )
+    parser.add_argument(
+        "--record-diagnostics",
+        action="store_true",
+        help="Also record both pad contact streams, the gripper joint "
+             "position/velocity/effort trace, and the perceived-position stream",
+    )
+    parser.add_argument(
+        "--fixed-side-clearance-m",
+        type=float,
+        default=None,
+        help="DIAGNOSTIC-ONLY. Overrides m3_grasp.launch.py's "
+             "parallel_jaw_fixed_side_clearance_m (default: unset, which "
+             "leaves the production 0.0015 m value untouched). Forwarded "
+             "unchanged from run_stage2a_yaw_case.py's own diagnostic "
+             "override; nothing else about pre-close aperture, final-close "
+             "target, controllers, or trajectories changes.",
+    )
     args = parser.parse_args()
 
     use_perceived_yaw = args.use_perceived_yaw and args.target_source == "perceived"
@@ -96,6 +113,8 @@ def main():
         gazebo_gui=args.gui,
         evidence_dir=args.evidence_dir,
         target_source=args.target_source,
+        record_diagnostics=args.record_diagnostics,
+        fixed_side_clearance_m=args.fixed_side_clearance_m,
         configured_pick_yaw_deg=args.configured_pick_yaw_deg,
         spawned_yaw_deg=args.spawned_yaw_deg,
         target_place_yaw_deg=args.target_place_yaw_deg,
