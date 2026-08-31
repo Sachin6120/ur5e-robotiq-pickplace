@@ -45,6 +45,7 @@
 
 #include "ur5e_pick_place/d10_trimmed_mean.hpp"
 #include "ur5e_pick_place/edge_line_tls.hpp"
+#include "ur5e_pick_place/pixel_centre_shadow.hpp"
 
 namespace
 {
@@ -102,6 +103,8 @@ public:
     max_component_area_ = declare_parameter("max_component_area", 5000);
     min_component_width_ = declare_parameter("min_component_width", 16);
     min_component_height_ = declare_parameter("min_component_height", 10);
+    pixel_centre_shadow_enabled_ = declare_parameter(
+      "enable_pixel_centre_shadow", ur5e_pick_place::kPixelCentreShadowDefaultEnabled);
 
     detected_pub_ = create_publisher<std_msgs::msg::Bool>("object_detector/detected", 10);
     mask_pub_ = create_publisher<Image>("object_detector/mask", 10);
@@ -115,6 +118,10 @@ public:
     // valid back-projected point; never a placeholder, never [0,0,0].
     position_pub_ =
       create_publisher<geometry_msgs::msg::PointStamped>("object_detector/position_camera", 10);
+    if (pixel_centre_shadow_enabled_) {
+      shadow_position_pub_ = create_publisher<geometry_msgs::msg::PointStamped>(
+        "object_detector/position_camera_shadow", 10);
+    }
     pose_pub_ =
       create_publisher<geometry_msgs::msg::PoseStamped>("object_detector/pose_camera", 10);
 
@@ -128,6 +135,9 @@ public:
       "Fixed detector: brightness>=%d chroma<=%d height=[%.3f,%.3f] m area=[%d,%d]",
       brightness_min_, chroma_max_, min_height_m_, max_height_m_, min_component_area_,
       max_component_area_);
+    RCLCPP_INFO(
+      get_logger(), "pixel-centre shadow estimator: %s (production output unchanged)",
+      pixel_centre_shadow_enabled_ ? "ENABLED" : "disabled");
   }
 
 private:
@@ -436,6 +446,40 @@ private:
         camera_position.point.z = position.d10_z;
         position_pub_->publish(camera_position);
 
+        // Default-off diagnostic only: use the unchanged D10 depth with the
+        // same runtime intrinsics and a +0.5,+0.5 pixel centroid.  The shadow
+        // point is never substituted for position_camera or pose_camera.
+        if (pixel_centre_shadow_enabled_) {
+          const ur5e_pick_place::PixelCentroid raw_centroid{
+            detection.centroid.x, detection.centroid.y};
+          const auto corrected_centroid = ur5e_pick_place::pixel_centre_corrected(raw_centroid);
+          const ur5e_pick_place::PinholeIntrinsics intrinsics{
+            info_msg->k[0], info_msg->k[4], info_msg->k[2], info_msg->k[5]};
+          const auto corrected_camera = ur5e_pick_place::backproject_centroid(
+            corrected_centroid, position.d10_z, intrinsics);
+
+          geometry_msgs::msg::PointStamped shadow_camera_position;
+          shadow_camera_position.header = camera_position.header;
+          shadow_camera_position.point.x = corrected_camera.x;
+          shadow_camera_position.point.y = corrected_camera.y;
+          shadow_camera_position.point.z = corrected_camera.z;
+          shadow_position_pub_->publish(shadow_camera_position);
+
+          RCLCPP_INFO(
+            get_logger(),
+            "PIXEL_CENTRE_SHADOW stamp=%.9f width=%u height=%u "
+            "K=[%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f] "
+            "centroid_raw=[%.9f,%.9f] centroid_corrected=[%.9f,%.9f] d10_depth=%.9f "
+            "production_camera=[%.9f,%.9f,%.9f] corrected_camera=[%.9f,%.9f,%.9f]",
+            rclcpp::Time(camera_position.header.stamp).seconds(), info_msg->width, info_msg->height,
+            info_msg->k[0], info_msg->k[1], info_msg->k[2], info_msg->k[3], info_msg->k[4],
+            info_msg->k[5], info_msg->k[6], info_msg->k[7], info_msg->k[8],
+            raw_centroid.u, raw_centroid.v, corrected_centroid.u, corrected_centroid.v,
+            position.d10_z, camera_position.point.x, camera_position.point.y,
+            camera_position.point.z, shadow_camera_position.point.x,
+            shadow_camera_position.point.y, shadow_camera_position.point.z);
+        }
+
         // Stage-2B: Edge-Line TLS orientation estimation and camera-frame pose publication
         const auto tls_result = ur5e_pick_place::estimate_edgelines_tls(mask);
         if (tls_result.valid && std::isfinite(tls_result.theta_image_rad)) {
@@ -563,8 +607,10 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr centroid_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr area_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr position_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr shadow_position_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   bool camera_info_reported_{false};
+  bool pixel_centre_shadow_enabled_{false};
 };
 
 int main(int argc, char ** argv)

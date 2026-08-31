@@ -125,6 +125,10 @@ if(BUILD_TESTING)
   target_include_directories(object_position_world_test PRIVATE include)
   ament_target_dependencies(object_position_world_test
     rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(pixel_centre_shadow_test test/test_pixel_centre_shadow.cpp)
+  target_include_directories(pixel_centre_shadow_test PRIVATE include)
+  ament_target_dependencies(pixel_centre_shadow_test
+    rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
   ament_add_gtest(m3_perceived_yaw_test test/test_m3_perceived_yaw.cpp)
   target_include_directories(m3_perceived_yaw_test PRIVATE include)
   ament_target_dependencies(m3_perceived_yaw_test

@@ -55,12 +55,16 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
+#include "ur5e_pick_place/pixel_centre_shadow.hpp"
+
 class ObjectPositionWorld : public rclcpp::Node
 {
 public:
   ObjectPositionWorld()
   : Node("object_position_world"),
     target_frame_(declare_parameter("target_frame", std::string("world"))),
+    pixel_centre_shadow_enabled_(declare_parameter(
+      "enable_pixel_centre_shadow", ur5e_pick_place::kPixelCentreShadowDefaultEnabled)),
     buffer_(std::make_unique<tf2_ros::Buffer>(get_clock())),
     listener_(std::make_shared<tf2_ros::TransformListener>(*buffer_))
   {
@@ -73,6 +77,22 @@ public:
     subscription_ = create_subscription<geometry_msgs::msg::PointStamped>(
       in_topic, 10,
       std::bind(&ObjectPositionWorld::callback, this, std::placeholders::_1));
+
+    if (pixel_centre_shadow_enabled_) {
+      const std::string shadow_in_topic = declare_parameter(
+        "shadow_input_topic", std::string("object_detector/position_camera_shadow"));
+      const std::string shadow_out_topic = declare_parameter(
+        "shadow_output_topic", std::string("object_detector/position_world_shadow"));
+      shadow_publisher_ = create_publisher<geometry_msgs::msg::PointStamped>(shadow_out_topic, 10);
+      shadow_subscription_ = create_subscription<geometry_msgs::msg::PointStamped>(
+        shadow_in_topic, 10,
+        std::bind(&ObjectPositionWorld::shadow_callback, this, std::placeholders::_1));
+      RCLCPP_INFO(
+        get_logger(), "pixel-centre shadow transform: %s -> [TF2] -> %s (same stamp/mapping)",
+        shadow_in_topic.c_str(), shadow_out_topic.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "pixel-centre shadow transform: disabled (production output unchanged)");
+    }
 
     const std::string pose_in_topic =
       declare_parameter("input_pose_topic", std::string("object_detector/pose_camera"));
@@ -138,6 +158,41 @@ private:
       out.point.x, out.point.y, out.point.z, transform_ms);
   }
 
+  // Default-off companion to callback().  It deliberately invokes the same
+  // TF2 Buffer at the shadow message's original stamp; it never feeds a value
+  // back into the production input/output topics or into pose/yaw handling.
+  void shadow_callback(const geometry_msgs::msg::PointStamped::ConstSharedPtr & msg)
+  {
+    geometry_msgs::msg::PointStamped out;
+    const auto started = std::chrono::steady_clock::now();
+    try {
+      buffer_->transform(*msg, out, target_frame_);
+    } catch (const tf2::TransformException & error) {
+      ++shadow_failures_;
+      RCLCPP_WARN(
+        get_logger(),
+        "PIXEL_CENTRE_SHADOW_WORLD_FAILED stamp=%.9f %s -> %s: %s (failures=%zu)",
+        rclcpp::Time(msg->header.stamp).seconds(), msg->header.frame_id.c_str(),
+        target_frame_.c_str(), error.what(), shadow_failures_);
+      return;
+    }
+    const double transform_ms =
+      std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - started).count();
+    out.header.stamp = msg->header.stamp;
+    out.header.frame_id = target_frame_;
+    shadow_publisher_->publish(out);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "PIXEL_CENTRE_SHADOW_WORLD stamp=%.9f src_frame=%s dst_frame=%s "
+      "corrected_camera=[%.9f,%.9f,%.9f] corrected_world=[%.9f,%.9f,%.9f] "
+      "transform_ms=%.4f",
+      rclcpp::Time(out.header.stamp).seconds(), msg->header.frame_id.c_str(),
+      out.header.frame_id.c_str(), msg->point.x, msg->point.y, msg->point.z,
+      out.point.x, out.point.y, out.point.z, transform_ms);
+  }
+
   // Identical structure and failure discipline to callback() above: transform
   // at the message's own stamp, publish only on success, nothing cached or
   // substituted on failure. A separate failure counter (pose_failures_) keeps
@@ -191,15 +246,19 @@ private:
   }
 
   std::string target_frame_;
+  bool pixel_centre_shadow_enabled_{false};
   std::unique_ptr<tf2_ros::Buffer> buffer_;
   std::shared_ptr<tf2_ros::TransformListener> listener_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr publisher_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr subscription_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr shadow_publisher_;
+  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr shadow_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   bool source_frame_reported_{false};
   bool pose_source_frame_reported_{false};
   std::size_t failures_{0};
+  std::size_t shadow_failures_{0};
   std::size_t pose_failures_{0};
 };
 
