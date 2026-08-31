@@ -9,6 +9,7 @@ any trajectory/gripper command.  Gazebo truth is recorded only after spawn
 and never passed to the detector, TF transform, or any control target.
 """
 import argparse
+from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import random
+import signal
 import subprocess
 import sys
 import time
@@ -36,10 +38,13 @@ _yawcase_spec.loader.exec_module(yawcase)  # noqa: E402 -- reuse process/spawn h
 # The first campaign at pixel_centre_shadow_holdout_960x720 is preserved as an
 # incomplete record: its second case correctly detected case-1 descendants
 # while they were still handling SIGTERM.  This replacement campaign changes
-# only the lifecycle contract, never the frozen scientific matrix below.
-CAMPAIGN_NAME = "pixel_centre_shadow_holdout_960x720_clean_slate_v2"
+# only the lifecycle contract, never the frozen scientific matrix below.  v2
+# is permanently incomplete: its case-24 Gazebo server outlived the launch
+# leader.  v3 makes the unique launch session, not that leader, the ownership
+# boundary for teardown.
+CAMPAIGN_NAME = "pixel_centre_shadow_holdout_960x720_owned_session_v3"
 EVIDENCE_ROOT = REPO / "evidence" / CAMPAIGN_NAME
-LIFECYCLE_CONTRACT_REVISION = "post_case_clean_slate_v1"
+LIFECYCLE_CONTRACT_REVISION = "owned_simulator_session_v1"
 CAMERA_WIDTH = 960
 CAMERA_HEIGHT = 720
 PIXEL_PITCH_M = 0.001930075
@@ -48,6 +53,9 @@ RANDOMIZATION_SEED = 20260831
 SHADOW_PARAMETER = "enable_pixel_centre_shadow"
 CLEAN_SLATE_TIMEOUT_S = 10.0
 CLEAN_SLATE_POLL_S = 0.05
+SIMULATOR_TERM_GRACE_S = 5.0
+SIMULATOR_KILL_TIMEOUT_S = 10.0
+SIMULATOR_TEARDOWN_POLL_S = 0.05
 
 # Keep this expression byte-for-byte equivalent to the originally committed
 # gate.  The clean-slate wait must not narrow or weaken it.
@@ -233,6 +241,11 @@ def campaign_manifest():
             "post_case_clean_slate_required": True,
             "clean_slate_timeout_s": CLEAN_SLATE_TIMEOUT_S,
             "clean_slate_poll_s": CLEAN_SLATE_POLL_S,
+            "simulator_ownership_boundary": "captured_pid_pgid_sid_start_time",
+            "simulator_sigterm_grace_s": SIMULATOR_TERM_GRACE_S,
+            "simulator_sigkill_timeout_s": SIMULATOR_KILL_TIMEOUT_S,
+            "simulator_teardown_poll_s": SIMULATOR_TEARDOWN_POLL_S,
+            "simulator_descendant_pgids_checked_within_owned_sid": True,
         },
     }
     return dict(static, frozen_manifest_sha256=sha256_json(static))
@@ -508,6 +521,206 @@ class CleanSlateTimeout(RuntimeError):
         super().__init__(f"CLEAN_SLATE_TIMEOUT: PIDs {pids}")
 
 
+class SimulatorOwnershipError(RuntimeError):
+    """A simulator session cannot be proved to be the process we launched."""
+
+
+class SimulatorTeardownTimeout(RuntimeError):
+    """An owned simulator session remained after bounded escalation."""
+
+    def __init__(self, phase, diagnostics):
+        self.phase = phase
+        self.diagnostics = diagnostics
+        pids = ",".join(str(item["pid"]) for item in diagnostics)
+        super().__init__(f"SIMULATOR_TEARDOWN_TIMEOUT:{phase}: PIDs {pids}")
+
+
+@dataclass(frozen=True)
+class SimulatorOwnership:
+    """Immutable identity of the session created for one simulator launch.
+
+    ``pid`` and ``start_time_ticks`` identify the Popen leader without relying
+    on a reusable PID.  ``sid`` is the durable ownership boundary: descendants
+    can be reparented or create a new process group, but cannot enter a new
+    session without leaving the launch session.
+    """
+
+    pid: int
+    pgid: int
+    sid: int
+    start_time_ticks: int
+
+    def as_dict(self):
+        return {
+            "pid": self.pid,
+            "pgid": self.pgid,
+            "sid": self.sid,
+            "start_time_ticks": self.start_time_ticks,
+        }
+
+
+def _read_proc_record(pid):
+    """Return one atomic-enough /proc identity snapshot, or None after exit.
+
+    Linux /proc stat field 22 is the process start time in clock ticks.  It is
+    deliberately retained with PID/PGID/SID so a recycled PID is never treated
+    as the launch process merely because its numeric PID matches.
+    """
+    proc_dir = Path("/proc") / str(pid)
+    try:
+        stat = (proc_dir / "stat").read_text()
+        # ``comm`` can contain spaces and parentheses, so split only after its
+        # final ')'.  The remainder begins at stat field 3 (state).
+        close = stat.rfind(")")
+        fields = stat[close + 2:].split()
+        if close < 0 or len(fields) <= 19:
+            return None
+        state = fields[0]
+        ppid = int(fields[1])
+        pgid = int(fields[2])
+        sid = int(fields[3])
+        start_time_ticks = int(fields[19])
+        raw_cmdline = (proc_dir / "cmdline").read_bytes()
+        command_line = raw_cmdline.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        if not command_line:
+            command_line = (proc_dir / "comm").read_text().strip()
+    except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+        return None
+    return {
+        "pid": int(pid),
+        "ppid": ppid,
+        "pgid": pgid,
+        "sid": sid,
+        "start_time_ticks": start_time_ticks,
+        "state": state,
+        "command_line": command_line,
+    }
+
+
+def _proc_snapshot():
+    """Return a read-only snapshot of currently observable processes."""
+    records = []
+    for proc_dir in Path("/proc").iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        record = _read_proc_record(int(proc_dir.name))
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _capture_simulator_ownership(proc):
+    """Capture the simulator leader identity immediately after launch."""
+    if proc is None:
+        raise SimulatorOwnershipError("SIMULATOR_OWNERSHIP_CAPTURE: missing process")
+    record = _read_proc_record(proc.pid)
+    if record is None:
+        raise SimulatorOwnershipError(
+            f"SIMULATOR_OWNERSHIP_CAPTURE: PID {proc.pid} exited before capture")
+    if record["pid"] != proc.pid or record["pgid"] != proc.pid or record["sid"] != proc.pid:
+        raise SimulatorOwnershipError(
+            "SIMULATOR_OWNERSHIP_CAPTURE: start_new_session boundary was not established "
+            f"for PID {proc.pid}: pgid={record['pgid']} sid={record['sid']}")
+    return SimulatorOwnership(
+        pid=record["pid"], pgid=record["pgid"], sid=record["sid"],
+        start_time_ticks=record["start_time_ticks"],
+    )
+
+
+def _owned_session_members(ownership, snapshot=None):
+    """Return only live members of the captured launch session.
+
+    A process creating a new PGID is still selected because SID, rather than
+    PGID, is the durable ownership boundary.  Before signalling anything, a
+    live PID equal to the original leader must retain its captured start time;
+    otherwise PID reuse makes ownership ambiguous and teardown refuses to act.
+    """
+    records = _proc_snapshot() if snapshot is None else snapshot
+    for record in records:
+        if record["pid"] == ownership.pid and record["start_time_ticks"] != ownership.start_time_ticks:
+            raise SimulatorOwnershipError(
+                "SIMULATOR_OWNERSHIP_LOST: launch PID was reused "
+                f"pid={ownership.pid} expected_start={ownership.start_time_ticks} "
+                f"observed_start={record['start_time_ticks']}")
+    # A zombie has already exited and cannot receive a signal.  Its parent may
+    # reap it a moment later; treating it as a live member would turn a clean
+    # teardown into a false timeout (notably for the direct Popen leader).
+    return [record for record in records
+            if record["sid"] == ownership.sid and record["state"] != "Z"]
+
+
+def _owned_diagnostics(ownership, snapshot=None):
+    """Return the required timeout fields for surviving proven-owned members."""
+    return [dict(record) for record in _owned_session_members(ownership, snapshot)]
+
+
+def _signal_owned_groups(ownership, signum):
+    """Signal every *currently proven* group in the owned session.
+
+    Re-snapshot immediately before every killpg.  No PID, command name, or
+    inherited PPID is used as authority; a group is signalled only while it has
+    a current member whose SID is the captured simulator SID.
+    """
+    initial = _owned_session_members(ownership)
+    groups = sorted({record["pgid"] for record in initial})
+    signalled = []
+    for pgid in groups:
+        current = _owned_session_members(ownership)
+        if not any(record["pgid"] == pgid for record in current):
+            continue
+        try:
+            os.killpg(pgid, signum)
+            signalled.append(pgid)
+        except ProcessLookupError:
+            # The owned group exited between the identity check and signal.
+            # Never widen targeting to replace it.
+            continue
+    return signalled
+
+
+def _wait_for_owned_session_empty(ownership, timeout_s, poll_s, phase):
+    """Poll an owned SID until empty, with evidence-bearing bounded timeout."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = _owned_session_members(ownership)
+        if not remaining:
+            return []
+        if time.monotonic() >= deadline:
+            raise SimulatorTeardownTimeout(phase, [dict(record) for record in remaining])
+        time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
+
+def stop_owned_simulator(ownership, term_grace_s=SIMULATOR_TERM_GRACE_S,
+                         kill_timeout_s=SIMULATOR_KILL_TIMEOUT_S,
+                         poll_s=SIMULATOR_TEARDOWN_POLL_S):
+    """Terminate one launch session without relying on the launch leader.
+
+    The initial SIGTERM targets the simulator PGID (and any already-observed
+    owned descendant PGID).  If any owned SID member survives the grace window,
+    SIGKILL is sent only to groups re-proven to belong to that SID.  A timeout
+    retains full ownership diagnostics instead of signalling an unknown PID.
+    """
+    term_groups = _signal_owned_groups(ownership, signal.SIGTERM)
+    try:
+        _wait_for_owned_session_empty(ownership, term_grace_s, poll_s, "SIGTERM")
+        return {"ownership": ownership.as_dict(), "sigterm_pgid": term_groups,
+                "sigkill_pgid": [], "result": "exited_after_sigterm", "remaining": []}
+    except SimulatorTeardownTimeout as term_timeout:
+        # The session is still current and proven by the SID snapshot above.
+        # Re-discover groups so descendants which called setpgrp() are covered.
+        kill_groups = _signal_owned_groups(ownership, signal.SIGKILL)
+        try:
+            _wait_for_owned_session_empty(ownership, kill_timeout_s, poll_s, "SIGKILL")
+        except SimulatorTeardownTimeout as kill_timeout:
+            kill_timeout.term_diagnostics = term_timeout.diagnostics
+            kill_timeout.sigterm_pgid = term_groups
+            kill_timeout.sigkill_pgid = kill_groups
+            raise
+        return {"ownership": ownership.as_dict(), "sigterm_pgid": term_groups,
+                "sigkill_pgid": kill_groups, "result": "exited_after_sigkill",
+                "sigterm_remaining": term_timeout.diagnostics, "remaining": []}
+
+
 def _matching_contamination_pids():
     contamination = subprocess.run(
         ["pgrep", "-f", CONTAMINATION_PATTERN],
@@ -527,27 +740,12 @@ def _process_diagnostics(pids):
     """Return a contemporaneous, read-only snapshot for each matched PID."""
     if not pids:
         return []
-    snapshot = subprocess.run(
-        ["ps", "-ww", "-o", "pid=,ppid=,pgid=,stat=,args=", "-p", ",".join(pids)],
-        capture_output=True, text=True, check=False,
-    )
-    rows = {}
-    for line in snapshot.stdout.splitlines():
-        fields = line.strip().split(None, 4)
-        if len(fields) == 5 and fields[0].isdigit() and fields[1].isdigit() and fields[2].isdigit():
-            rows[fields[0]] = {
-                "pid": int(fields[0]),
-                "ppid": int(fields[1]),
-                "pgid": int(fields[2]),
-                "state": fields[3],
-                "command_line": fields[4],
-            }
     # A process can exit between pgrep and ps.  Preserve that fact rather than
     # silently dropping the gate's observed PID from the timeout record.
-    return [rows.get(pid, {
-        "pid": int(pid), "ppid": None, "pgid": None, "state": "unavailable",
-        "command_line": None,
-    }) for pid in pids]
+    return [_read_proc_record(int(pid)) or {
+        "pid": int(pid), "ppid": None, "pgid": None, "sid": None,
+        "start_time_ticks": None, "state": "unavailable", "command_line": None,
+    } for pid in pids]
 
 
 def _assert_clean_environment():
@@ -624,6 +822,7 @@ def run_case(root, manifest, case, gui=False):
     (case_dir / "case_request.json").write_text(json.dumps(request, indent=2) + "\n")
 
     observer_proc = sim_proc = detector_proc = world_proc = None
+    simulator_ownership = None
     files = []
     capture_completed = False
     try:
@@ -632,6 +831,11 @@ def run_case(root, manifest, case, gui=False):
         sim_log = open(case_dir / "sim.log", "w")
         files.append(sim_log)
         sim_proc = yawcase.start_process(commands["sim_control"], stdout=sim_log, stderr=subprocess.STDOUT)
+        simulator_ownership = _capture_simulator_ownership(sim_proc)
+        (case_dir / "simulator_ownership.json").write_text(json.dumps({
+            "ownership": simulator_ownership.as_dict(),
+            "captured_wall_time": time.time(),
+        }, indent=2) + "\n")
         _wait_for_controllers()
         ready, detail = yawcase.wait_for_camera_topics()
         if not ready:
@@ -681,8 +885,29 @@ def run_case(root, manifest, case, gui=False):
         _write_failure(case_dir, case["case_id"], error)
         raise
     finally:
-        for proc in (world_proc, detector_proc, sim_proc, observer_proc):
+        for proc in (world_proc, detector_proc):
             yawcase.stop_process(proc)
+        try:
+            if simulator_ownership is not None:
+                teardown = stop_owned_simulator(simulator_ownership)
+                sim_proc.wait(timeout=1.0)
+                (case_dir / "simulator_teardown.json").write_text(
+                    json.dumps(teardown, indent=2) + "\n")
+        except (SimulatorOwnershipError, SimulatorTeardownTimeout) as error:
+            _write_failure(
+                case_dir,
+                case["case_id"],
+                error,
+                lifecycle_contract_revision=LIFECYCLE_CONTRACT_REVISION,
+                simulator_ownership=(simulator_ownership.as_dict()
+                                     if simulator_ownership is not None else None),
+                simulator_processes=getattr(error, "diagnostics", []),
+                sigterm_pgid=getattr(error, "sigterm_pgid", None),
+                sigkill_pgid=getattr(error, "sigkill_pgid", None),
+            )
+            raise
+        finally:
+            yawcase.stop_process(observer_proc)
         # A direct shell launcher can exit before its ROS/Gazebo descendants.
         # Do not enter the next case until the unchanged contamination gate sees
         # a clean slate.  A timeout is evidence-bearing and aborts the campaign.
@@ -779,6 +1004,124 @@ def run_campaign(gui=False):
         raise RuntimeError("campaign did not complete; preserved evidence must be inspected")
 
 
+def run_lifecycle_stress(cycles):
+    """Run simulator ownership teardown only; never spawn an object or detector.
+
+    This deliberately has its own timestamped evidence root and cannot create a
+    campaign manifest.  It exercises only launch, controller readiness, owned
+    session teardown, and the unchanged clean-slate gate.
+    """
+    if cycles < 1:
+        raise ValueError("lifecycle stress cycles must be at least one")
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    root = REPO / "evidence" / f"simulator_teardown_stress_owned_session_v1_{stamp}"
+    root.mkdir(parents=True, exist_ok=False)
+    contract = {
+        "kind": "lifecycle_only_gazebo_start_stop_stress",
+        "cycles_requested": cycles,
+        "perception_started": False,
+        "object_spawned": False,
+        "moveit_started": False,
+        "m3_grasp_started": False,
+        "manipulation_started": False,
+        "lifecycle_contract_revision": LIFECYCLE_CONTRACT_REVISION,
+        "git_head": git_head(),
+    }
+    (root / "stress_contract.json").write_text(json.dumps(contract, indent=2) + "\n")
+    completed = []
+    cycle_records = []
+    try:
+        for index in range(1, cycles + 1):
+            _assert_clean_environment()
+            cycle_dir = root / f"{index:02d}"
+            cycle_dir.mkdir()
+            commands = _launch_commands(cycle_dir, gui=False)
+            (cycle_dir / "launch.json").write_text(json.dumps({
+                "sim_control": commands["sim_control"],
+                "perception_started": False,
+                "object_spawned": False,
+                "moveit_started": False,
+                "m3_grasp_started": False,
+            }, indent=2) + "\n")
+            sim_proc = None
+            ownership = None
+            teardown_attempted = False
+            sim_log = open(cycle_dir / "sim.log", "w")
+            try:
+                sim_proc = yawcase.start_process(
+                    commands["sim_control"], stdout=sim_log, stderr=subprocess.STDOUT)
+                ownership = _capture_simulator_ownership(sim_proc)
+                (cycle_dir / "simulator_ownership.json").write_text(json.dumps({
+                    "ownership": ownership.as_dict(), "captured_wall_time": time.time(),
+                }, indent=2) + "\n")
+                _wait_for_controllers()
+                teardown_attempted = True
+                cleanup_started = time.monotonic()
+                teardown = stop_owned_simulator(ownership)
+                # Reap the direct child after its SID is empty.  This changes
+                # no process state and prevents a test-harness zombie.
+                sim_proc.wait(timeout=1.0)
+                _wait_for_clean_slate()
+                teardown.update({
+                    "cleanup_duration_s": time.monotonic() - cleanup_started,
+                    "owned_sid_empty": True,
+                    "contamination_matcher_clean": True,
+                    "residual_gz_sim_before_next_cycle": False,
+                    "unrelated_processes_signalled": False,
+                    "remaining_process_diagnostics": [],
+                })
+                (cycle_dir / "simulator_teardown.json").write_text(
+                    json.dumps(teardown, indent=2) + "\n")
+                completed.append(index)
+                cycle_records.append({
+                    "cycle": index,
+                    "cleanup_duration_s": teardown["cleanup_duration_s"],
+                    "sigkill_required": bool(teardown["sigkill_pgid"]),
+                    "result": teardown["result"],
+                })
+            except Exception as error:
+                _write_failure(
+                    cycle_dir, f"stress_{index}", error,
+                    lifecycle_contract_revision=LIFECYCLE_CONTRACT_REVISION,
+                    simulator_processes=getattr(error, "diagnostics", []),
+                    sigterm_pgid=getattr(error, "sigterm_pgid", None),
+                    sigkill_pgid=getattr(error, "sigkill_pgid", None),
+                )
+                raise
+            finally:
+                if ownership is not None and not teardown_attempted:
+                    # Readiness failures still use the exact captured session
+                    # boundary; this is not a broad recovery action.
+                    try:
+                        teardown_attempted = True
+                        teardown = stop_owned_simulator(ownership)
+                        sim_proc.wait(timeout=1.0)
+                        (cycle_dir / "simulator_teardown_after_failure.json").write_text(
+                            json.dumps(teardown, indent=2) + "\n")
+                    except (SimulatorOwnershipError, SimulatorTeardownTimeout) as teardown_error:
+                        _write_failure(
+                            cycle_dir, f"stress_{index}", teardown_error,
+                            lifecycle_contract_revision=LIFECYCLE_CONTRACT_REVISION,
+                            simulator_ownership=ownership.as_dict(),
+                            simulator_processes=getattr(teardown_error, "diagnostics", []),
+                        )
+                sim_log.close()
+    finally:
+        sigkill_cycles = [record["cycle"] for record in cycle_records if record["sigkill_required"]]
+        durations = [record["cleanup_duration_s"] for record in cycle_records]
+        (root / "stress_summary.json").write_text(json.dumps({
+            **contract,
+            "completed_cycles": completed,
+            "complete": len(completed) == cycles,
+            "cycle_cleanup_records": cycle_records,
+            "maximum_cleanup_duration_s": max(durations) if durations else None,
+            "sigterm_only_cycles": len(cycle_records) - len(sigkill_cycles),
+            "sigkill_cycles": len(sigkill_cycles),
+            "sigkill_cycle_indices": sigkill_cycles,
+        }, indent=2) + "\n")
+    return root
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the frozen 48-case 960x720 pixel-centre-shadow holdout. "
@@ -788,9 +1131,16 @@ def main():
     parser.add_argument("--gui", action="store_true", help="Use Gazebo GUI (default: headless)")
     parser.add_argument("--print-manifest", action="store_true",
                         help="Print the frozen matrix/order without creating evidence or launching anything")
+    parser.add_argument("--lifecycle-stress", type=int, metavar="CYCLES",
+                        help="Explicit lifecycle-only Gazebo start/stop validation; never runs holdout cases")
     args = parser.parse_args()
     if args.print_manifest:
         print(json.dumps(campaign_manifest(), indent=2))
+        return
+    if args.lifecycle_stress is not None:
+        if args.run_all:
+            parser.error("--lifecycle-stress cannot be combined with --run-all")
+        print(run_lifecycle_stress(args.lifecycle_stress))
         return
     if not args.run_all:
         parser.error("refusing to launch: pass --run-all only when the full campaign is authorized")
