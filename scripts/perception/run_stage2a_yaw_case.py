@@ -971,7 +971,7 @@ def main():
         default=None,
         help="DIAGNOSTIC-ONLY. Overrides m3_grasp.launch.py's "
              "parallel_jaw_fixed_side_clearance_m (default: unset, which "
-             "leaves the production 0.0015 m value untouched).",
+             "leaves the production 0.0020 m value untouched).",
     )
     parser.add_argument(
         "--close-and-hold-only",

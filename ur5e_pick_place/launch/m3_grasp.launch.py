@@ -200,8 +200,9 @@ def _setup(context, *args, **kwargs):
     # see that dict's own gripper_model-conditioned entries.
     gripper_model = LaunchConfiguration("gripper_model").perform(context)
     # DIAGNOSTIC-ONLY OVERRIDE, 2026-08-29. Default reproduces
-    # parallel_jaw_geometry.GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0015 m)
-    # exactly -- passing nothing changes no run. See its own
+    # parallel_jaw_geometry.GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0020 m as
+    # of 2026-08-31, raised from 0.0015 m) exactly -- passing nothing
+    # changes no run. See its own
     # DeclareLaunchArgument below for the full rationale; this is the one
     # override this diagnostic control is authorized to touch.
     pj_fixed_side_clearance_m_raw = LaunchConfiguration(
@@ -636,7 +637,8 @@ def generate_launch_description():
                 default_value="",
                 description="DIAGNOSTIC-ONLY, 2026-08-29. Empty (default) "
                 "preserves parallel_jaw_geometry.py's own "
-                "GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0015 m) exactly -- every "
+                "GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0020 m as of "
+                "2026-08-31, raised from 0.0015 m) exactly -- every "
                 "existing and future run that does not pass this argument is "
                 "byte-for-byte unaffected. When set, overrides ONLY the "
                 "fixed-side pre-close clearance passed into "
