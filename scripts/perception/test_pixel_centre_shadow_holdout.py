@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Offline guards for the frozen 960x720 pixel-centre-shadow holdout."""
 import importlib.util
+import json
 import math
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("run_pixel_centre_shadow_holdout.py")
@@ -59,6 +63,7 @@ class FrozenMatrixTest(unittest.TestCase):
             (-holdout.PHASE_OFFSET_M, -holdout.PHASE_OFFSET_M),
         }
         self.assertEqual({(dx, dy) for _, dx, dy in holdout.PHASES}, expected)
+        self.assertEqual(holdout.PIXEL_PITCH_M, 0.001930075)
         self.assertAlmostEqual(holdout.PHASE_OFFSET_M * 1000.0, 0.48251875, places=8)
 
     def test_random_order_is_seeded_frozen_and_persisted_in_manifest(self):
@@ -68,11 +73,19 @@ class FrozenMatrixTest(unittest.TestCase):
         holdout.random.Random(holdout.RANDOMIZATION_SEED).shuffle(generated)
         self.assertEqual(tuple(generated), holdout.FROZEN_EXECUTION_ORDER)
         manifest = holdout.campaign_manifest()
+        self.assertEqual(manifest["campaign"], "pixel_centre_shadow_holdout_960x720_clean_slate_v2")
+        self.assertEqual(manifest["lifecycle_contract_revision"], "post_case_clean_slate_v1")
+        self.assertEqual(holdout.RANDOMIZATION_SEED, 20260831)
         self.assertEqual(manifest["frozen_execution_order"], list(holdout.FROZEN_EXECUTION_ORDER))
         self.assertTrue(manifest["safety_contract"]["no_posthoc_matrix_change"])
+        self.assertTrue(manifest["safety_contract"]["post_case_clean_slate_required"])
         self.assertEqual(manifest["frozen_manifest_sha256"],
                          holdout.sha256_json({key: value for key, value in manifest.items()
                                               if key != "frozen_manifest_sha256"}))
+        self.assertNotEqual(
+            manifest["frozen_manifest_sha256"],
+            "4163e16283fdc850df905a51249d3d56b446bd9218e780c577bd5a566f48f4cf",
+        )
 
 
 class EvidenceGateTest(unittest.TestCase):
@@ -119,6 +132,112 @@ class EvidenceGateTest(unittest.TestCase):
         self.assertIn("shadow", metrics)
         with self.assertRaisesRegex(ValueError, "MISSING_GROUND_TRUTH"):
             holdout.case_metrics(case, valid_observation(), None)
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class CleanSlateSynchronizationTest(unittest.TestCase):
+    def _clock_patches(self, clock):
+        return (
+            mock.patch.object(holdout.time, "monotonic", side_effect=clock.monotonic),
+            mock.patch.object(holdout.time, "sleep", side_effect=clock.sleep),
+        )
+
+    def test_transient_descendant_disappears_and_passes(self):
+        clock = FakeClock()
+        matcher = mock.Mock(side_effect=[["43277"], ["43277"], []])
+        monotonic, sleep = self._clock_patches(clock)
+        with monotonic, sleep, mock.patch.object(holdout, "_matching_contamination_pids", matcher):
+            holdout._wait_for_clean_slate(timeout_s=1.0, poll_s=0.05)
+        self.assertEqual(matcher.call_count, 3)
+        self.assertEqual(clock.sleeps, [0.05, 0.05])
+
+    def test_persistent_contamination_times_out_with_full_diagnostics(self):
+        clock = FakeClock()
+        diagnostic = [{
+            "pid": 43277, "ppid": 43204, "pgid": 43204,
+            "state": "Sl", "command_line": "robot_state_publisher --ros-args",
+        }]
+        monotonic, sleep = self._clock_patches(clock)
+        with (
+            monotonic,
+            sleep,
+            mock.patch.object(holdout, "_matching_contamination_pids", return_value=["43277"]),
+            mock.patch.object(holdout, "_process_diagnostics", return_value=diagnostic),
+        ):
+            with self.assertRaises(holdout.CleanSlateTimeout) as raised:
+                holdout._wait_for_clean_slate(timeout_s=0.10, poll_s=0.05)
+        self.assertEqual(raised.exception.diagnostics, diagnostic)
+        self.assertIn("CLEAN_SLATE_TIMEOUT: PIDs 43277", str(raised.exception))
+        self.assertEqual(clock.sleeps, [0.05, 0.05])
+
+    def test_already_clean_environment_passes_without_sleep(self):
+        clock = FakeClock()
+        matcher = mock.Mock(return_value=[])
+        monotonic, sleep = self._clock_patches(clock)
+        with monotonic, sleep, mock.patch.object(holdout, "_matching_contamination_pids", matcher):
+            holdout._wait_for_clean_slate(timeout_s=1.0, poll_s=0.05)
+        matcher.assert_called_once_with()
+        self.assertEqual(clock.sleeps, [])
+
+    def test_wait_never_kills_a_matched_or_unrelated_process(self):
+        clock = FakeClock()
+        monotonic, sleep = self._clock_patches(clock)
+        with (
+            monotonic,
+            sleep,
+            mock.patch.object(holdout, "_matching_contamination_pids", return_value=["99999"]),
+            mock.patch.object(holdout, "_process_diagnostics", return_value=[]),
+            mock.patch.object(holdout.os, "killpg", side_effect=AssertionError("must not kill")),
+            mock.patch.object(holdout.yawcase, "stop_process", side_effect=AssertionError("must not stop")),
+        ):
+            with self.assertRaises(holdout.CleanSlateTimeout):
+                holdout._wait_for_clean_slate(timeout_s=0.0, poll_s=0.05)
+
+    def test_process_snapshot_records_requested_fields(self):
+        completed = subprocess.CompletedProcess(
+            args=["ps"], returncode=0,
+            stdout="43277 43204 43204 Sl robot_state_publisher --ros-args\n",
+            stderr="",
+        )
+        with mock.patch.object(holdout.subprocess, "run", return_value=completed) as run:
+            diagnostics = holdout._process_diagnostics(["43277"])
+        self.assertEqual(diagnostics, [{
+            "pid": 43277, "ppid": 43204, "pgid": 43204,
+            "state": "Sl", "command_line": "robot_state_publisher --ros-args",
+        }])
+        self.assertEqual(run.call_args.args[0][:4], ["ps", "-ww", "-o", "pid=,ppid=,pgid=,stat=,args="])
+
+    def test_timeout_failure_record_preserves_process_diagnostics(self):
+        diagnostic = [{
+            "pid": 43277, "ppid": 43204, "pgid": 43204,
+            "state": "Sl", "command_line": "robot_state_publisher --ros-args",
+        }]
+        with tempfile.TemporaryDirectory() as temporary:
+            case_dir = Path(temporary)
+            holdout._write_failure(
+                case_dir,
+                "case-id",
+                holdout.CleanSlateTimeout(diagnostic),
+                lifecycle_contract_revision=holdout.LIFECYCLE_CONTRACT_REVISION,
+                clean_slate_timeout_s=holdout.CLEAN_SLATE_TIMEOUT_S,
+                contamination_processes=diagnostic,
+            )
+            record = json.loads((case_dir / "failure.json").read_text())
+        self.assertEqual(record["contamination_processes"], diagnostic)
+        self.assertEqual(record["contamination_processes"][0]["command_line"],
+                         "robot_state_publisher --ros-args")
 
 
 if __name__ == "__main__":

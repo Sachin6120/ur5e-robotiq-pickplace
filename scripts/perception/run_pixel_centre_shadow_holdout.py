@@ -33,14 +33,28 @@ yawcase = importlib.util.module_from_spec(_yawcase_spec)
 _yawcase_spec.loader.exec_module(yawcase)  # noqa: E402 -- reuse process/spawn helpers
 
 
-CAMPAIGN_NAME = "pixel_centre_shadow_holdout_960x720"
+# The first campaign at pixel_centre_shadow_holdout_960x720 is preserved as an
+# incomplete record: its second case correctly detected case-1 descendants
+# while they were still handling SIGTERM.  This replacement campaign changes
+# only the lifecycle contract, never the frozen scientific matrix below.
+CAMPAIGN_NAME = "pixel_centre_shadow_holdout_960x720_clean_slate_v2"
 EVIDENCE_ROOT = REPO / "evidence" / CAMPAIGN_NAME
+LIFECYCLE_CONTRACT_REVISION = "post_case_clean_slate_v1"
 CAMERA_WIDTH = 960
 CAMERA_HEIGHT = 720
 PIXEL_PITCH_M = 0.001930075
 PHASE_OFFSET_M = PIXEL_PITCH_M / 4.0
 RANDOMIZATION_SEED = 20260831
 SHADOW_PARAMETER = "enable_pixel_centre_shadow"
+CLEAN_SLATE_TIMEOUT_S = 10.0
+CLEAN_SLATE_POLL_S = 0.05
+
+# Keep this expression byte-for-byte equivalent to the originally committed
+# gate.  The clean-slate wait must not narrow or weaken it.
+CONTAMINATION_PATTERN = (
+    "m3_grasp|static_scene_tf|move_group|object_detector|object_position_world|"
+    "[g]z sim|robot_state_publisher|ros2_control_node|gz_pose_observer"
+)
 
 # This is the frozen, pre-truth configuration matrix.  Do not add runtime
 # arguments to alter it: changing this source necessarily changes its manifest
@@ -196,6 +210,7 @@ def campaign_manifest():
     cases = build_frozen_cases()
     static = {
         "campaign": CAMPAIGN_NAME,
+        "lifecycle_contract_revision": LIFECYCLE_CONTRACT_REVISION,
         "camera_resolution_required": [CAMERA_WIDTH, CAMERA_HEIGHT],
         "pixel_pitch_m": PIXEL_PITCH_M,
         "phase_offset_m": PHASE_OFFSET_M,
@@ -215,6 +230,9 @@ def campaign_manifest():
             "reject_timestamp_mismatch": True,
             "reject_missing_ground_truth": True,
             "no_posthoc_matrix_change": True,
+            "post_case_clean_slate_required": True,
+            "clean_slate_timeout_s": CLEAN_SLATE_TIMEOUT_S,
+            "clean_slate_poll_s": CLEAN_SLATE_POLL_S,
         },
     }
     return dict(static, frozen_manifest_sha256=sha256_json(static))
@@ -481,15 +499,89 @@ def _launch_commands(case_dir, gui):
     }
 
 
-def _assert_clean_environment():
+class CleanSlateTimeout(RuntimeError):
+    """A post-case process snapshot remained after the bounded wait."""
+
+    def __init__(self, diagnostics):
+        self.diagnostics = diagnostics
+        pids = ",".join(str(item["pid"]) for item in diagnostics)
+        super().__init__(f"CLEAN_SLATE_TIMEOUT: PIDs {pids}")
+
+
+def _matching_contamination_pids():
     contamination = subprocess.run(
-        ["pgrep", "-f",
-         "m3_grasp|static_scene_tf|move_group|object_detector|object_position_world|"
-         "[g]z sim|robot_state_publisher|ros2_control_node|gz_pose_observer"],
+        ["pgrep", "-f", CONTAMINATION_PATTERN],
         capture_output=True, text=True, check=False,
     )
     if contamination.returncode == 0:
-        raise RuntimeError(f"CONTAMINATED_ENVIRONMENT: PIDs {contamination.stdout.strip()}")
+        return contamination.stdout.split()
+    if contamination.returncode == 1:
+        return []
+    raise RuntimeError(
+        "CONTAMINATION_MATCHER_FAILURE: "
+        f"returncode={contamination.returncode} stderr={contamination.stderr.strip()}"
+    )
+
+
+def _process_diagnostics(pids):
+    """Return a contemporaneous, read-only snapshot for each matched PID."""
+    if not pids:
+        return []
+    snapshot = subprocess.run(
+        ["ps", "-ww", "-o", "pid=,ppid=,pgid=,stat=,args=", "-p", ",".join(pids)],
+        capture_output=True, text=True, check=False,
+    )
+    rows = {}
+    for line in snapshot.stdout.splitlines():
+        fields = line.strip().split(None, 4)
+        if len(fields) == 5 and fields[0].isdigit() and fields[1].isdigit() and fields[2].isdigit():
+            rows[fields[0]] = {
+                "pid": int(fields[0]),
+                "ppid": int(fields[1]),
+                "pgid": int(fields[2]),
+                "state": fields[3],
+                "command_line": fields[4],
+            }
+    # A process can exit between pgrep and ps.  Preserve that fact rather than
+    # silently dropping the gate's observed PID from the timeout record.
+    return [rows.get(pid, {
+        "pid": int(pid), "ppid": None, "pgid": None, "state": "unavailable",
+        "command_line": None,
+    }) for pid in pids]
+
+
+def _assert_clean_environment():
+    pids = _matching_contamination_pids()
+    if pids:
+        raise RuntimeError(f"CONTAMINATED_ENVIRONMENT: PIDs {' '.join(pids)}")
+
+
+def _wait_for_clean_slate(timeout_s=CLEAN_SLATE_TIMEOUT_S, poll_s=CLEAN_SLATE_POLL_S):
+    """Poll the unchanged gate until teardown descendants have exited.
+
+    This function is observation-only: it never signals a PID.  The existing
+    owned-process-group SIGTERM/SIGKILL path remains solely in yawcase.stop_process.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        pids = _matching_contamination_pids()
+        if not pids:
+            return
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0.0:
+            raise CleanSlateTimeout(_process_diagnostics(pids))
+        time.sleep(min(poll_s, remaining_s))
+
+
+def _write_failure(case_dir, case_id, error, **extra):
+    record = {
+        "case_id": case_id,
+        "failure": str(error),
+        "ground_truth_evaluation_only": True,
+        "wall_time": time.time(),
+    }
+    record.update(extra)
+    (case_dir / "failure.json").write_text(json.dumps(record, indent=2) + "\n")
 
 
 def _wait_for_controllers():
@@ -533,6 +625,7 @@ def run_case(root, manifest, case, gui=False):
 
     observer_proc = sim_proc = detector_proc = world_proc = None
     files = []
+    capture_completed = False
     try:
         _assert_clean_environment()
         observer_proc = yawcase.start_process(commands["gazebo_truth_observer"])
@@ -582,16 +675,30 @@ def run_case(root, manifest, case, gui=False):
             "evaluation_only": True, "pose_xyz_quaternion_xyzw": gt_final,
         }, indent=2) + "\n")
         (case_dir / "stage.capture_done").touch()
+        capture_completed = True
         return metrics
     except Exception as error:
-        (case_dir / "failure.json").write_text(json.dumps({
-            "case_id": case["case_id"], "failure": str(error),
-            "ground_truth_evaluation_only": True, "wall_time": time.time(),
-        }, indent=2) + "\n")
+        _write_failure(case_dir, case["case_id"], error)
         raise
     finally:
         for proc in (world_proc, detector_proc, sim_proc, observer_proc):
             yawcase.stop_process(proc)
+        # A direct shell launcher can exit before its ROS/Gazebo descendants.
+        # Do not enter the next case until the unchanged contamination gate sees
+        # a clean slate.  A timeout is evidence-bearing and aborts the campaign.
+        if capture_completed:
+            try:
+                _wait_for_clean_slate()
+            except CleanSlateTimeout as error:
+                _write_failure(
+                    case_dir,
+                    case["case_id"],
+                    error,
+                    lifecycle_contract_revision=LIFECYCLE_CONTRACT_REVISION,
+                    clean_slate_timeout_s=CLEAN_SLATE_TIMEOUT_S,
+                    contamination_processes=error.diagnostics,
+                )
+                raise
         for file_handle in files:
             file_handle.close()
 
