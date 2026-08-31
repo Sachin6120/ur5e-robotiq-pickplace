@@ -49,6 +49,13 @@ GATES = {
     "translation_decoupled_mm_min": 20.0,
 }
 
+# Largest ground-truth sample gap boundary_pose() will reach across, seconds.
+# The observed gz_pose_observer cadence is ~10-17 ms; a lift leg is ~1.9 s.
+# 0.25 s therefore absorbs ordinary jitter and a dropped sample or two while
+# still refusing to interpolate a baseline across any part of the lift itself.
+# This is a stream-integrity bound, NOT a physical acceptance threshold.
+BOUNDARY_MAX_GAP_S = 0.25
+
 
 def quaternion_angle_error(q_actual, q_target):
     dot = abs(sum(a * b for a, b in zip(q_actual, q_target)))
@@ -143,6 +150,89 @@ def load_pose_stream(path):
                     )
                 )
     return obj, fla
+
+
+def boundary_pose(series, t_boundary, max_gap_s=BOUNDARY_MAX_GAP_S):
+    """Ground-truth pose AT a stage boundary. Returns (pose_or_None, method).
+
+    WHY THIS EXISTS, AND WHY IT IS NOT A QUIESCENCE WINDOW
+
+    The lift baseline must answer "where was the object, relative to the
+    gripper, at the instant the lift started".  mean_window() answers a
+    different question -- "where was the object while it was demonstrably at
+    rest before the lift" -- and those coincide only when the object happens
+    to be at rest.  Under the production P=200 parallel-jaw gain the gripper
+    is still force-seating the object when LIFT_BEGIN fires (measured: the
+    stall and LIFT_BEGIN are 0.3 ms apart in stage2d_pose/D2), so the object
+    is genuinely still moving through the whole pre-lift window and the
+    quiescence check correctly refuses to average it -- returning None, which
+    then reads as a threshold FAIL rather than as "not measured".  That is a
+    measurement artifact, not a grasp defect.
+
+    The boundary pose has no such precondition: it is defined for any sample
+    cadence that brackets the boundary, moving or not.
+
+    DETERMINISM AND THE "HIDDEN SLIP" HAZARD
+
+    Selection is a total function of (series, t_boundary), with no tolerance
+    to tune and no choice between candidates:
+
+      * A sample at or before the boundary is REQUIRED.  If the stream only
+        starts after LIFT_BEGIN there is no valid baseline, and this returns
+        None rather than reaching forward for a post-boundary sample -- such a
+        sample already contains part of the lift, so using it as the reference
+        would subtract real slip out of the answer and report a clean grasp.
+      * When samples bracket the boundary, the pose is interpolated AT the
+        boundary (position linearly, orientation by sign-aligned nlerp).  Over
+        the observed ~10-17 ms cadence nlerp and slerp differ by far less than
+        any threshold here, and the result is anchored by the pre-boundary
+        sample, so this cannot drift into the lift.
+      * max_gap_s bounds both the reach back to the previous sample and the
+        bracketing span, so a ground-truth dropout fails explicitly instead of
+        silently interpolating across the lift.
+    """
+    before = [(t, p) for t, p in series if t <= t_boundary]
+    if not before:
+        # Deliberately NOT falling forward to a post-boundary sample: see the
+        # "hidden slip" hazard above.
+        return None, "none:no_sample_at_or_before_boundary"
+    t_prev, p_prev = before[-1]
+    if t_boundary - t_prev > max_gap_s:
+        return None, f"none:pre_boundary_gap_{t_boundary - t_prev:.4f}s"
+
+    after = [(t, p) for t, p in series if t > t_boundary]
+    if after:
+        t_next, p_next = after[0]
+        span = t_next - t_prev
+        if span <= max_gap_s and span > 0.0:
+            f = (t_boundary - t_prev) / span
+            position = tuple(p_prev[i] + f * (p_next[i] - p_prev[i]) for i in range(3))
+            qa = p_prev[3:7]
+            qb = p_next[3:7]
+            # Hemisphere-align before blending: q and -q are the same rotation,
+            # and blending across the antipode would swing the long way round.
+            if sum(a * b for a, b in zip(qa, qb)) < 0.0:
+                qb = tuple(-b for b in qb)
+            blended = tuple(qa[i] + f * (qb[i] - qa[i]) for i in range(4))
+            norm = math.sqrt(sum(v * v for v in blended))
+            if norm > 1e-12:
+                quaternion = tuple(v / norm for v in blended)
+                return position + quaternion, f"interpolated:dt={t_boundary - t_prev:.4f}s"
+    return p_prev, f"nearest_before:dt={t_boundary - t_prev:.4f}s"
+
+
+def upright_tilt_series(obj_stream, t0, t1):
+    """Upright tilt samples over [t0, t1], one per ground-truth sample.
+
+    Each value depends only on that sample's own quaternion (object-local +Z
+    against world +Z), so this needs no pre-lift reference pose of any kind --
+    which is the whole point: the historical code computed exactly this list
+    but kept it behind a quiescent-pre-lift-window guard it never used, so a
+    still-seating object suppressed a metric that was mathematically available.
+    """
+    return [
+        quaternion_upright_tilt_deg(p[3:7]) for t, p in obj_stream if t0 <= t <= t1
+    ]
 
 
 def mean_window(series, t0, t1, tol_m=0.0005, min_samples=5):
@@ -313,6 +403,15 @@ def analyze_case(
     transport_slip_mm = None
     max_grasp_tilt_deg = None
     max_grasp_orientation_change_deg = None
+    # Boundary-referenced measurements (force-seating robust) and the
+    # historical quiescent-window ones, both always recorded. Which pair is
+    # authoritative is decided per stage at the bottom of this block.
+    lift_slip_boundary_mm = None
+    lift_slip_quiescent_window_mm = None
+    max_upright_tilt_deg = None
+    max_grasp_orientation_change_boundary_deg = None
+    lift_baseline_method = None
+    retained_interval = None
 
     if (
         obj_stream
@@ -330,9 +429,23 @@ def analyze_case(
         post_o, _, _ = mean_window(obj_stream, ld + dwell_offset_s, ld + dwell_offset_s + win_s)
         post_f, _, _ = mean_window(fla_stream, ld + dwell_offset_s, ld + dwell_offset_s + win_s)
 
+        # Historical baseline: the mean of a provably-quiescent pre-lift
+        # window. Kept verbatim so its value stays on the record even when the
+        # boundary method supersedes it.
         if base_o and base_f and post_o and post_f:
-            lift_slip = slipmod.slip_m(base_f, base_o, post_f, post_o)
-            lift_slip_mm = lift_slip * 1000.0
+            lift_slip_quiescent_window_mm = (
+                slipmod.slip_m(base_f, base_o, post_f, post_o) * 1000.0
+            )
+
+        # Boundary baseline: the pose AT LIFT_BEGIN, which does not require
+        # the object to have finished seating.
+        bnd_o, method_o = boundary_pose(obj_stream, lb)
+        bnd_f, method_f = boundary_pose(fla_stream, lb)
+        lift_baseline_method = {"object": method_o, "flange": method_f}
+        if bnd_o and bnd_f and post_o and post_f:
+            lift_slip_boundary_mm = (
+                slipmod.slip_m(bnd_f, bnd_o, post_f, post_o) * 1000.0
+            )
 
         if "TRANSPORT_DONE" in stage_stamps:
             td = stage_stamps["TRANSPORT_DONE"]
@@ -346,34 +459,56 @@ def analyze_case(
                 trans_slip = slipmod.slip_m(post_f, post_o, tran_f, tran_o)
                 transport_slip_mm = trans_slip * 1000.0
 
-            # Stage-2A's historical metric was full SO(3) displacement from
-            # the pre-lift quaternion.  Retain it as a diagnostic: it includes
-            # an intentional yaw change.  Stage-2C instead gates on upright
-            # tilt only: the angle of object-local +Z away from world +Z.
-            if base_o:
-                base_q = base_o[3:7]
-                orientation_change_samples = [
-                    math.degrees(quaternion_angle_error(p[3:7], base_q))
-                    for t, p in obj_stream
-                    if lb <= t <= td + dwell_offset_s + win_s
-                ]
-                upright_tilt_samples = [
-                    quaternion_upright_tilt_deg(p[3:7])
-                    for t, p in obj_stream
-                    if lb <= t <= td + dwell_offset_s + win_s
-                ]
-                if orientation_change_samples:
-                    max_grasp_orientation_change_deg = max(orientation_change_samples)
-                if use_axial_placement_yaw:
-                    # A rectangle may yaw about world +Z while remaining
-                    # upright.  That yaw is not a physical grasp tilt.
-                    max_grasp_tilt_deg = (
-                        max(upright_tilt_samples) if upright_tilt_samples else None
-                    )
-                else:
-                    # Default Stage-2A behavior remains byte-for-byte
-                    # equivalent in meaning to its historical gate.
-                    max_grasp_tilt_deg = max_grasp_orientation_change_deg
+        # Retained-object interval: LIFT_BEGIN until the end of the last dwell
+        # the object is still held through. TRANSPORT_DONE when there was a
+        # transport leg, LIFT_DONE otherwise -- the historical code derived
+        # this bound from TRANSPORT_DONE only, so lift_only runs silently got
+        # no tilt at all. Capped at RELEASE_BEGIN because "grasp tilt" is
+        # meaningless once the object is no longer in the jaws (verified a
+        # no-op across all existing evidence: no recorded dwell end ever falls
+        # after its own RELEASE_BEGIN).
+        interval_end = (
+            stage_stamps["TRANSPORT_DONE"] if "TRANSPORT_DONE" in stage_stamps else ld
+        ) + dwell_offset_s + win_s
+        if "RELEASE_BEGIN" in stage_stamps:
+            interval_end = min(interval_end, stage_stamps["RELEASE_BEGIN"])
+        retained_interval = [lb, interval_end]
+
+        # Upright tilt needs no reference pose, so it is computed
+        # unconditionally over the retained interval.
+        upright_tilt_samples = upright_tilt_series(obj_stream, lb, interval_end)
+        if upright_tilt_samples:
+            max_upright_tilt_deg = max(upright_tilt_samples)
+
+        # Full SO(3) displacement from a pre-lift reference. This one genuinely
+        # needs a reference orientation, so it is reported against both the
+        # historical window mean and the boundary pose.
+        def _max_orientation_change(reference_pose):
+            if not reference_pose:
+                return None
+            reference_q = reference_pose[3:7]
+            samples = [
+                math.degrees(quaternion_angle_error(p[3:7], reference_q))
+                for t, p in obj_stream
+                if lb <= t <= interval_end
+            ]
+            return max(samples) if samples else None
+
+        max_grasp_orientation_change_deg = _max_orientation_change(base_o)
+        max_grasp_orientation_change_boundary_deg = _max_orientation_change(bnd_o)
+
+        if use_axial_placement_yaw:
+            # Stage-2C/2D: a rectangle may yaw about world +Z while remaining
+            # upright. That yaw is not a physical grasp tilt, and the upright
+            # measure is force-seating robust.
+            max_grasp_tilt_deg = max_upright_tilt_deg
+            lift_slip_mm = lift_slip_boundary_mm
+        else:
+            # Stage-2A keeps its historical quiescent-window semantics
+            # unchanged; the boundary values above are recorded alongside as
+            # diagnostics rather than silently redefining a closed campaign.
+            max_grasp_tilt_deg = max_grasp_orientation_change_deg
+            lift_slip_mm = lift_slip_quiescent_window_mm
 
     # 5. Final Placement
     final_pose = None
@@ -485,6 +620,21 @@ def analyze_case(
         "max_grasp_tilt_deg": max_grasp_tilt_deg,
         "max_grasp_orientation_change_deg": max_grasp_orientation_change_deg,
         "lift_slip_mm": lift_slip_mm,
+        # Both measurement methods, always recorded. lift_slip_mm and
+        # max_grasp_tilt_deg above select between them per stage; these keep
+        # the superseded quiescent-window values on the record rather than
+        # deleting the evidence that the old method produced no number.
+        "lift_slip_boundary_mm": lift_slip_boundary_mm,
+        "lift_slip_quiescent_window_mm": lift_slip_quiescent_window_mm,
+        "max_upright_tilt_deg": max_upright_tilt_deg,
+        "max_grasp_orientation_change_boundary_deg": (
+            max_grasp_orientation_change_boundary_deg
+        ),
+        "lift_baseline_method": lift_baseline_method,
+        "retained_interval": retained_interval,
+        "lift_metric_source": (
+            "boundary" if use_axial_placement_yaw else "quiescent_window"
+        ),
         "transport_slip_mm": transport_slip_mm,
         "placement_pos_err_mm": placement_pos_err_mm,
         "placement_orient_err_deg": placement_orient_err_deg,
