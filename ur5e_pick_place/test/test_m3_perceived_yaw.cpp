@@ -62,6 +62,34 @@ TEST(M3PerceivedYaw, DefaultOffLeavesBasisByteForByteUnchanged)
   expect_same_basis(result, existing);
 }
 
+TEST(M3PerceivedYaw, DefaultOffReportsConfiguredYawWithoutConsumingPerceivedYaw)
+{
+  const auto object = transform_with_basis(R_from_rpy(0.0, 0.0, 0.0));
+  const auto configured_yaw = configured_object_planar_yaw(object);
+  ASSERT_TRUE(configured_yaw);
+  EXPECT_TRUE(std::isfinite(*configured_yaw));
+  EXPECT_NEAR(*configured_yaw, 0.0, 1e-12);
+
+  // Default telemetry semantics remain configured source with no perceived
+  // sample or delta, and the command basis remains the configured basis.
+  const std::string yaw_source = "configured";
+  const double perceived_object_yaw = std::numeric_limits<double>::quiet_NaN();
+  const double yaw_delta = std::numeric_limits<double>::quiet_NaN();
+  const auto existing = downward_grasp_basis(rad(-37.0));
+  const auto result = grasp_basis_with_perceived_yaw(
+    existing, false, rad(45.0), *configured_yaw);
+  EXPECT_EQ(yaw_source, "configured");
+  EXPECT_TRUE(std::isnan(perceived_object_yaw));
+  EXPECT_TRUE(std::isnan(yaw_delta));
+  expect_same_basis(result, existing);
+}
+
+TEST(M3PerceivedYaw, ConfiguredYawTelemetryRejectsNonLevelObjectFrame)
+{
+  const auto tilted_object = transform_with_basis(R_from_rpy(rad(1.0), 0.0, 0.0));
+  EXPECT_FALSE(configured_object_planar_yaw(tilted_object));
+}
+
 TEST(M3PerceivedYaw, PerceivedYawSweepPreMultipliesAxialDelta)
 {
   const auto existing = downward_grasp_basis(rad(12.0));

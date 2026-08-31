@@ -180,6 +180,25 @@ std::optional<double> planar_yaw_from_valid_quaternion(
   return std::isfinite(yaw) ? std::optional<double>(yaw) : std::nullopt;
 }
 
+// This is telemetry-only when perceived yaw is disabled: failure to obtain a
+// configured yaw must not alter the established configured-yaw manipulation
+// path. Perceived-yaw targeting performs the additional approach validation
+// below and turns invalid geometry into CONFIG_ERROR.
+std::optional<double> configured_object_planar_yaw(const tf2::Transform & T_world_object)
+{
+  double roll = 0.0;
+  double pitch = 0.0;
+  double yaw = 0.0;
+  T_world_object.getBasis().getRPY(roll, pitch, yaw);
+  if (!std::isfinite(roll) || !std::isfinite(pitch) || !std::isfinite(yaw) ||
+    std::abs(roll) > kYawGeometryToleranceRad ||
+    std::abs(pitch) > kYawGeometryToleranceRad)
+  {
+    return std::nullopt;
+  }
+  return yaw;
+}
+
 bool is_fresh_world_pose(
   const geometry_msgs::msg::PoseStamped & pose,
   const std::string & world_frame,
@@ -195,14 +214,8 @@ bool configured_yaw_reference_supported(
   double & configured_yaw,
   std::string & error)
 {
-  double roll = 0.0;
-  double pitch = 0.0;
-  double yaw = 0.0;
-  T_world_object.getBasis().getRPY(roll, pitch, yaw);
-  if (!std::isfinite(roll) || !std::isfinite(pitch) || !std::isfinite(yaw) ||
-    std::abs(roll) > kYawGeometryToleranceRad ||
-    std::abs(pitch) > kYawGeometryToleranceRad)
-  {
+  const auto yaw = configured_object_planar_yaw(T_world_object);
+  if (!yaw) {
     error = "configured object frame is not level (roll/pitch must be approximately zero)";
     return false;
   }
@@ -217,7 +230,7 @@ bool configured_yaw_reference_supported(
     error = "grasp approach local +Z is not approximately world -Z";
     return false;
   }
-  configured_yaw = yaw;
+  configured_yaw = *yaw;
   return true;
 }
 
@@ -1268,12 +1281,26 @@ int main(int argc, char ** argv)
       result = Result::TF_LOOKUP_TIMEOUT;
     }
 
+    // Record configured object yaw whenever the static reference is already
+    // available, independently of whether this run consumes perceived yaw.
+    // This lookup is deliberately best-effort for default-off behavior: a
+    // missing/invalid telemetry reference must not create a new failure path.
+    bool got_object_tf = false;
+    tf2::Transform T_world_object;
+    if (tf_buffer->canTransform(world_frame, object_frame_name, tf2::TimePointZero, &tf_error)) {
+      auto stamped = tf_buffer->lookupTransform(world_frame, object_frame_name, tf2::TimePointZero);
+      tf2::fromMsg(stamped.transform, T_world_object);
+      got_object_tf = true;
+      const auto telemetry_yaw = configured_object_planar_yaw(T_world_object);
+      if (telemetry_yaw) {
+        configured_object_yaw_deg = *telemetry_yaw * 180.0 / M_PI;
+      }
+    }
+
     if (ur5e_pick_place::ok(result) && use_perceived_yaw) {
-      bool got_object_tf = false;
-      tf2::Transform T_world_object;
       const auto object_deadline = std::chrono::steady_clock::now() +
         std::chrono::duration<double>(tf_lookup_timeout_s);
-      while (std::chrono::steady_clock::now() < object_deadline) {
+      while (!got_object_tf && std::chrono::steady_clock::now() < object_deadline) {
         if (tf_buffer->canTransform(world_frame, object_frame_name, tf2::TimePointZero, &tf_error)) {
           auto stamped = tf_buffer->lookupTransform(world_frame, object_frame_name, tf2::TimePointZero);
           tf2::fromMsg(stamped.transform, T_world_object);
