@@ -21,7 +21,90 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-08-31 Stage-2C Orientation Generalization — CURRENT AUTHORITY
+## 2026-08-31 Stage-2D Planar Pose Generalization — CURRENT AUTHORITY
+
+- Repository: branch `stage2-orientation-generalization`, HEAD `0562222`
+  (`geometry: raise parallel-jaw fixed-side grasp TCP clearance to 2.0 mm`).
+- **`GRASP_TCP_FIXED_SIDE_CLEARANCE_M` (`scripts/lib/parallel_jaw_geometry.py`)
+  is now 2.0 mm, raised from 1.5 mm.** This is now the production value;
+  every earlier statement in this file or `HANDOFF.md` naming 1.5 mm as
+  current is superseded. `DECLARED_CLEARANCE_M` (4.0 mm), the aperture
+  split, the pre-close aperture, the final close target, controllers,
+  perception, and URDF are all unchanged.
+- Stage-2D extended Stage-2C with combined planar XY-offset + yaw cases:
+  D1 (+30/+30 mm, yaw +30 deg), D2 (-30/-30 mm, yaw -30 deg), D3
+  (+30/-30 mm, yaw +45 deg). D3 failed deterministically at the former
+  1.5 mm clearance (`EXECUTE_FAILURE` during Cartesian descent,
+  `evidence/stage2d_pose/D3`, `D3_retry1_diagnostics`).
+- **D3 root cause is a fixed-pad/object-top hard contact during descent,
+  not a controller-authority problem.** A read-only source-and-disassembly
+  audit of `gz_ros2_control`'s `position_proportional_gain` (0.1, a
+  compiled plugin default never set by this project's own code) found no
+  saturation in its position-command path, a commanded velocity (3.53
+  rad/s) already exceeding shoulder_lift's own URDF limit at the observed
+  tracking error, and a sustained ~301 N contact force for 6.3 s on the
+  fixed pad — the controller-gain hypothesis is **falsified**. The joint
+  errors (shoulder_lift +0.0707 rad, wrist_1 -0.0590 rad) are the
+  kinematic image of a rigid stop 41.4 mm short of the 100 mm descent
+  target, matching a measured 22.000 mm x 59.2 um contact sliver on the
+  fixed pad's inner face at closing-axis position -15.0000 mm.
+- **Predicted closing-axis margin, computed from each case's own
+  perceived point vs. measured ground truth:** D3 = -0.0759 mm (overlap,
+  matches the observed failure) at 1.5 mm, **+0.4241 mm** at 2.0 mm; D1 =
+  +0.1701 mm -> +0.6701 mm; D2 = +1.1690 mm -> +1.6690 mm.
+- **2.0 mm validated before the production change, in order:** D1/D2/D3
+  all PASS with zero fixed-pad and zero moving-pad contact before
+  `GRIPPER_CLOSE` under the diagnostic override
+  (`evidence/stage2d_pose/D{1,2,3}_clearance2mm_diag`); D3 re-run through
+  the actual production default (no override) PASSes identically,
+  confirming the resolved TCP offset X = -0.025500 m and
+  `fixed_side_clearance_m_override: null`
+  (`evidence/stage2d_pose/D3_production_default_2mm`); two independent
+  Scene-A/Stage-1 cycles at the production default PASS with all 11 gates
+  and zero pad contact
+  (`evidence/stage1_scene_a_production_2mm_confirmation{,_run2}`).
+- **Stage-2D D1/D2/D3 are qualified at the 2.0 mm production default.
+  Stage-2D is COMPLETE.**
+- **Accepted placement trade-off (not "no regression"):** raising the
+  clearance measurably shifts placement position, since the grasp TCP
+  moves 0.5 mm relative to the object. Scene-A: +0.388 mm (two
+  independent cycles, +0.3876 mm and +0.3880 mm, agreeing to 0.4 um).
+  D1: +0.524 mm. D2: +0.661 mm. All remain comfortably inside the 10 mm
+  `placement_pos_err_mm_max` gate (`stage2a_analyzer.py`).
+- **Stage-2C (C1-C3) was NOT rerun.** Their yaw/perception conclusions are
+  unaffected by this change. Their closing-axis fixed-side margins
+  increase by the full 0.5 mm at 2.0 mm (C1 +1.055 -> +1.555 mm, C2
+  +1.388 -> +1.888 mm, C3 +1.041 -> +1.541 mm, computed from their own
+  existing evidence). Their recorded placement-position numbers
+  (1.535-1.583 mm) were measured under the **former 1.5 mm** clearance and
+  are retained as historical; see `HANDOFF.md`'s Stage-2C section
+  (now superseded) for the full addendum.
+- Detailed case metrics, the D3 mechanism evidence, and the full
+  validation chain are recorded in the current Stage-2D section of
+  `HANDOFF.md`.
+- **NEXT:** no next-stage objective is authorized yet. Two open,
+  already-flagged gaps: full SO(3) orientation change (roll/pitch) remains
+  diagnostic-only; the gripper has no MoveIt collision geometry, so
+  fixed-pad/object contact stays invisible to planning-time checks. At the
+  34 mm pre-close aperture (unchanged), the object's derived physical gap
+  from the moving pad is now 2.0 mm too (`preclose_aperture - width -
+  c_fixed_m`) — numerically equal to the fixed side, though
+  `MOVING_SIDE_CLEARANCE_M` itself (a separate named constant, feeding
+  only `DECLARED_CLEARANCE_M`'s sum) remains its own unchanged 3.5 mm. No
+  further headroom remains on the fixed side without widening
+  `DECLARED_CLEARANCE_M`; the durable fix for any future overlap is the
+  underlying ~1.3-1.6 mm closing-axis perception bias, not a third
+  clearance increase. See `HANDOFF.md`'s Stage-2D "Next stage" subsection
+  for detail.
+
+## 2026-08-31 Stage-2C Orientation Generalization — SUPERSEDED
+
+Superseded by the Stage-2D section above: Stage-2D closes with the
+production fixed-side clearance raised to 2.0 mm, which C1-C3 below did
+not run under. Every yaw/perception conclusion below remains valid; only
+the fixed-side clearance context and the placement-position numbers are
+historical to the former 1.5 mm configuration (see the Stage-2D section's
+addendum above for the corrected margins).
 
 - Repository: branch `stage2-orientation-generalization`, HEAD `eb74c27`.
 - Stage-2C is closed with three independent perceived-yaw full cycles:

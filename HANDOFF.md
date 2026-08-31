@@ -1,7 +1,7 @@
 # HANDOFF.md
 
 > READ THIS SECTION FIRST. The section immediately below, "2026-08-31
-> Stage-2C Orientation Generalization — CURRENT AUTHORITY", is the sole
+> Stage-2D Planar Pose Generalization — CURRENT AUTHORITY", is the sole
 > current-authority statement of repository state.
 > Every other authority label anywhere else in this file is superseded and
 > has been relabelled
@@ -9,7 +9,179 @@
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-## 2026-08-31 Stage-2C Orientation Generalization — CURRENT AUTHORITY
+## 2026-08-31 Stage-2D Planar Pose Generalization — CURRENT AUTHORITY
+
+### Milestone status
+
+- Repository: `~/ur5e_pickplace`, branch `stage2-orientation-generalization`,
+  HEAD `0562222` (`geometry: raise parallel-jaw fixed-side grasp TCP
+  clearance to 2.0 mm`). No other production code or configuration changed
+  after that commit.
+- **`GRASP_TCP_FIXED_SIDE_CLEARANCE_M` (`scripts/lib/parallel_jaw_geometry.py`)
+  is 2.0 mm, raised from 1.5 mm, commit `0562222`.** This is the current
+  production value. `DECLARED_CLEARANCE_M` (4.0 mm), the aperture split
+  (`FIXED_SIDE_CLEARANCE_M`/`MOVING_SIDE_CLEARANCE_M`), the pre-close
+  aperture, the final close target, `q_for_width`, controllers, perception,
+  and URDF/xacro are all unchanged by this commit.
+- Stage-2D extends Stage-2C: the physical spawn XY and yaw are both
+  independently decoupled from the configured pick pose (combined planar
+  offset + yaw), while manipulation still consumes perceived XYZ and
+  perceived yaw together. Three cases: D1 (spawn offset +30/+30 mm, spawn
+  yaw +30 deg), D2 (-30/-30 mm, -30 deg), D3 (+30/-30 mm, +45 deg).
+
+### D3 failure at the former 1.5 mm clearance, and its root cause
+
+- D3 failed deterministically at 1.5 mm: `EXECUTE_FAILURE`, MoveIt error
+  -4, after a Cartesian path with `cartesian_fraction = 1.0000` and no
+  reported collision. Evidence: `evidence/stage2d_pose/D3`,
+  `D3_retry1_diagnostics` (identical IK solution, identical halt point,
+  reproduced on retry).
+- **The controller-gain hypothesis was investigated and falsified.** A
+  read-only source trace and disassembly of `gz_ros2_control`'s runtime
+  diagnostic `position_proportional_gain = 0.1` found: (1) it is a
+  compiled plugin default (`libgz_hardware_plugins.so`), never set by any
+  commit in this repository (`git log -S"position_proportional_gain"`
+  touches only docs/scripts, never a value-setting site); (2) the control
+  law `target_vel = gain * update_rate * (cmd - pos)` has **no saturation**
+  in `GazeboSimSystem::write()` (0 `minsd`/`maxsd` instructions in that
+  function); (3) at the observed shoulder_lift tracking error (0.0707 rad)
+  the law would command 3.53 rad/s, already **exceeding shoulder_lift's own
+  URDF velocity limit** (pi rad/s) -- the joint was railed, not
+  under-driven; (4) the fixed pad sustained a **~301 N steady-state contact
+  force (670 N peak) for 6.3 s** while stationary -- proof of ample
+  actuation authority, not a gain deficit; (5) a lag-only explanation
+  bounds the possible tracking error at <=6.96 mrad given the trajectory's
+  peak speed, an order of magnitude (8.5-10.2x) below the observed
+  shoulder_lift/wrist_1 errors.
+- **The true cause is a hard mechanical contact**: the fixed pad's bottom
+  face landing flat on the object's top face during descent. Contact
+  evidence (`evidence/stage2d_pose/D3_retry1_diagnostics/contact_pad_fixed.csv`):
+  first contact at descent +1.822 s (descending at ~60 mm/s in the samples
+  immediately prior, decelerating through the 17 ms window in which
+  contact force built up -- a rigid-stop signature, not a controlled
+  approach), a 4-point, 22.000 mm x 59.2 um contact sliver at the
+  object's fixed-side face, closing-axis position exactly -15.0000 mm,
+  contact normal (0,0,-1), depth 6.3-8.3 um, sustained ~301 N median /
+  670 N peak normal force for 6.3 s (persisting past the abort). Travel
+  stopped at 58.578% of the 100 mm descent (58.578 mm), matching the
+  reported ~58.4%. The joint-space errors are the kinematic image of this
+  rigid stop: shoulder_lift's lever arm (~0.525 m) times its 0.0707 rad
+  error is ~37.1 mm, wrist_1 contributes ~5.9 mm in the same sense, total
+  ~43 mm against a measured 41.4 mm shortfall (matches within the
+  linearisation error).
+- **Predicted closing-axis margin** (perceived point vs. measured ground
+  truth, projected onto the case's own closing axis) at the former 1.5 mm
+  clearance: D3 = **-0.0759 mm** (overlap -- matches the observed 59.2 um
+  contact sliver once the object's own 20 um displacement at impact is
+  accounted for), D1 = +0.1701 mm, D2 = +1.1690 mm. D1's margin was
+  already thin; only D3's yaw (closing-axis error nearly parallel to its
+  45 deg closing axis) pushed it negative.
+- MoveIt has no way to see this class of failure: `gripper_base_link`,
+  `jaw_moving_link`, and `jaw_fixed_link` have visual geometry but **no
+  collision geometry** in the planning scene, so `cartesian_fraction`
+  reads 1.0 and no collision is ever reported despite the hard contact.
+
+### 2.0 mm production change: validation sequence and results
+
+Validated in this order, each a single run/case, no retries or tuning:
+
+| Step | Cases | Override | Result |
+|---|---|---|---|
+| 1 | D1, D2, D3 | diagnostic (`c_fixed_m=0.002`) | **3/3 PASS**, zero fixed-pad and zero moving-pad contact before `GRIPPER_CLOSE` in all three (`evidence/stage2d_pose/D{1,2,3}_clearance2mm_diag`) |
+| 2 | D3 | **production default** (no override) | **PASS**; `control_setup.json["fixed_side_clearance_m_override"] = null`; resolved `grasp_tcp_offset_vec.x = -0.025500`; zero pad contact before close (`evidence/stage2d_pose/D3_production_default_2mm`) |
+| 3 | Scene-A/O0 x2 | production default | **2/2 PASS**, all 11 gates, zero pad contact, resolved TCP offset -0.025500 confirmed in both (`evidence/stage1_scene_a_production_2mm_confirmation`, `..._run2`) |
+
+Predicted closing-axis margin at 2.0 mm, from each run's own perceived
+point and measured ground truth: D3 = **+0.4241 mm** (confirmed
+identically in both the diagnostic-override and production-default D3
+runs), D1 = +0.6701 mm, D2 = +1.6690 mm. The diagnostic-override and
+production-default D3 runs are numerically indistinguishable (resolved TCP
+offset, achieved aperture, gripper result all match; `tcp_error_m` differs
+only at sub-micron/noise scale), confirming the two code paths in
+`m3_grasp.launch.py` resolve identically.
+
+**Stage-2D D1/D2/D3 are therefore qualified at the 2.0 mm production
+default. Stage-2D is COMPLETE.**
+
+### Accepted placement trade-off (not "no regression")
+
+Raising the fixed-side clearance moves the grasp TCP 0.5 mm relative to
+the object (`preclose_pose_offset_m(0.030)`: 0.0260 m -> 0.0255 m), which
+measurably shifts where the object sits in the gripper and therefore where
+it is placed. This is a real, characterised, accepted trade -- not the
+absence of a regression:
+
+| case | placement position @1.5 mm | @2.0 mm | delta |
+|---|---:|---:|---:|
+| Scene-A/O0 (2 runs) | 1.9408 mm (R1-R5 mean) | 2.3284 / 2.3288 mm | **+0.3876 / +0.3880 mm** |
+| D1 | 1.4612 mm | 1.9854 mm | **+0.5241 mm** |
+| D2 | 1.7727 mm | 2.4335 mm | **+0.6608 mm** |
+
+All remain comfortably inside the `placement_pos_err_mm_max = 10.0 mm` gate
+(`scripts/perception/stage2a_analyzer.py`) -- Scene-A at ~23%, D1/D2 at
+~20-24% of the gate. The two Scene-A runs agree to 0.0004 mm, confirming
+the shift is a deterministic geometric consequence of the TCP move, not
+run-to-run noise. Orientation, slip, aperture, and TCP-error metrics show
+no coherent shift at 2.0 mm, only ordinary run-to-run variation --- the
+mechanism is specific to placement position.
+
+### Stage-2C (C1-C3): not rerun, addendum only
+
+Stage-2C's C1-C3 (see the superseded section below) ran under the former
+1.5 mm clearance and were **not rerun** for this closure -- their
+closing-axis margins only improve at 2.0 mm, so no case is put at risk:
+
+| case | spawn yaw | closing-axis error | margin @1.5 mm | margin @2.0 mm |
+|---|---:|---:|---:|---:|
+| C1 | +30 deg | +0.4446 mm | +1.0554 mm | **+1.5554 mm** |
+| C2 | -30 deg | +0.1120 mm | +1.3880 mm | **+1.8880 mm** |
+| C3 | +45 deg | +0.4594 mm | +1.0406 mm | **+1.5406 mm** |
+
+(Margins computed from each case's own `PERCEPTION_POSITION_USED` log line
+against `init_settled_pose.json` ground truth -- existing evidence, no new
+run.) C1-C3's yaw/perception conclusions (axial mod-180 semantics,
+perceived-yaw decoupling, the D10 estimator) are entirely independent of
+this clearance constant and remain valid without qualification. Their
+recorded placement-position numbers (1.535-1.583 mm, see the table in the
+superseded section below) were measured under the **former 1.5 mm**
+configuration; based on the D1/D2/Scene-A pattern above they would be
+expected to shift by roughly +0.4-0.7 mm if rerun, but this is not
+measured and the original evidence is preserved unmodified as the
+authoritative C1-C3 record.
+
+### Next stage
+
+Stage-2D orientation/pose generalization is complete. Do not rerun the
+recorded D1/D2/D3 cases, tune thresholds/controllers/clearance further, or
+launch a new manipulation campaign from this milestone without a
+separately authorized next-stage objective.
+
+Two gaps are already flagged above and neither is scheduled or authorized:
+(1) full SO(3) orientation change (roll/pitch, not just yaw) remains
+diagnostic-only, per Stage-2C's own "Semantics and limitations" note
+below; (2) the gripper has no MoveIt collision geometry, so this entire
+failure class stays invisible to planning-time checks regardless of
+clearance headroom. A third, narrower candidate: at the 34 mm pre-close
+aperture (unchanged), the object's actual physical gap from the moving pad
+at pre-close is `preclose_aperture - width - c_fixed_m` = 4.0 mm - 2.0 mm
+= **2.0 mm, now numerically equal to the fixed side** -- a derived
+physical quantity, not the named `MOVING_SIDE_CLEARANCE_M` constant, which
+remains its own unchanged 3.5 mm (it feeds only `DECLARED_CLEARANCE_M`'s
+sum, not this per-side accounting). There is no further headroom on the
+fixed side without widening `DECLARED_CLEARANCE_M` and the pre-close
+aperture, so the next time a case shows a closing-axis overlap, the
+durable fix is addressing the ~1.3-1.6 mm closing-axis perception bias at
+its source, not a third clearance increase.
+
+## 2026-08-31 Stage-2C Orientation Generalization — SUPERSEDED
+
+Superseded by the Stage-2D section above: Stage-2D closes with the
+production fixed-side clearance raised to 2.0 mm (commit `0562222`), which
+C1-C3 below did not run under. Every yaw/perception conclusion below
+remains valid and was not rerun; see the Stage-2D section's "Stage-2C
+addendum" above for the corrected closing-axis margins at 2.0 mm. The
+placement-position numbers in the table immediately below are historical,
+recorded under the **former 1.5 mm** clearance.
 
 ### Milestone status
 
