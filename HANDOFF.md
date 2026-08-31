@@ -125,13 +125,13 @@ run-to-run noise. Orientation, slip, aperture, and TCP-error metrics show
 no coherent shift at 2.0 mm, only ordinary run-to-run variation --- the
 mechanism is specific to placement position.
 
-### Stage-2C (C1-C3): not rerun, addendum only
+### Stage-2C (C1-C3): not rerun, 3x diagnostic addendum only
 
 Stage-2C's C1-C3 (see the superseded section below) ran under the former
 1.5 mm clearance and were **not rerun** for this closure -- their
 closing-axis margins only improve at 2.0 mm, so no case is put at risk:
 
-| case | spawn yaw | closing-axis error | margin @1.5 mm | margin @2.0 mm |
+| case | spawn yaw | closing-axis error (3x) | margin @1.5 mm (3x-derived) | margin @2.0 mm (3x-derived) |
 |---|---:|---:|---:|---:|
 | C1 | +30 deg | +0.4446 mm | +1.0554 mm | **+1.5554 mm** |
 | C2 | -30 deg | +0.1120 mm | +1.3880 mm | **+1.8880 mm** |
@@ -139,10 +139,12 @@ closing-axis margins only improve at 2.0 mm, so no case is put at risk:
 
 (Margins computed from each case's own `PERCEPTION_POSITION_USED` log line
 against `init_settled_pose.json` ground truth -- existing evidence, no new
-run.) C1-C3's yaw/perception conclusions (axial mod-180 semantics,
-perceived-yaw decoupling, the D10 estimator) are entirely independent of
-this clearance constant and remain valid without qualification. Their
-recorded placement-position numbers (1.535-1.583 mm, see the table in the
+run.) These C1-C3 margins are still historical 3x diagnostic evidence, not
+960x720 production qualification. Their perceived-yaw consumption,
+configured/spawned-yaw decoupling, axial mod-180 semantics, and physical
+manipulation results remain valid for the actual 2880x2160 runs. Their
+numerical XYZ and yaw-error values are resolution-specific. Their recorded
+placement-position numbers (1.535-1.583 mm, see the table in the
 superseded section below) were measured under the **former 1.5 mm**
 configuration; based on the D1/D2/Scene-A pattern above they would be
 expected to shift by roughly +0.4-0.7 mm if rerun, but this is not
@@ -198,9 +200,13 @@ recorded under the **former 1.5 mm** clearance.
 - Object orientation is axial (modulo 180 deg). All yaw comparisons use
   `axial_difference()`.
 
-### Validated Stage-2C cases
+### Validated Stage-2C cases (diagnostic 2880x2160)
 
-| Case | Spawn yaw | Yaw error | Position error | Aperture | Grasp tilt | Lift slip | Transport slip | Placement position | Axial placement yaw | Result |
+The C1-C3 evidence is not a 960x720 production position or yaw-error
+qualification. Separate 960x720 Stage-2B perception evidence remains a
+distinct dataset and must not be conflated with these cases.
+
+| Case | Spawn yaw | Yaw error (3x) | Position error (3x) | Aperture | Grasp tilt | Lift slip | Transport slip | Placement position | Axial placement yaw (3x) | Result |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | C1 | +30 deg | 0.0490 deg | 0.459 mm | 30.005 mm | 0.0506 deg | 0.0121 mm | 0.00931 mm | 1.574 mm | 0.0557 deg | PASS |
 | C2 | -30 deg | 0.0490 deg | 0.452 mm | 30.008 mm | 0.0497 deg | 0.00833 mm | 0.0104 mm | 1.535 mm | 0.00691 deg | PASS |
@@ -215,23 +221,21 @@ Evidence directories:
 
 - Grasp tilt is authoritative world-up/upright tilt and is yaw-invariant.
   Full SO(3) orientation change remains diagnostic only.
-- CORRECTION (2026-08-31, Stage-2D audit): the claim below this line
-  previously read "The 3x camera setting was a diagnostic resolution
-  override; the project default remains 960x720," implying Stage-2C ran at
-  an elevated resolution. Source audit found no such override: neither
-  `run_stage2a_yaw_case.py` nor `run_stage2c_yaw_case.py` ever forwards
-  `camera_width`/`camera_height` to `ur5e_robotiq_sim_control.launch.py`
-  (confirmed via `git log -S"camera_width"` over both files, which returns
-  no history), and that launch file's declared default is 960x720
-  (`ur5e_robotiq_description/launch/ur5e_robotiq_sim_control.launch.py`).
-  **Stage-2C C1-C3 therefore ran at the production default 960x720, not
-  3x.** The `_3x` suffix on the three evidence directory names below is
-  historical/misleading naming from case-planning intent that was never
-  wired into the harness call; the directories are preserved unrenamed as
-  the authoritative evidence record. The only caller in the repository that
-  does pass a non-default resolution (2880x2160) is the untracked
-  diagnostic `scripts/perception/stage2b_controlled_repro.py`, which is
-  unrelated to the Stage-2C C1-C3 runs.
+- CORRECTION (2026-08-31 provenance audit): C1-C3 ran at diagnostic
+  **2880x2160**, not the 960x720 launch default. The committed
+  `run_stage2a_yaw_case.py` and `run_stage2c_yaw_case.py` wrappers did not
+  forward resolution arguments, but each recorded C1-C3 runtime command used
+  a transient inline Python shim that appended
+  `camera_width:=2880 camera_height:=2160` to
+  `ur5e_robotiq_sim_control.launch.py` before process creation. The `_3x`
+  evidence-directory names are therefore accurate. The effective 3x
+  image/intrinsic lattice is independently confirmed by the approximately
+  half-pixel XYZ signature in the preserved artifacts. The ~0.45 mm XYZ
+  results and numerical yaw-error values are resolution-specific and must not
+  be used for 960x720 production qualification. Perceived-yaw consumption,
+  configured/spawned-yaw decoupling, axial-yaw semantics, and physical
+  manipulation results remain valid for the actual 3x runs. Separate 960x720
+  Stage-2B evidence remains separate and must not be conflated with C1-C3.
 - The Stage-2B perception chain remains frozen.
 - The negative control (configured 0 deg, spawned +30 deg,
   `use_perceived_yaw=false`) aborted during descent with `EXECUTE_FAILURE`

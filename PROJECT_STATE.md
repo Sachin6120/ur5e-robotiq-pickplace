@@ -71,8 +71,11 @@ Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in 
   independent cycles, +0.3876 mm and +0.3880 mm, agreeing to 0.4 um).
   D1: +0.524 mm. D2: +0.661 mm. All remain comfortably inside the 10 mm
   `placement_pos_err_mm_max` gate (`stage2a_analyzer.py`).
-- **Stage-2C (C1-C3) was NOT rerun.** Their yaw/perception conclusions are
-  unaffected by this change. Their closing-axis fixed-side margins
+- **Stage-2C (C1-C3) was NOT rerun.** Their perceived-yaw consumption,
+  configured/spawned-yaw decoupling, axial-yaw semantics, and physical
+  manipulation results remain valid for their actual diagnostic 2880x2160
+  runs. Their numerical XYZ and yaw-error values are resolution-specific and
+  are not 960x720 production qualification. Their closing-axis fixed-side margins
   increase by the full 0.5 mm at 2.0 mm (C1 +1.055 -> +1.555 mm, C2
   +1.388 -> +1.888 mm, C3 +1.041 -> +1.541 mm, computed from their own
   existing evidence). Their recorded placement-position numbers
@@ -101,10 +104,11 @@ Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in 
 
 Superseded by the Stage-2D section above: Stage-2D closes with the
 production fixed-side clearance raised to 2.0 mm, which C1-C3 below did
-not run under. Every yaw/perception conclusion below remains valid; only
-the fixed-side clearance context and the placement-position numbers are
-historical to the former 1.5 mm configuration (see the Stage-2D section's
-addendum above for the corrected margins).
+not run under. The C1-C3 resolution claims in this historical section are
+also superseded by the provenance correction below: these were diagnostic
+2880x2160 runs, not 960x720 production runs. Their yaw-path and physical
+manipulation conclusions remain valid for the actual 3x runs; their numerical
+XYZ and yaw-error values are not 960x720 qualification.
 
 - Repository: branch `stage2-orientation-generalization`, HEAD `eb74c27`.
 - Stage-2C is closed with three independent perceived-yaw full cycles:
@@ -115,18 +119,22 @@ addendum above for the corrected margins).
 - Authoritative semantics: configured yaw is decoupled from spawned ground
   truth; yaw is sourced from `/object_detector/pose_world`; yaw comparisons
   are axial/mod 180 via `axial_difference()`.
-- Results: perceived yaw error <= 0.049 deg, position error ~0.45 mm,
+- Results (diagnostic 2880x2160 only): perceived yaw error <= 0.049 deg,
+  position error ~0.45 mm,
   aperture ~30.00 mm, yaw-invariant grasp tilt <= 0.063 deg, lift and
   transport slip ~0.01 mm, placement position 1.5-1.6 mm, and axial
   placement yaw <= 0.056 deg. Full SO(3) change is diagnostic only.
-- CORRECTION (2026-08-31, Stage-2D audit): C1-C3 ran at the production
-  default 960x720. Neither `run_stage2a_yaw_case.py` nor
-  `run_stage2c_yaw_case.py` forwards `camera_width`/`camera_height`
-  (confirmed via `git log -S"camera_width"`, no history in either file);
-  the prior "3x" claim here was incorrect. The `_3x` suffix on the
-  evidence directory names is historical/misleading naming and the
-  directories are preserved unrenamed. See HANDOFF.md's 2026-08-31
-  Stage-2C section for the full correction.
+- CORRECTION (2026-08-31 provenance audit): C1-C3 ran at diagnostic
+  2880x2160, not the 960x720 launch default. The committed wrappers did not
+  forward resolution arguments; the recorded runtime commands used a
+  transient inline Python shim that appended
+  `camera_width:=2880 camera_height:=2160` before process creation. The `_3x`
+  evidence-directory names are accurate. The ~0.45 mm XYZ results and
+  numerical yaw-error values are resolution-specific and must not be used
+  for 960x720 production qualification. Perceived-yaw consumption,
+  configured/spawned-yaw decoupling, axial-yaw semantics, and physical
+  manipulation results remain valid for the actual 3x runs. Separate 960x720
+  Stage-2B evidence remains separate and must not be conflated with C1-C3.
   The Stage-2B perception chain remains frozen.
 - Negative control (configured 0 deg, spawned +30 deg, perceived yaw OFF)
   aborted during descent before grasp closure. It is comparative/incomplete
