@@ -36,7 +36,14 @@ Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in 
   aperture ~30.00 mm, yaw-invariant grasp tilt <= 0.063 deg, lift and
   transport slip ~0.01 mm, placement position 1.5-1.6 mm, and axial
   placement yaw <= 0.056 deg. Full SO(3) change is diagnostic only.
-- The 3x camera setting was diagnostic-only; the default remains 960x720.
+- CORRECTION (2026-08-31, Stage-2D audit): C1-C3 ran at the production
+  default 960x720. Neither `run_stage2a_yaw_case.py` nor
+  `run_stage2c_yaw_case.py` forwards `camera_width`/`camera_height`
+  (confirmed via `git log -S"camera_width"`, no history in either file);
+  the prior "3x" claim here was incorrect. The `_3x` suffix on the
+  evidence directory names is historical/misleading naming and the
+  directories are preserved unrenamed. See HANDOFF.md's 2026-08-31
+  Stage-2C section for the full correction.
   The Stage-2B perception chain remains frozen.
 - Negative control (configured 0 deg, spawned +30 deg, perceived yaw OFF)
   aborted during descent before grasp closure. It is comparative/incomplete

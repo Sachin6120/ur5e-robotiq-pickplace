@@ -43,8 +43,23 @@ Evidence directories:
 
 - Grasp tilt is authoritative world-up/upright tilt and is yaw-invariant.
   Full SO(3) orientation change remains diagnostic only.
-- The 3x camera setting was a diagnostic resolution override; the project
-  default remains 960x720.
+- CORRECTION (2026-08-31, Stage-2D audit): the claim below this line
+  previously read "The 3x camera setting was a diagnostic resolution
+  override; the project default remains 960x720," implying Stage-2C ran at
+  an elevated resolution. Source audit found no such override: neither
+  `run_stage2a_yaw_case.py` nor `run_stage2c_yaw_case.py` ever forwards
+  `camera_width`/`camera_height` to `ur5e_robotiq_sim_control.launch.py`
+  (confirmed via `git log -S"camera_width"` over both files, which returns
+  no history), and that launch file's declared default is 960x720
+  (`ur5e_robotiq_description/launch/ur5e_robotiq_sim_control.launch.py`).
+  **Stage-2C C1-C3 therefore ran at the production default 960x720, not
+  3x.** The `_3x` suffix on the three evidence directory names below is
+  historical/misleading naming from case-planning intent that was never
+  wired into the harness call; the directories are preserved unrenamed as
+  the authoritative evidence record. The only caller in the repository that
+  does pass a non-default resolution (2880x2160) is the untracked
+  diagnostic `scripts/perception/stage2b_controlled_repro.py`, which is
+  unrelated to the Stage-2C C1-C3 runs.
 - The Stage-2B perception chain remains frozen.
 - The negative control (configured 0 deg, spawned +30 deg,
   `use_perceived_yaw=false`) aborted during descent with `EXECUTE_FAILURE`

@@ -229,6 +229,39 @@ def resolve_yaw_inputs(
     return values
 
 
+def resolve_spawn_offsets(spawn_offset_x_m, spawn_offset_y_m):
+    """Validate Stage-2D's two independent planar spawn-offset controls.
+
+    Defaulting both to 0.0 at every call site reproduces Stage-2A/2C spawn
+    behaviour (spawn XY == configured pick XY) exactly.
+    """
+    offsets = (spawn_offset_x_m, spawn_offset_y_m)
+    if not all(math.isfinite(value) for value in offsets):
+        raise ValueError("spawn_offset_x_m and spawn_offset_y_m must be finite")
+    return offsets
+
+
+def compute_spawn_xy(pick_x, pick_y, spawn_offset_x_m, spawn_offset_y_m):
+    """Stage-2D spawn XY: configured pick XY plus the independent offset.
+
+    (0.0, 0.0) reproduces Stage-2A/2C spawn behaviour (spawn XY == configured
+    pick XY) exactly. Never writes back into pick_x/pick_y -- the configured
+    pick pose is a read-only input here.
+    """
+    return pick_x + spawn_offset_x_m, pick_y + spawn_offset_y_m
+
+
+def compute_measured_spawn_offset_mm(measured_xy, configured_pick_xy):
+    """Ground-truth settled spawn XY minus configured pick XY, in mm.
+
+    Evidence-only: this measurement is never fed back into any target.
+    """
+    return [
+        (measured_xy[0] - configured_pick_xy[0]) * 1000.0,
+        (measured_xy[1] - configured_pick_xy[1]) * 1000.0,
+    ]
+
+
 def make_control_setup(
     *,
     case_name,
@@ -245,8 +278,11 @@ def make_control_setup(
     p_gain_override,
     configured_object_centre_world,
     case_dir,
+    configured_pick_xy_m=None,
+    spawn_request_xy_m=None,
+    spawn_offset_request_mm=None,
 ):
-    """Return explicit control metadata; measured spawn yaw is filled post-settle."""
+    """Return explicit control metadata; measured spawn XY/yaw are filled post-settle."""
     return {
         # Keep the historical fields for Stage-2A evidence readers.
         "case": case_name,
@@ -257,6 +293,13 @@ def make_control_setup(
         "spawn_request_yaw_deg": spawned_yaw_deg,
         "measured_spawned_yaw_deg": None,
         "target_place_yaw_deg": target_place_yaw_deg,
+        # Stage-2D: planar spawn XY is likewise an independent control, never
+        # written back into config/scene.yaml's or the case scene's pick_pose.
+        "configured_pick_xy_m": configured_pick_xy_m,
+        "spawn_request_xy_m": spawn_request_xy_m,
+        "measured_spawned_xy_m": None,
+        "spawn_offset_request_mm": spawn_offset_request_mm,
+        "measured_spawn_offset_from_configured_mm": None,
         "use_perceived_position": use_perceived_position,
         "use_perceived_yaw": use_perceived_yaw,
         "target_source": target_source,
@@ -374,12 +417,18 @@ def run_case(
     use_perceived_yaw=False,
     evidence_root="evidence/stage2a_orientation",
     stage2c_mode=False,
+    spawn_offset_x_m=0.0,
+    spawn_offset_y_m=0.0,
+    stage2d_mode=False,
 ):
     configured_pick_yaw_deg, spawned_yaw_deg, target_place_yaw_deg = resolve_yaw_inputs(
         yaw_deg,
         configured_pick_yaw_deg,
         spawned_yaw_deg,
         target_place_yaw_deg,
+    )
+    spawn_offset_x_m, spawn_offset_y_m = resolve_spawn_offsets(
+        spawn_offset_x_m, spawn_offset_y_m
     )
     use_perceived_position = target_source == "perceived"
     if use_perceived_yaw and not use_perceived_position:
@@ -451,6 +500,19 @@ def run_case(
             float(scene["object"]["pick_pose"]["z"]),
         ],
         case_dir=case_dir,
+        configured_pick_xy_m=[
+            float(scene["object"]["pick_pose"]["x"]),
+            float(scene["object"]["pick_pose"]["y"]),
+        ],
+        spawn_request_xy_m=list(
+            compute_spawn_xy(
+                float(scene["object"]["pick_pose"]["x"]),
+                float(scene["object"]["pick_pose"]["y"]),
+                spawn_offset_x_m,
+                spawn_offset_y_m,
+            )
+        ),
+        spawn_offset_request_mm=[spawn_offset_x_m * 1000.0, spawn_offset_y_m * 1000.0],
     )
     with open(case_dir / "control_setup.json", "w") as f:
         json.dump(control_setup, f, indent=2)
@@ -651,17 +713,25 @@ def run_case(
         sys.exit(1)
     print("move_group ready.", flush=True)
 
-    # 7. Spawn object with the independent physical spawn yaw.  It must not
-    # feed the configured pick TF or the target placement yaw.
+    # 7. Spawn object with the independent physical spawn XY/yaw.  It must
+    # not feed the configured pick TF or the target placement yaw/pose.
+    # Stage-2D: spawn_offset_x_m/spawn_offset_y_m default to 0.0, so
+    # spawn_x/spawn_y equal the configured pick XY exactly unless a caller
+    # explicitly requests an offset -- this reproduces Stage-2A/2C behaviour.
     pick_x = float(scene["object"]["pick_pose"]["x"])
     pick_y = float(scene["object"]["pick_pose"]["y"])
+    spawn_x, spawn_y = compute_spawn_xy(
+        pick_x, pick_y, spawn_offset_x_m, spawn_offset_y_m
+    )
     print(
-        f"Spawning object at ({pick_x}, {pick_y}) with yaw={spawned_yaw_deg:+.1f} deg...",
+        f"Spawning object at ({spawn_x}, {spawn_y}) "
+        f"(configured pick=({pick_x}, {pick_y}), offset=({spawn_offset_x_m * 1000.0:+.1f}, "
+        f"{spawn_offset_y_m * 1000.0:+.1f}) mm) with yaw={spawned_yaw_deg:+.1f} deg...",
         flush=True,
     )
     harness.remove_object()
     time.sleep(1.0)
-    spawn_object_yaw(pick_x, pick_y, spawned_yaw_rad)
+    spawn_object_yaw(spawn_x, spawn_y, spawned_yaw_rad)
     settled, msg = harness.settle_object()
     if not settled:
         print(f"ERROR: Object failed to settle! msg={msg}", flush=True)
@@ -678,17 +748,25 @@ def run_case(
     control_setup["measured_spawned_yaw_deg"] = math.degrees(
         analyzer.quaternion_to_yaw(init_pose[3:7])
     )
+    control_setup["measured_spawned_xy_m"] = [init_pose[0], init_pose[1]]
+    control_setup["measured_spawn_offset_from_configured_mm"] = (
+        compute_measured_spawn_offset_mm(init_pose[:2], [pick_x, pick_y])
+    )
     with open(case_dir / "control_setup.json", "w") as f:
         json.dump(control_setup, f, indent=2)
     print(f"Object settled at: {init_pose}", flush=True)
 
     # 8. Launch perception nodes
     print("Launching perception nodes...", flush=True)
+    # object_detector's CAMERA_INFO line (resolution, isotropy check, and the
+    # resolution-scaled component-area/width gates) is the one record that
+    # would explain a component-selection failure for an off-axis object, so
+    # it is captured rather than discarded.
+    object_detector_log = case_dir / "object_detector.log"
     det_proc = start_process(
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
-        "ros2 run ur5e_pick_place object_detector --ros-args -p use_sim_time:=true",
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT,
+        "ros2 run ur5e_pick_place object_detector --ros-args -p use_sim_time:=true "
+        f"> {object_detector_log} 2>&1",
     )
     pos_proc = start_process(
         f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
@@ -826,6 +904,7 @@ def run_case(
         target_place_yaw_deg=target_place_yaw_deg,
         require_perceived_yaw=use_perceived_yaw,
         use_axial_placement_yaw=stage2c_mode,
+        require_translation_decoupling=stage2d_mode,
     )
 
     print("\n=======================================================", flush=True)

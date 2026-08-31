@@ -21,6 +21,8 @@ from pathlib import Path
 import re
 import sys
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts/lib"))
 import sample_pose as sp
@@ -41,6 +43,10 @@ GATES = {
     "transport_slip_mm_max": 1.0,
     "placement_pos_err_mm_max": 10.0,
     "placement_orient_err_deg_max": 5.0,
+    # Stage-2D evidence-integrity gates. Not physical acceptance thresholds --
+    # they verify the case actually exercised planar-pose decoupling, not
+    # that the manipulation was accurate.
+    "translation_decoupled_mm_min": 20.0,
 }
 
 
@@ -167,6 +173,7 @@ def analyze_case(
     target_place_yaw_deg,
     require_perceived_yaw=False,
     use_axial_placement_yaw=False,
+    require_translation_decoupling=False,
 ):
     case_path = Path(case_dir)
     log_file = case_path / "m3_grasp.log"
@@ -174,6 +181,8 @@ def analyze_case(
     stream_file = case_path / "gz_pose_stream.csv"
     init_pose_file = case_path / "init_settled_pose.json"
     final_pose_file = case_path / "final_settled_pose.json"
+    case_scene_file = case_path / "scene_case.yaml"
+    base_scene_file = REPO / "config/scene.yaml"
 
     log_lines = []
     if log_file.is_file():
@@ -230,6 +239,48 @@ def analyze_case(
             # Ground truth top surface Z = center Z + height / 2 (height = 0.045)
             gt_top = [init_pose[0], init_pose[1], init_pose[2] + 0.045 / 2.0]
             percept_err_mm = math.dist(perceived_top_world, gt_top) * 1000.0
+
+    # 2b. Stage-2D evidence integrity: planar translation decoupling.
+    # measured_spawn_offset_mm compares the ground-truth settled spawn XY
+    # against THIS CASE's configured pick XY (scene_case.yaml, i.e. what
+    # static_scene_tf actually published as object_frame) -- not against
+    # config/scene.yaml directly, so it is correct even if a future case
+    # generator legitimately varies the configured pose. configured_pose_
+    # unchanged separately confirms the case's configured pick XY never
+    # drifted from config/scene.yaml's frozen value.
+    measured_spawn_offset_mm = None
+    translation_decoupled = None
+    configured_pose_unchanged = None
+    case_pick_xy_m = None
+    base_pick_xy_m = None
+    if case_scene_file.is_file():
+        with open(case_scene_file, "r") as f:
+            case_scene = yaml.safe_load(f)
+        case_pick_xy_m = [
+            float(case_scene["object"]["pick_pose"]["x"]),
+            float(case_scene["object"]["pick_pose"]["y"]),
+        ]
+        if base_scene_file.is_file():
+            with open(base_scene_file, "r") as f:
+                base_scene = yaml.safe_load(f)
+            base_pick_xy_m = [
+                float(base_scene["object"]["pick_pose"]["x"]),
+                float(base_scene["object"]["pick_pose"]["y"]),
+            ]
+            configured_pose_unchanged = math.isclose(
+                case_pick_xy_m[0], base_pick_xy_m[0], rel_tol=0.0, abs_tol=1e-9
+            ) and math.isclose(
+                case_pick_xy_m[1], base_pick_xy_m[1], rel_tol=0.0, abs_tol=1e-9
+            )
+        if init_pose and len(init_pose) >= 2:
+            measured_spawn_offset_mm = [
+                (init_pose[0] - case_pick_xy_m[0]) * 1000.0,
+                (init_pose[1] - case_pick_xy_m[1]) * 1000.0,
+            ]
+            translation_decoupled = (
+                math.hypot(*measured_spawn_offset_mm)
+                >= GATES["translation_decoupled_mm_min"]
+            )
 
     # 3. CSV metrics
     m3_res = csv_data.get("result", "UNKNOWN")
@@ -402,6 +453,12 @@ def analyze_case(
             placement_orient_err_deg is not None
             and placement_orient_err_deg < GATES["placement_orient_err_deg_max"]
         )
+    if require_translation_decoupling:
+        # Evidence-integrity gates only -- they confirm the case actually
+        # exercised a decoupled planar spawn, not that manipulation was
+        # accurate. Every other gate above is unchanged by this flag.
+        gate_checks["translation_decoupled"] = bool(translation_decoupled)
+        gate_checks["configured_pose_unchanged"] = bool(configured_pose_unchanged)
 
     all_passed = all(gate_checks.values())
     verdict = "PASS" if all_passed else "FAIL"
@@ -435,6 +492,11 @@ def analyze_case(
         "final_upright_tilt_deg": final_upright_tilt_deg,
         "placement_yaw_scoring": "axial" if use_axial_placement_yaw else "full_quaternion",
         "planning_time_s": plan_time_s,
+        "configured_pick_xy_m": case_pick_xy_m,
+        "base_pick_xy_m": base_pick_xy_m,
+        "measured_spawn_offset_mm": measured_spawn_offset_mm,
+        "translation_decoupled": translation_decoupled,
+        "configured_pose_unchanged": configured_pose_unchanged,
         "gates": gate_checks,
         "verdict": verdict,
     }
