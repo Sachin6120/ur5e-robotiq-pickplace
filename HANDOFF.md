@@ -1,15 +1,65 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The section immediately below, "2026-08-30
-> Stage-1 P200 Requalification + Stage-2A Yaw-Feasibility Complete — CURRENT
-> AUTHORITY", is the sole current-authority statement of repository state.
-> Every other "— Current Authority" label anywhere else in this file (all
-> dated 2026-08-29 or earlier) is superseded and has been relabelled
+> READ THIS SECTION FIRST. The section immediately below, "2026-08-31
+> Stage-2C Orientation Generalization — CURRENT AUTHORITY", is the sole
+> current-authority statement of repository state.
+> Every other authority label anywhere else in this file is superseded and
+> has been relabelled
 > accordingly; their content is retained as historical evidence, not current
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Yaw-Feasibility Complete — CURRENT AUTHORITY
+## 2026-08-31 Stage-2C Orientation Generalization — CURRENT AUTHORITY
+
+### Milestone status
+
+- Repository: `~/ur5e_pickplace`, branch `stage2-orientation-generalization`,
+  HEAD `eb74c27` (`test: make Stage-2C grasp tilt yaw-invariant`). No
+  production code or configuration changed after that commit.
+- Stage-2C is closed on three independent full-cycle cases with configured
+  pick yaw 0 deg and place yaw 0 deg, while spawned yaw was independently
+  set to +30 deg, -30 deg, and +45 deg. Every case used fresh perceived yaw,
+  one attempt, and no retry or tuning.
+- Perception yaw is sourced from fresh `/object_detector/pose_world` data.
+  Configured yaw remains in the generated case configuration but is
+  deliberately decoupled from spawned ground-truth yaw.
+- Object orientation is axial (modulo 180 deg). All yaw comparisons use
+  `axial_difference()`.
+
+### Validated Stage-2C cases
+
+| Case | Spawn yaw | Yaw error | Position error | Aperture | Grasp tilt | Lift slip | Transport slip | Placement position | Axial placement yaw | Result |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| C1 | +30 deg | 0.0490 deg | 0.459 mm | 30.005 mm | 0.0506 deg | 0.0121 mm | 0.00931 mm | 1.574 mm | 0.0557 deg | PASS |
+| C2 | -30 deg | 0.0490 deg | 0.452 mm | 30.008 mm | 0.0497 deg | 0.00833 mm | 0.0104 mm | 1.535 mm | 0.00691 deg | PASS |
+| C3 | +45 deg | 0.000018 deg | 0.459 mm | 30.000 mm | 0.0623 deg | 0.0117 mm | 0.0102 mm | 1.583 mm | 0.0389 deg | PASS |
+
+Evidence directories:
+`evidence/stage2c_orientation/C1_retry1_config0_spawnp30_place0_perceived_3x/`,
+`evidence/stage2c_orientation/C2_config0_spawnm30_place0_perceived_3x/`, and
+`evidence/stage2c_orientation/C3_config0_spawnp45_place0_perceived_3x/`.
+
+### Semantics and limitations
+
+- Grasp tilt is authoritative world-up/upright tilt and is yaw-invariant.
+  Full SO(3) orientation change remains diagnostic only.
+- The 3x camera setting was a diagnostic resolution override; the project
+  default remains 960x720.
+- The Stage-2B perception chain remains frozen.
+- The negative control (configured 0 deg, spawned +30 deg,
+  `use_perceived_yaw=false`) aborted during descent with `EXECUTE_FAILURE`
+  before grasp closure. It is comparative/incomplete evidence only; the
+  abort is not attributed to yaw mismatch.
+- Known non-blocking cleanup: `configured_object_yaw_deg` is recorded as
+  NaN when `use_perceived_yaw=false`.
+
+### Next stage
+
+Stage-2C orientation generalization is complete. Do not rerun the recorded
+cases, tune thresholds/controllers, or launch a manipulation campaign from
+this milestone without a separately authorized next-stage objective.
+
+## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Yaw-Feasibility Complete — SUPERSEDED
 
 ### Production state
 

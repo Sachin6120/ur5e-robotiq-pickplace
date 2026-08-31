@@ -21,10 +21,35 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## Current Milestone Status
+## 2026-08-31 Stage-2C Orientation Generalization — CURRENT AUTHORITY
+
+- Repository: branch `stage2-orientation-generalization`, HEAD `eb74c27`.
+- Stage-2C is closed with three independent perceived-yaw full cycles:
+  C1 spawned +30 deg, C2 spawned -30 deg, and C3 spawned +45 deg. Each
+  retained configured pick/place yaw 0 deg, used fresh `pose_world` yaw,
+  production thresholds/controllers, one planning attempt, and no retries or
+  tuning. All three are PASS.
+- Authoritative semantics: configured yaw is decoupled from spawned ground
+  truth; yaw is sourced from `/object_detector/pose_world`; yaw comparisons
+  are axial/mod 180 via `axial_difference()`.
+- Results: perceived yaw error <= 0.049 deg, position error ~0.45 mm,
+  aperture ~30.00 mm, yaw-invariant grasp tilt <= 0.063 deg, lift and
+  transport slip ~0.01 mm, placement position 1.5-1.6 mm, and axial
+  placement yaw <= 0.056 deg. Full SO(3) change is diagnostic only.
+- The 3x camera setting was diagnostic-only; the default remains 960x720.
+  The Stage-2B perception chain remains frozen.
+- Negative control (configured 0 deg, spawned +30 deg, perceived yaw OFF)
+  aborted during descent before grasp closure. It is comparative/incomplete
+  evidence only; yaw mismatch is not identified as the abort cause.
+- Known non-blocking telemetry cleanup: `configured_object_yaw_deg` is NaN
+  when `use_perceived_yaw=false`.
+- Detailed case metrics and evidence paths are recorded in the current
+  Stage-2C section of `HANDOFF.md`.
+
+## Historical Milestone Status (superseded)
 
 ```
-LATEST VERIFIED STATE — 2026-08-30, CURRENT AUTHORITY:
+HISTORICAL STATE — 2026-08-30 (superseded by the section above):
 
   PRODUCTION: parallel-jaw P=200 (controllers.yaml, commit e37383e) is now
   production, not diagnostic-only. D10 XYZ estimator is production. Fixed-
