@@ -105,6 +105,7 @@
 #include "ur5e_pick_place/mask_orientation.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
 #include <moveit/robot_state/robot_state.hpp>
+#include "ur5e_pick_place/planning_scene_manager.hpp"
 #include "ur5e_pick_place/transport.hpp"
 
 using ur5e_pick_place::Result;
@@ -1381,6 +1382,25 @@ int main(int argc, char ** argv)
     move_group.setMaxAccelerationScalingFactor(acc_scale);
 
     // =====================================================================
+    // PLANNING SCENE: Initialize PlanningSceneManager & Table CollisionObject
+    // =====================================================================
+    auto psm = std::make_shared<ur5e_pick_place::PlanningSceneManager>(node, world_frame);
+    if (ur5e_pick_place::ok(result)) {
+      std::string scene_err;
+      if (!psm->initializeTable(scene_err)) {
+        RCLCPP_ERROR(logger, "SCENE_INIT_FAILURE: table initialization failed: %s", scene_err.c_str());
+        result = Result::SCENE_INIT_FAILURE;
+      } else if (!psm->verifyExpectedScene(scene_err)) {
+        RCLCPP_ERROR(logger, "SCENE_INIT_FAILURE: startup table verification failed: %s", scene_err.c_str());
+        result = Result::SCENE_INIT_FAILURE;
+      } else {
+        RCLCPP_INFO(
+          logger, "SCENE_INIT_SUCCESS: table initialized and verified with fingerprint %s",
+          psm->fingerprint().c_str());
+      }
+    }
+
+    // =====================================================================
     // MILESTONE F1 / Stage-2C: M1 observation pose -> stationarity -> fresh
     // position and (when enabled) independently subscribed yaw samples.
     // =====================================================================
@@ -1752,12 +1772,43 @@ int main(int argc, char ** argv)
           T_world_grasp.getOrigin().x(), T_world_grasp.getOrigin().y(),
           T_world_grasp.getOrigin().z());
       }
+
+      // Insert perceived target into planning scene as WORLD CollisionObject
+      if (ur5e_pick_place::ok(result)) {
+        geometry_msgs::msg::Pose perceived_target_pose;
+        perceived_target_pose.position.x = T_world_grasp.getOrigin().x();
+        perceived_target_pose.position.y = T_world_grasp.getOrigin().y();
+        perceived_target_pose.position.z = T_world_grasp.getOrigin().z();
+        tf2::Quaternion q_target;
+        T_world_grasp.getBasis().getRotation(q_target);
+        perceived_target_pose.orientation = tf2::toMsg(q_target);
+
+        std::string scene_err;
+        if (!psm->addWorldTarget(perceived_target_pose, scene_err)) {
+          RCLCPP_ERROR(
+            logger, "TARGET_INSERTION_FAILURE: failed to insert world target: %s",
+            scene_err.c_str());
+          result = Result::TARGET_INSERTION_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "SCENE_STALE_OR_CORRUPT: target scene verification failed: %s",
+            scene_err.c_str());
+          result = Result::SCENE_STALE_OR_CORRUPT;
+        } else {
+          RCLCPP_INFO(
+            logger,
+            "SCENE_TARGET_INSERTED: pick_target added to world at [%.6f %.6f %.6f] "
+            "with fingerprint %s",
+            perceived_target_pose.position.x, perceived_target_pose.position.y,
+            perceived_target_pose.position.z, psm->fingerprint().c_str());
+        }
+      }
     }
 
     // Stage 1: joint-space plan+execute to pre-grasp. Same reasoning as M2.
     moveit::planning_interface::MoveGroupInterface::Plan pregrasp_plan;
     bool pregrasp_planned = false;
-    if (may_move) {
+    if (may_move && ur5e_pick_place::ok(result)) {
       pregrasp_attempted = true;
       move_group.setStartStateToCurrentState();
       if (pregrasp_joint_target.empty()) {
@@ -1957,6 +2008,16 @@ int main(int argc, char ** argv)
 
     // Stage 2: short vertical Cartesian descent to the corrected grasp
     // target. Same 0.95-fraction discipline as M2.
+    if (ur5e_pick_place::ok(result) && !pregrasp_only) {
+      std::string scene_err;
+      if (!psm->verifyExpectedScene(scene_err)) {
+        RCLCPP_ERROR(
+          logger, "SCENE_STALE_OR_CORRUPT: scene invalid before descent: %s",
+          scene_err.c_str());
+        result = Result::SCENE_STALE_OR_CORRUPT;
+      }
+    }
+
     if (ur5e_pick_place::ok(result) && !pregrasp_only) {
       descent_attempted = true;
       commanded_tcp[0] = T_world_grasp.getOrigin().x();
@@ -2315,10 +2376,33 @@ int main(int argc, char ** argv)
         logger, "RESOLVED FINAL CLOSE TARGET: target_position=%.6f %s (aperture=%.6f m)",
         target_position, is_parallel_jaw ? "m" : "rad",
         is_parallel_jaw ? (0.085 - target_position) : -1.0);
-      grip = gripper_close_and_hold(
-        gripper_client, target_position, gripper_max_effort, gripper_command_timeout_s,
-        gz_js_topic, actuated_joint, logger);
-      have_grip_result = true;
+
+      // Enable C1/C2 closure contacts in ACM immediately before final gripper closure
+      if (ur5e_pick_place::ok(result)) {
+        std::string scene_err;
+        if (!psm->enableClosureContacts(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "CLOSURE_ACM_FAILURE: could not enable C1/C2 closure contacts: %s",
+            scene_err.c_str());
+          result = Result::CLOSURE_ACM_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "CLOSURE_ACM_FAILURE: C1/C2 readback verification failed: %s",
+            scene_err.c_str());
+          result = Result::CLOSURE_ACM_FAILURE;
+        } else {
+          RCLCPP_INFO(
+            logger, "CLOSURE_ACM_VERIFIED: C1/C2 enabled in ACM with fingerprint %s",
+            psm->fingerprint().c_str());
+        }
+      }
+
+      if (ur5e_pick_place::ok(result)) {
+        grip = gripper_close_and_hold(
+          gripper_client, target_position, gripper_max_effort, gripper_command_timeout_s,
+          gz_js_topic, actuated_joint, logger);
+        have_grip_result = true;
+      }
 
       RCLCPP_INFO(
         logger, "gripper_close_and_hold: %s in achieved=%.4f %s (target was %.4f)",
@@ -2371,6 +2455,29 @@ int main(int argc, char ** argv)
           "achieved_q=%.6f expected_q=%.6f (width=%.4fm) |err|=%.6f tolerance=%.6f m -> %s",
           grip.achieved_position, pj_q_final_expected, object_width_m, pj_err,
           pj_grasp_tolerance_m, within_tolerance ? "WITHIN TOLERANCE" : "OUTSIDE TOLERANCE");
+      }
+
+      // Attach target to gripper only after physical grasp success verification
+      if (ur5e_pick_place::ok(result) && have_grip_result &&
+          grip.kind != GripperCloseResult::Kind::UNKNOWN_NO_SAMPLE)
+      {
+        std::string scene_err;
+        if (!psm->attachTarget(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "ATTACH_FAILURE: failed to attach target to gripper: %s",
+            scene_err.c_str());
+          result = Result::ATTACH_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "ATTACH_FAILURE: attached target readback verification failed: %s",
+            scene_err.c_str());
+          result = Result::ATTACH_FAILURE;
+        } else {
+          RCLCPP_INFO(
+            logger,
+            "TARGET_ATTACHED_VERIFIED: pick_target attached to gripper_base_link with pad touch links; S enabled (fingerprint %s).",
+            psm->fingerprint().c_str());
+        }
       }
     }
 
@@ -2479,6 +2586,9 @@ int main(int argc, char ** argv)
         tp.cycle_index = 0;
         tp.sim_instance = 0;
         tp.marker_file_prefix = marker_file_prefix;
+        tp.planning_scene_manager = psm;
+        tp.pickup_clearance_m = 0.005;
+        tp.terminal_stroke_m = 0.005;
         // Grasp-loss check (transport.hpp's Stage 3 note). Left at
         // TransportParams' own defaults (expected_grip_angle=0.0, disabling
         // the check) when the grasp table didn't resolve an expected angle

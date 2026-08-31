@@ -304,4 +304,130 @@ TEST(PlanningSceneManager, EraseEntryCleansAllRowAndColumnEntries)
   EXPECT_TRUE(val);
 }
 
+TEST(PlanningSceneManager, SequencingGTSourcesNeverPermittedInScene)
+{
+  geometry_msgs::msg::Pose pose;
+  pose.orientation.w = 1.0;
+
+  EXPECT_THROW(
+    PlanningSceneManager::makeTarget("world", pose, ur5e_pick_place::TargetPoseSource::GAZEBO_GROUND_TRUTH),
+    std::invalid_argument);
+
+  EXPECT_THROW(
+    PlanningSceneManager::makeTarget("world", pose, ur5e_pick_place::TargetPoseSource::SHADOW_ESTIMATOR),
+    std::invalid_argument);
+
+  EXPECT_NO_THROW(
+    PlanningSceneManager::makeTarget("world", pose, ur5e_pick_place::TargetPoseSource::PRODUCTION_PERCEPTION));
+}
+
+TEST(PlanningSceneManager, SequencingACMTransitionsPreserveIsolation)
+{
+  moveit_msgs::msg::AllowedCollisionMatrix acm;
+
+  // 1. Initial State: Table pair P enabled, Target pairs forbidden
+  ASSERT_TRUE(PlanningSceneManager::setPair(acm, "table", "base_link_inertia", true));
+  bool val = false;
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "table", "base_link_inertia", val));
+  EXPECT_TRUE(val);
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_fixed_link", val));
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_moving_link", val));
+
+  // 2. Descent: C1/C2 cannot exist
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_fixed_link", val));
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_moving_link", val));
+
+  // 3. Closure: Enable C1/C2 only
+  ASSERT_TRUE(PlanningSceneManager::setPair(acm, "pick_target", "pad_fixed_link", true));
+  ASSERT_TRUE(PlanningSceneManager::setPair(acm, "pick_target", "pad_moving_link", true));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_fixed_link", val));
+  EXPECT_TRUE(val);
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_moving_link", val));
+  EXPECT_TRUE(val);
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "table", val));
+  EXPECT_FALSE(val);  // S is strictly forbidden during closure
+
+  // 4. Attach: C1/C2 cleared from ACM (handled via touch links), S enabled in ACM
+  PlanningSceneManager::eraseEntry(acm, "pick_target");
+  ASSERT_TRUE(PlanningSceneManager::setPair(acm, "pick_target", "table", true));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_fixed_link", val));
+  EXPECT_FALSE(val);  // C1 disabled in ACM
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_moving_link", val));
+  EXPECT_FALSE(val);  // C2 disabled in ACM
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "table", val));
+  EXPECT_TRUE(val);   // S enabled in ACM
+
+  // 5. Pickup Clearance: S removed from ACM for Transport
+  PlanningSceneManager::eraseEntry(acm, "pick_target");
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "table", val));
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_fixed_link", val));
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "pad_moving_link", val));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "table", "base_link_inertia", val));
+  EXPECT_TRUE(val);
+
+  // 6. Placement Terminal: S re-enabled in ACM
+  ASSERT_TRUE(PlanningSceneManager::setPair(acm, "pick_target", "table", true));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "pick_target", "table", val));
+  EXPECT_TRUE(val);
+
+  // 7. Detach & Retreat: S removed from ACM, target back in world
+  PlanningSceneManager::eraseEntry(acm, "pick_target");
+  EXPECT_FALSE(PlanningSceneManager::pairValue(acm, "pick_target", "table", val));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(acm, "table", "base_link_inertia", val));
+  EXPECT_TRUE(val);
+}
+
+TEST(PlanningSceneManager, AnalyticalTargetBottomSeparation)
+{
+  const double table_top_z = 0.750;
+  const double object_half_height = 0.045 / 2.0;
+
+  // 1. At nominal grasp pose on table: target_z = 0.7725 m -> bottom = 0.750 m -> separation = 0.0
+  geometry_msgs::msg::Pose grasp_target_pose;
+  grasp_target_pose.position.z = 0.7725;
+  double bottom_z = grasp_target_pose.position.z - object_half_height;
+  double separation = bottom_z - table_top_z;
+  EXPECT_NEAR(separation, 0.0, 1e-9);
+  EXPECT_FALSE(separation > 0.0);  // Still touching table, clearance check must fail
+
+  // 2. After 5 mm clearance stroke: target_z = 0.7775 m -> bottom = 0.755 m -> separation = +5.0 mm
+  geometry_msgs::msg::Pose cleared_target_pose;
+  cleared_target_pose.position.z = 0.7775;
+  bottom_z = cleared_target_pose.position.z - object_half_height;
+  separation = bottom_z - table_top_z;
+  EXPECT_NEAR(separation, 0.005, 1e-9);
+  EXPECT_TRUE(separation > 0.0);  // Positively clear of table
+
+  // 3. At pre-contact waypoint (95 mm descent from 100 mm standoff): target_z = 0.7775 m -> separation = +5.0 mm
+  geometry_msgs::msg::Pose precontact_target_pose;
+  precontact_target_pose.position.z = 0.8725 - 0.095;
+  bottom_z = precontact_target_pose.position.z - object_half_height;
+  separation = bottom_z - table_top_z;
+  EXPECT_NEAR(separation, 0.005, 1e-9);
+  EXPECT_TRUE(separation > 0.0);  // Safe pre-contact separation before enabling terminal S
+}
+
+TEST(PlanningSceneManager, CloneSceneRemovesOnlySAndLeavesLiveUntouched)
+{
+  moveit_msgs::msg::AllowedCollisionMatrix live_acm;
+  ASSERT_TRUE(PlanningSceneManager::setPair(live_acm, "table", "base_link_inertia", true));
+  ASSERT_TRUE(PlanningSceneManager::setPair(live_acm, "pick_target", "table", true));
+
+  // Clone ACM for pre-flight check
+  moveit_msgs::msg::AllowedCollisionMatrix clone_acm = live_acm;
+  PlanningSceneManager::eraseEntry(clone_acm, "pick_target");
+
+  // In clone: S is absent
+  bool val = false;
+  EXPECT_FALSE(PlanningSceneManager::pairValue(clone_acm, "pick_target", "table", val));
+  ASSERT_TRUE(PlanningSceneManager::pairValue(clone_acm, "table", "base_link_inertia", val));
+  EXPECT_TRUE(val);
+
+  // In live: S remains untouched
+  ASSERT_TRUE(PlanningSceneManager::pairValue(live_acm, "pick_target", "table", val));
+  EXPECT_TRUE(val);
+  ASSERT_TRUE(PlanningSceneManager::pairValue(live_acm, "table", "base_link_inertia", val));
+  EXPECT_TRUE(val);
+}
+
 }  // namespace

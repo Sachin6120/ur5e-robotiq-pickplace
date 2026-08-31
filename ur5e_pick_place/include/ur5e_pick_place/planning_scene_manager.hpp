@@ -4,6 +4,7 @@
 #include <moveit_msgs/msg/allowed_collision_matrix.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <moveit_msgs/msg/planning_scene.hpp>
+#include <moveit/robot_state/robot_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <string>
@@ -47,8 +48,17 @@ public:
   bool updateWorldTarget(const geometry_msgs::msg::Pose & perceived_pose, std::string & error);
   bool verifyExpectedScene(std::string & error);
 
+  // Evaluates measured robot state on a local cloned planning scene with S removed
+  bool checkPickupClearanceClone(
+    const moveit::core::RobotState & current_state, double & separation_z, std::string & error);
+
+  // Evaluates measured robot state at pre-contact waypoint with S absent
+  bool checkPlacementPrecontact(
+    const moveit::core::RobotState & current_state, double & separation_z, std::string & error);
+
   SceneTargetState targetState() const { return target_state_; }
   const std::string & fingerprint() const { return fingerprint_; }
+  const geometry_msgs::msg::Pose & targetPose() const { return target_pose_; }
 
 private:
   bool fetch(moveit_msgs::msg::PlanningScene & scene, std::string & error) const;

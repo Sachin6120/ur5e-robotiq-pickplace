@@ -4,7 +4,9 @@
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
+#include <moveit/planning_scene/planning_scene.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
+#include <tf2_eigen/tf2_eigen.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -405,6 +407,129 @@ bool PlanningSceneManager::verifyExpectedScene(std::string & error)
       error = "SCENE_SCALE_NOT_ONE"; return false;
     }
   }
+  return true;
+}
+
+bool PlanningSceneManager::checkPickupClearanceClone(
+  const moveit::core::RobotState & current_state, double & separation_z, std::string & error)
+{
+  if (target_state_ != SceneTargetState::ATTACHED) {
+    error = "ILLEGAL_TARGET_STATE_FOR_PICKUP_CLONE";
+    return false;
+  }
+
+  // 1. Compute attached target's actual global pose from measured current robot state
+  const Eigen::Isometry3d link_tf = current_state.getGlobalLinkTransform(kAttachLink);
+  const geometry_msgs::msg::Pose link_pose = tf2::toMsg(link_tf);
+  const geometry_msgs::msg::Pose target_global_pose = composePoses(link_pose, target_pose_);
+
+  // 2. Analytically verify target bottom > table top
+  const double target_bottom_z = target_global_pose.position.z - 0.045 / 2.0;
+  const double table_top_z = 0.750;
+  separation_z = target_bottom_z - table_top_z;
+
+  if (separation_z <= 0.0) {
+    std::ostringstream ss;
+    ss << "ANALYTICAL_CLEARANCE_VIOLATION: target bottom (" << target_bottom_z
+       << " m) <= table top (" << table_top_z << " m), separation=" << separation_z << " m";
+    error = ss.str();
+    return false;
+  }
+
+  // 3. Fetch live scene message
+  moveit_msgs::msg::PlanningScene live_scene_msg;
+  if (!fetch(live_scene_msg, error)) {
+    return false;
+  }
+
+  // 4. Create local cloned planning scene and remove ONLY S (pick_target <-> table)
+  moveit_msgs::msg::PlanningScene clone_scene_msg = live_scene_msg;
+  clone_scene_msg.is_diff = false;
+  eraseEntry(clone_scene_msg.allowed_collision_matrix, kTarget);
+
+  auto clone_scene = std::make_shared<planning_scene::PlanningScene>(current_state.getRobotModel());
+  if (!clone_scene->usePlanningSceneMsg(clone_scene_msg)) {
+    error = "FAILED_TO_LOAD_CLONED_PLANNING_SCENE";
+    return false;
+  }
+  clone_scene->setCurrentState(current_state);
+
+  // 5. Run full collision check in the cloned scene
+  collision_detection::CollisionRequest req;
+  req.contacts = true;
+  req.max_contacts = 10;
+  collision_detection::CollisionResult res;
+  clone_scene->checkCollision(req, res, current_state);
+
+  if (res.collision) {
+    std::ostringstream ss;
+    ss << "CLONE_COLLISION_DETECTED: ";
+    for (const auto & pair : res.contacts) {
+      ss << pair.first.first << "<->" << pair.first.second << "; ";
+    }
+    error = ss.str();
+    return false;
+  }
+
+  return true;
+}
+
+bool PlanningSceneManager::checkPlacementPrecontact(
+  const moveit::core::RobotState & current_state, double & separation_z, std::string & error)
+{
+  if (target_state_ != SceneTargetState::ATTACHED) {
+    error = "ILLEGAL_TARGET_STATE_FOR_PRECONTACT";
+    return false;
+  }
+
+  // 1. Compute attached target's actual global pose from measured current robot state
+  const Eigen::Isometry3d link_tf = current_state.getGlobalLinkTransform(kAttachLink);
+  const geometry_msgs::msg::Pose link_pose = tf2::toMsg(link_tf);
+  const geometry_msgs::msg::Pose target_global_pose = composePoses(link_pose, target_pose_);
+
+  // 2. Analytically verify target bottom > table top
+  const double target_bottom_z = target_global_pose.position.z - 0.045 / 2.0;
+  const double table_top_z = 0.750;
+  separation_z = target_bottom_z - table_top_z;
+
+  if (separation_z <= 0.0) {
+    std::ostringstream ss;
+    ss << "ANALYTICAL_PRECONTACT_VIOLATION: target bottom (" << target_bottom_z
+       << " m) <= table top (" << table_top_z << " m), separation=" << separation_z << " m";
+    error = ss.str();
+    return false;
+  }
+
+  // 3. Fetch live scene message (where S is still absent)
+  moveit_msgs::msg::PlanningScene live_scene_msg;
+  if (!fetch(live_scene_msg, error)) {
+    return false;
+  }
+
+  // 4. Create local planning scene and check collision with S absent
+  auto precontact_scene = std::make_shared<planning_scene::PlanningScene>(current_state.getRobotModel());
+  if (!precontact_scene->usePlanningSceneMsg(live_scene_msg)) {
+    error = "FAILED_TO_LOAD_PRECONTACT_PLANNING_SCENE";
+    return false;
+  }
+  precontact_scene->setCurrentState(current_state);
+
+  collision_detection::CollisionRequest req;
+  req.contacts = true;
+  req.max_contacts = 10;
+  collision_detection::CollisionResult res;
+  precontact_scene->checkCollision(req, res, current_state);
+
+  if (res.collision) {
+    std::ostringstream ss;
+    ss << "PRECONTACT_COLLISION_DETECTED: ";
+    for (const auto & pair : res.contacts) {
+      ss << pair.first.first << "<->" << pair.first.second << "; ";
+    }
+    error = ss.str();
+    return false;
+  }
+
   return true;
 }
 

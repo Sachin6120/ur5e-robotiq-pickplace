@@ -35,7 +35,13 @@ add_library(planning_scene_manager src/planning_scene_manager.cpp)
 target_include_directories(planning_scene_manager PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-ament_target_dependencies(planning_scene_manager rclcpp moveit_msgs geometry_msgs)
+ament_target_dependencies(planning_scene_manager
+  rclcpp
+  moveit_msgs
+  geometry_msgs
+  moveit_core
+  tf2_geometry_msgs
+)
 
 add_executable(planning_scene_manager_smoke src/planning_scene_manager_smoke.cpp)
 target_link_libraries(planning_scene_manager_smoke planning_scene_manager)
@@ -84,6 +90,7 @@ add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
+target_link_libraries(m3_grasp planning_scene_manager)
 ament_target_dependencies(m3_grasp
   rclcpp
   rclcpp_action
@@ -141,6 +148,7 @@ if(BUILD_TESTING)
     rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
   ament_add_gtest(m3_perceived_yaw_test test/test_m3_perceived_yaw.cpp)
   target_include_directories(m3_perceived_yaw_test PRIVATE include)
+  target_link_libraries(m3_perceived_yaw_test planning_scene_manager)
   ament_target_dependencies(m3_perceived_yaw_test
     rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
     tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
