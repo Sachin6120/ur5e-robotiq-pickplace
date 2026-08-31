@@ -31,6 +31,16 @@ find_package(OpenCV REQUIRED)
 
 include_directories(include)
 
+add_library(planning_scene_manager src/planning_scene_manager.cpp)
+target_include_directories(planning_scene_manager PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(planning_scene_manager rclcpp moveit_msgs geometry_msgs)
+
+add_executable(planning_scene_manager_smoke src/planning_scene_manager_smoke.cpp)
+target_link_libraries(planning_scene_manager_smoke planning_scene_manager)
+ament_target_dependencies(planning_scene_manager_smoke rclcpp)
+
 # --- M1: joint-goal planning reliability ------------------------------------
 add_executable(m1_joint_goal src/m1_joint_goal.cpp)
 target_include_directories(m1_joint_goal PUBLIC
@@ -134,6 +144,9 @@ if(BUILD_TESTING)
   ament_target_dependencies(m3_perceived_yaw_test
     rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
     tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
+  ament_add_gtest(planning_scene_manager_test test/test_planning_scene_manager.cpp)
+  target_link_libraries(planning_scene_manager_test planning_scene_manager)
+  ament_target_dependencies(planning_scene_manager_test rclcpp moveit_msgs geometry_msgs)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
@@ -156,6 +169,8 @@ install(TARGETS
   probe_gripper_cmd
   object_detector
   object_position_world
+  planning_scene_manager
+  planning_scene_manager_smoke
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

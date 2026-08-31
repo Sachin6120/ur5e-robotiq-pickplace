@@ -342,6 +342,17 @@ def _setup(context, *args, **kwargs):
         if is_parallel_jaw
         else "config/moveit_controllers.yaml"
     )
+    controller_path = PROJECT_ROOT / "ur5e_robotiq_moveit_config" / controllers_file
+    controller_config = _load_yaml(str(controller_path), "MoveIt controller config")
+    try:
+        startup_m1_tolerance_rad = float(
+            controller_config["trajectory_execution"]["allowed_start_tolerance"]
+        )
+    except KeyError as exc:
+        raise RuntimeError(
+            "CONFIG_ERROR: MoveIt controller config must define "
+            "trajectory_execution.allowed_start_tolerance for startup M1 verification."
+        ) from exc
     moveit_config = (
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
@@ -431,6 +442,7 @@ def _setup(context, *args, **kwargs):
         "stationary_timeout_s": float(
             LaunchConfiguration("stationary_timeout_s").perform(context)
         ),
+        "startup_m1_tolerance_rad": startup_m1_tolerance_rad,
         "pregrasp_pose_error_max_m": float(
             LaunchConfiguration("pregrasp_pose_error_max_m").perform(context)
         ),

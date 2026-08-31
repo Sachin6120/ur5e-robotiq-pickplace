@@ -163,6 +163,9 @@ def launch_setup(context, *args, **kwargs):
     enable_camera = LaunchConfiguration("enable_camera")
     camera_width = LaunchConfiguration("camera_width")
     camera_height = LaunchConfiguration("camera_height")
+    initial_joint_args = [LaunchConfiguration(name) for name in (
+        "initial_shoulder_pan", "initial_shoulder_lift", "initial_elbow",
+        "initial_wrist_1", "initial_wrist_2", "initial_wrist_3")]
 
     # See design note 5 above. Every ROS prefix's share/ dir goes on
     # GZ_SIM_RESOURCE_PATH so package://robotiq_description/... resolves.
@@ -227,6 +230,12 @@ def launch_setup(context, *args, **kwargs):
             " ",
             "camera_height:=",
             camera_height,
+            " initial_shoulder_pan:=", initial_joint_args[0],
+            " initial_shoulder_lift:=", initial_joint_args[1],
+            " initial_elbow:=", initial_joint_args[2],
+            " initial_wrist_1:=", initial_joint_args[3],
+            " initial_wrist_2:=", initial_joint_args[4],
+            " initial_wrist_3:=", initial_joint_args[5],
         ]
     )
     # ParameterValue(..., value_type=str) is required, not cosmetic: launch_ros
@@ -501,10 +510,21 @@ def _default_base_args(scene):
     return module.xacro_base_args(scene)
 
 
+def _default_initial_arm_args(scene):
+    """Map the one authoritative M1 vector into named xacro arguments."""
+    names = ("shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3")
+    home = [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+    values = (scene or {}).get("milestones", {}).get("m1", {}).get("goal_positions", home)
+    if not isinstance(values, list) or len(values) != len(names):
+        raise RuntimeError("CONFIG_ERROR: milestones.m1.goal_positions must contain six values.")
+    return {f"initial_{name}": str(float(value)) for name, value in zip(names, values)}
+
+
 def generate_launch_description():
     scene = _load_scene()
     default_base_args = _default_base_args(scene)
     default_gripper_args = _default_gripper_args(scene)
+    default_initial_arm_args = _default_initial_arm_args(scene)
     declared_arguments = [
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("tf_prefix", default_value=""),
@@ -512,6 +532,11 @@ def generate_launch_description():
         DeclareLaunchArgument("gripper_rotation", default_value="0.0"),
         DeclareLaunchArgument("base_xyz", default_value=default_base_args["base_xyz"]),
         DeclareLaunchArgument("base_rpy", default_value=default_base_args["base_rpy"]),
+        *[
+            DeclareLaunchArgument(name, default_value=value,
+                                  description="Simulation-only initial arm state, derived from scene.yaml M1.")
+            for name, value in default_initial_arm_args.items()
+        ],
         DeclareLaunchArgument(
             "fingertip_grasp_theta",
             default_value=default_gripper_args["fingertip_grasp_theta"],

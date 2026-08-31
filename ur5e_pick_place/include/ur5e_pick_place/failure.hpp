@@ -40,7 +40,7 @@ enum class Result
                             // evaluator simply never released the barrier.
                             // The lift is not attempted, and no transport,
                             // place or release occurs.
-  PERCEPTION_TIMEOUT        // require_perception was set and no fresh, valid
+  PERCEPTION_TIMEOUT,       // require_perception was set and no fresh, valid
                             // perceived object position arrived before the
                             // timeout. Deliberately its OWN variant and not
                             // CONFIG_ERROR: the configuration was fine, the
@@ -50,6 +50,7 @@ enum class Result
                             // to the configured position, which would make a
                             // perception failure indistinguishable from a
                             // perception success in the evidence.
+  STARTUP_NOT_AT_M1         // simulation startup did not converge at the required M1 observation pose.
 };
 
 inline const char * to_string(Result r)
@@ -67,6 +68,7 @@ inline const char * to_string(Result r)
     case Result::GRASP_LOST_DURING_LIFT: return "GRASP_LOST_DURING_LIFT";
     case Result::PRE_LIFT_BARRIER_TIMEOUT: return "PRE_LIFT_BARRIER_TIMEOUT";
     case Result::PERCEPTION_TIMEOUT:     return "PERCEPTION_TIMEOUT";
+    case Result::STARTUP_NOT_AT_M1:       return "STARTUP_NOT_AT_M1";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the

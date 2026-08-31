@@ -119,6 +119,16 @@
   <xacro:arg name="gripper_model" default="robotiq_linkage"/>
   <xacro:property name="gripper_model" value="$(arg gripper_model)"/>
 
+  <!-- Simulation-only arm spawn state.  The sim launch derives these six
+       arguments from scene.yaml milestones.m1.goal_positions.  Defaults keep
+       direct xacro users on the historical home pose. -->
+  <xacro:arg name="initial_shoulder_pan" default="0.0"/>
+  <xacro:arg name="initial_shoulder_lift" default="-1.5708"/>
+  <xacro:arg name="initial_elbow" default="1.5708"/>
+  <xacro:arg name="initial_wrist_1" default="-1.5708"/>
+  <xacro:arg name="initial_wrist_2" default="-1.5708"/>
+  <xacro:arg name="initial_wrist_3" default="0.0"/>
+
   <!-- Controller parameter file handed to the gz_ros2_control system plugin. -->
   <xacro:arg name="controllers_file"
              default="$(find ur5e_robotiq_description)/config/controllers.yaml"/>
@@ -262,12 +272,12 @@
       </joint>
     </xacro:macro>
 
-    <xacro:ur_joint jname="shoulder_pan_joint"  init="0.0"/>
-    <xacro:ur_joint jname="shoulder_lift_joint" init="-1.5708"/>
-    <xacro:ur_joint jname="elbow_joint"         init="1.5708"/>
-    <xacro:ur_joint jname="wrist_1_joint"       init="-1.5708"/>
-    <xacro:ur_joint jname="wrist_2_joint"       init="-1.5708"/>
-    <xacro:ur_joint jname="wrist_3_joint"       init="0.0"/>
+    <xacro:ur_joint jname="shoulder_pan_joint"  init="$(arg initial_shoulder_pan)"/>
+    <xacro:ur_joint jname="shoulder_lift_joint" init="$(arg initial_shoulder_lift)"/>
+    <xacro:ur_joint jname="elbow_joint"         init="$(arg initial_elbow)"/>
+    <xacro:ur_joint jname="wrist_1_joint"       init="$(arg initial_wrist_1)"/>
+    <xacro:ur_joint jname="wrist_2_joint"       init="$(arg initial_wrist_2)"/>
+    <xacro:ur_joint jname="wrist_3_joint"       init="$(arg initial_wrist_3)"/>
   </ros2_control>
 
   <!-- ===================================================================== -->

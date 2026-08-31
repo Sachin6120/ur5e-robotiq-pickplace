@@ -880,6 +880,7 @@ int main(int argc, char ** argv)
   double stationary_velocity_eps = 1.0e-3;
   int stationary_consecutive_samples = 6;
   double stationary_timeout_s = 25.0;
+  double startup_m1_tolerance_rad = 0.01;
   std::string joint_states_topic = "/joint_states";
   // Pre-grasp is a free-air pose 0.1 m above the object, so it does not carry
   // the grasp target's tight tolerance; this is the F1 acceptance bound.
@@ -977,6 +978,7 @@ int main(int argc, char ** argv)
     "stationary_consecutive_samples", stationary_consecutive_samples,
     stationary_consecutive_samples);
   node->get_parameter_or("stationary_timeout_s", stationary_timeout_s, stationary_timeout_s);
+  node->get_parameter_or("startup_m1_tolerance_rad", startup_m1_tolerance_rad, startup_m1_tolerance_rad);
   node->get_parameter_or("joint_states_topic", joint_states_topic, joint_states_topic);
   node->get_parameter_or(
     "pregrasp_pose_error_max_m", pregrasp_pose_error_max_m, pregrasp_pose_error_max_m);
@@ -1389,21 +1391,27 @@ int main(int argc, char ** argv)
     // that could have been exposed while the arm was still moving.
     rclcpp::Time m1_stationary_stamp(0, 0, RCL_ROS_TIME);
     if (ur5e_pick_place::ok(result) && use_perceived_position) {
-      RCLCPP_INFO(logger, "F1: moving to the M1 observation pose before perceiving.");
-      std::map<std::string, double> m1_target;
-      for (std::size_t i = 0; i < m1_joint_names.size(); ++i) {
-        m1_target[m1_joint_names[i]] = m1_goal_positions[i];
+      // Startup policy A: the simulation is spawned at M1.  Never command an
+      // unknown-target home->M1 path as a fallback.
+      const auto current = move_group.getCurrentState(2.0);
+      double max_error = std::numeric_limits<double>::infinity();
+      if (current && m1_joint_names.size() == m1_goal_positions.size()) {
+        max_error = 0.0;
+        for (std::size_t i = 0; i < m1_joint_names.size(); ++i) {
+          const auto & variable_names = current->getRobotModel()->getVariableNames();
+          if (std::find(variable_names.begin(), variable_names.end(), m1_joint_names[i]) ==
+              variable_names.end()) {
+            max_error = std::numeric_limits<double>::infinity(); break;
+          }
+          max_error = std::max(
+            max_error, std::abs(current->getVariablePosition(m1_joint_names[i]) - m1_goal_positions[i]));
+        }
       }
-      move_group.setJointValueTarget(m1_target);
-      moveit::planning_interface::MoveGroupInterface::Plan m1_plan;
-      if (move_group.plan(m1_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(logger, "PLAN_FAILURE: could not plan to the M1 observation pose.");
-        result = Result::PLAN_FAILURE;
-      } else if (move_group.execute(m1_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(logger, "EXECUTE_FAILURE: M1 observation pose execution failed.");
-        result = Result::EXECUTE_FAILURE;
+      if (!(max_error <= startup_m1_tolerance_rad)) {
+        RCLCPP_ERROR(logger, "STARTUP_NOT_AT_M1: max joint error %.6f rad exceeds %.6f rad; refusing any arm trajectory before perception.", max_error, startup_m1_tolerance_rad);
+        result = Result::STARTUP_NOT_AT_M1;
       } else {
-        RCLCPP_INFO(logger, "F1: M1 reached.");
+        RCLCPP_INFO(logger, "STARTUP_M1_VERIFIED: max joint error %.6f rad (tolerance %.6f rad).", max_error, startup_m1_tolerance_rad);
       }
     }
 
