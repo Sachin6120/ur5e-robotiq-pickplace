@@ -29,7 +29,7 @@ point; it does not run the RGB-D Stage-2D case harness.
 
 ### D3 Demo
 
-[![UR5e Stage-2 D3 pose-generalization demo](docs/assets/d3_demo_thumbnail.png)](../../releases/tag/stage2-pose-generalization-pass)
+[![UR5e Stage-2 D3 pose-generalization demo](docs/assets/d3_demo.gif)](../../releases/tag/stage2-pose-generalization-pass)
 
 **D3 validation case:** +30 mm X, -30 mm Y, +45° yaw.
 
