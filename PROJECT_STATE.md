@@ -23,7 +23,10 @@ Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in 
 
 ## 2026-09-01 Stage-2D PlanningSceneManager Regression & Full Generalization Closeout — CURRENT AUTHORITY
 
-- **Repository**: branch `stage2-orientation-generalization`, HEAD `a32a68b` (`docs: record PlanningSceneManager integration and verified Scene-A baseline`).
+- **Release-preparation lineage**: branch `stage2-orientation-generalization`
+  includes `2557aa6` (startup state-monitor race fix), `19ae062` (one-command
+  D3 demo launcher), and `059d1a5` (tracked runtime-artifact cleanup). The
+  historical milestone commit identities below remain preserved as evidence.
 - **Milestone Outcome**: Full Stage-2D regression suite is **100% COMPLETE & VERIFIED** under the production MoveIt `PlanningSceneManager` collision lifecycle.
   - **Scene-A Lifecycle-Integrated Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS** (`evidence/perception_validation_pj_20260901_021651`)
   - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): **PASS** (`evidence/stage2d_pose/D1_planning_scene_20260901_0222`)

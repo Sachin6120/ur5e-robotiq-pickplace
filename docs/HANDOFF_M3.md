@@ -29,9 +29,9 @@ anything measurement-shaped from this environment.
 | Spawn-state/reliability | closed (4 bugs found + fixed) | see "Spawn-state investigation, closed" |
 | Grasp-table sweep (06) | 5/5 OK, zero timeouts, zero ejections | see "stall_velocity_threshold fix applied and validated" below |
 | World-table gap | closed | `config/scene_table_sdf.py`, wired into `ur5e_robotiq_sim_control.launch.py` — see "Table wired into the world; re-run of both grasp tests" below |
-| M3 grasp node | Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. **2026-08-11: fingertip friction pass-through fixed (was silently defaulted, see below). Two independent 20-cycle sweeps, both post-fix: 14/20 and 13/20 PASS on Gazebo ground-truth slip (70%, 65% — consistent, no drift between runs). RESULT: FAIL against M3's zero-ejection criterion both times; all ejections land at ~350.4-350.9mm relative slip (the pick-to-place transport distance almost exactly — the object is being left at the grasp point, not slipping in transit). Mechanism NOT YET FOUND: six independent candidates checked against existing logs (gripper_result, tcp_error_m, pre-close object tilt, achieved_grip_angle replication, flange orientation at LIFT_DONE, controller-loop timing during the close) all ruled out — see "Two 20-cycle sweeps" below. Next step is instrumenting actuated-joint effort (not yet done); nothing already logged distinguishes a pass from a fail.** SUPERSEDED 2026-08-12 — see "2026-08-11 (same day, continued): process leak fixed..." and the RETRY-ENABLED 20-CYCLE SWEEP RESULT entries far below: fingertip-runaway fix (TENTH OVERRIDE) + retry harness -> **M3 RESULT: PASS, 20/20 slip PASS, zero ejections, 0.227-0.442mm.** | see "2026-08-11 (same day, continued): process leak fixed, two 20-cycle sweeps, six candidate mechanisms ruled out, none found" below (RETRY-ENABLED 20-CYCLE SWEEP RESULT); `runs/m3_sweep20_*.csv` and `runs/m3_cycles_retry20_20260812_034544.csv` (+ per-attempt logs `runs/attempt_001.log`…`attempt_020.log`) |
-| M4 | PASS — one annotated run, placement measured not inferred, 0.162mm 3D displacement from `object.place_pose` (45mm cube, `gripper_roll` 0) | `docs/m3_cyclelive_grasp_20260812_113952_14404.log`, `docs/m4_placement_20260812_113952_14404.txt` — see "M4: full loop incl. place and retreat" below |
-| M5 | PASS — satisfied by the existing M3 20-cycle sweep, no new run performed for this entry | `runs/m3_cycles_retry20_20260812_034544.csv` — see "M5: repeatability" below |
+| M3 grasp node | Pre-close implemented; sim-degradation gate (`gz_assert_gripper_responsive`) built and validated, caught real degradation unprompted on 2026-08-10 (~7-8min into heavy use — degradation is usage-driven, not time-driven; protocol now brackets every measurement with the gate, not just session-start). Re-confirmation list: lateral-capture (26.3mm, timing 1.31s into descent) CONFIRMED real. "0.09-0.10 rad" stopping-point framing RETRACTED — one of two trials broke the cluster (0.0504) and wasn't properly bracketed; true range is "stalls well short of 0.4055, roughly 0.05-0.10 rad" pending a bracketed retake. Clearance figure not yet re-confirmed. **2026-08-11: fingertip friction pass-through fixed (was silently defaulted, see below). Two independent 20-cycle sweeps, both post-fix: 14/20 and 13/20 PASS on Gazebo ground-truth slip (70%, 65% — consistent, no drift between runs). RESULT: FAIL against M3's zero-ejection criterion both times; all ejections land at ~350.4-350.9mm relative slip (the pick-to-place transport distance almost exactly — the object is being left at the grasp point, not slipping in transit). Mechanism NOT YET FOUND: six independent candidates checked against existing logs (gripper_result, tcp_error_m, pre-close object tilt, achieved_grip_angle replication, flange orientation at LIFT_DONE, controller-loop timing during the close) all ruled out — see "Two 20-cycle sweeps" below. Next step is instrumenting actuated-joint effort (not yet done); nothing already logged distinguishes a pass from a fail.** SUPERSEDED 2026-08-12 — see "2026-08-11 (same day, continued): process leak fixed..." and the RETRY-ENABLED 20-CYCLE SWEEP RESULT entries far below: fingertip-runaway fix (TENTH OVERRIDE) + retry harness -> **M3 RESULT: PASS, 20/20 slip PASS, zero ejections, 0.227-0.442mm.** | see "2026-08-11 (same day, continued): process leak fixed, two 20-cycle sweeps, six candidate mechanisms ruled out, none found" below. Raw runtime artifacts were removed from the tracked public-release branch during cleanup; the result and measured range are retained here. |
+| M4 | PASS — one annotated run, placement measured not inferred, 0.162mm 3D displacement from `object.place_pose` (45mm cube, `gripper_roll` 0) | Raw dated log/sample artifacts were removed from the tracked public-release branch during cleanup; see "M4: full loop incl. place and retreat" below for the retained conclusion. |
+| M5 | PASS — satisfied by the existing M3 20-cycle sweep, no new run performed for this entry | Raw runtime CSV removed from the tracked public-release branch during cleanup; see "M5: repeatability" below for the retained result. |
 
 Robot base is at z=0.75 (table height), derived from `robot.base_pose` in
 `config/scene.yaml` via `config/scene_xacro_args.py`, which all three launch
@@ -3598,7 +3598,7 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
   ejections. RESULT: PASS. This is the first time this session the REAL
   M3 criterion (not just result=SUCCESS) has been confirmed at all.
   20-cycle sweep launched immediately after -- see the next entry, or the
-  runs/ directory, for its outcome if this note predates it finishing.
+  retained result below for its outcome if this note predates it finishing.
 
   20-CYCLE SWEEP RESULT, 2026-08-12, same day: RESULT: FAIL. 17/20 slip
   PASS, 3/20 FAIL, needed 18/20 (criterion is fixed in advance --
@@ -3686,8 +3686,9 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
   complete, criterion-satisfying M3 confirmation this session has been
   building toward across all five rounds of the fingertip-runaway
   investigation -- not a marginal pass, not a promising trend, the actual
-  fixed-in-advance criterion met in full with room to spare. runs/
-  m3_cycles_retry20_20260812_034544.csv is the evidence.
+  fixed-in-advance criterion met in full with room to spare. The raw runtime
+  CSV was removed from the tracked public-release branch during cleanup; the
+  quantified result is retained here.
   M3 STATUS AS OF THIS ENTRY: the fingertip fix (TENTH OVERRIDE) is
   confirmed by a complete 20-cycle sweep, not just isolated trials.
   ITEM 2 RETRACTED, 2026-08-12, same day: the "unreconciled" fixed-tip
@@ -3729,8 +3730,10 @@ Fixed via `<gazebo reference>` + current tag names (`mu`/`mu2`/`min_depth`/
 
 ## M4: full loop incl. place and retreat — one annotated run log, placement measured not inferred
 
-Written 2026-08-12. Spec wording (`docs/archive/UR5E_PROJECT_START_PROMPT.md`): "M4: full
-loop incl. place and retreat -- one annotated run log."
+Written 2026-08-12. The agent/operator bootstrap artifact was removed from the
+public-release branch during cleanup; its relevant specification wording is
+retained here: "M4: full loop incl. place and retreat -- one annotated run
+log."
 
 `m3_grasp.cpp`/`transport.cpp` have executed this full sequence since the
 transport/lift leg landed (`c79dee2`) — every M3 sweep cycle already runs
@@ -3765,11 +3768,13 @@ standalone with that unset produced a malformed `marker_file_prefix:=`
 launch argument. Fixed by setting `M3_MARKER_PREFIX` explicitly for the
 standalone invocation; not a bug in the placement-check addition itself.)
 
-**Run, 2026-08-12.** Full artifact set:
-- sim: `docs/m3_cyclelive_sim_20260812_113952_14404.log`
-- move_group: `docs/m3_cyclelive_movegroup_20260812_113952_14404.log`
-- m3_grasp (streamed live): `docs/m3_cyclelive_grasp_20260812_113952_14404.log`
-- placement sample: `docs/m4_placement_20260812_113952_14404.txt`
+**Run, 2026-08-12.** Historical artifact set (raw dated logs and the placement
+sample were removed from the tracked public-release branch during cleanup;
+their conclusions remain below):
+- sim: historical `m3_cyclelive_sim` log
+- move_group: historical `m3_cyclelive_movegroup` log
+- m3_grasp: historical streamed `m3_cyclelive_grasp` log
+- placement sample: historical `m4_placement` sample
 - per-cycle trace CSV: `m3_grasp_trace_cyclelive_20260812_113952_14404.csv`
   (repo root — gitignored like every M3 trace CSV, per `.gitignore`'s
   `m3_grasp_*.csv`; the run's evidence lives in the annotated logs above,
@@ -3828,8 +3833,9 @@ plainly: not a near-miss.
 
 Written 2026-08-12. Spec wording: "M5: repeatability -- 20 cycles, CSV."
 
-`runs/m3_cycles_retry20_20260812_034544.csv` (see "RETRY-ENABLED 20-CYCLE
-SWEEP RESULT" above) already is this: 20 cycles of the complete
+The raw runtime CSV was removed from the tracked public-release branch during
+cleanup. The retained "RETRY-ENABLED 20-CYCLE SWEEP RESULT" above already
+records 20 cycles of the complete
 pick->lift->transport->place->release->retreat loop — every cycle runs
 `transport.cpp`'s full seven-stage sequence, not just the grasp — each
 producing one CSV row, 20/20 completed (zero gate-before retries needed on

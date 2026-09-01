@@ -1,302 +1,225 @@
-# Perception-Driven Robotic Manipulation with UR5e
+# UR5e Perception-Guided Pick-and-Place
 
-A simulated UR5e arm that finds an object with an overhead RGB-D camera,
-plans a grasp with MoveIt 2, and picks it up, transports it, and places it
-down, with every result checked against Gazebo ground truth rather than a
-node's own status message.
+A simulated pick-and-place system for a UR5e with a parallel-jaw gripper. It
+uses ROS 2 Jazzy, Gazebo Harmonic, MoveIt 2, and RGB-D perception to generalize
+the grasp across planar XY offsets and axial object yaw while managing the
+object's complete PlanningScene lifecycle.
 
-`ROS 2 Jazzy | MoveIt 2 | Gazebo Harmonic | C++ | Python | RGB-D Perception`
-
-<p align="center">
-  <img src="docs/assets/ur5e_perception_pickplace.png"
-       alt="Perception-driven UR5e manipulation in Gazebo Harmonic"
-       width="900">
-</p>
+The validated scope is simulation-only planar pose generalization. It is not a
+safety-certified or production-certified robotics system.
 
 ## Demo
 
-<p align="center">
-  <img src="docs/assets/ur5e_pickplace_demo.gif"
-       alt="Perception-driven UR5e pick-and-place cycle in Gazebo Harmonic"
-       width="900">
-</p>
+The validated D3 case has a one-command visual launch:
 
-*Perception-driven UR5e pick-and-place cycle in Gazebo Harmonic.*
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ur5e_pickplace/install/setup.bash
+ros2 launch ur5e_pick_place d3_demo.launch.py
+```
 
-## Overview
+The launch orchestrates the Gazebo GUI, controllers, MoveIt, RViz, RGB-D
+perception, the D3 object spawn, manipulation, evidence/analyzer processes,
+and teardown. It has been validated from this repository's symlink-install
+workspace; copied-install portability has not yet been established.
 
-The scene is a UR5e on a table with one object at a fixed height. A camera
-mounted above the workspace looks straight down. The pipeline:
+<!-- Future D3 media target: docs/assets/d3_demo_thumbnail.png. The full MP4
+     should be published as a GitHub Release asset, not committed to Git. -->
 
-1. **Localize** the object from RGB-D data, without using its known simulated
-   pose.
-2. **Select a grasp approach** — one of several IK solutions for the
-   pregrasp pose, chosen deterministically rather than by whatever the
-   planner returns first.
-3. **Plan and execute** the approach and a Cartesian descent with MoveIt 2.
-4. **Grasp** with a simulated parallel-jaw gripper, **lift**, **transport**,
-   and **place** the object at a second location, then **release**.
-5. **Evaluate** the result against the object's actual simulated pose —
-   never against the pipeline's own reported success.
-
-The gripper is a simplified single-DOF parallel-jaw model, not the vendor
-Robotiq linkage. `docs/GRIPPER_REDESIGN_DESIGN.md` explains why: Gazebo's
-default physics engine (DART) does not enforce mimic-joint constraints, which
-made the original multi-link gripper's finger motion depend on a software
-workaround that could fail under contact load. The parallel-jaw model has
-exactly one actuated joint and two flat pads, so its geometry is provable
-offline instead of measured after the fact.
-
-## System Pipeline
+## Pipeline
 
 ```mermaid
-flowchart LR
-    A[RGB-D Camera] --> B[Object Detection]
-    B --> C[Camera-to-World Transform]
-    C --> D[Grasp Target Construction]
-    D --> E[Deterministic Pregrasp / IK Selection]
-    E --> F[MoveIt 2 Planning]
-    F --> G[Cartesian Descent]
-    G --> H[Grasp]
-    H --> I[Lift]
-    I --> J[Transport]
-    J --> K[Release]
-    K --> L[Ground-Truth Evaluation]
+flowchart TD
+    A[RGB-D camera] --> B[Object segmentation and pose]
+    B --> C[World-frame perceived XYZ and yaw]
+    C --> D[Deterministic pregrasp candidate selection]
+    D --> E[MoveIt collision-aware descent]
+    E --> F[Parallel-jaw grasp]
+    F --> G[PlanningScene attachment]
+    G --> H[5 mm support-clearance stroke]
+    H --> I[Cloned collision validation<br/>without support exception]
+    I --> J[115 mm payload lift]
+    J --> K[Collision-aware transport]
+    K --> L[95 mm protected placement descent]
+    L --> M[5 mm terminal placement]
+    M --> N[Release, detach, and retreat]
 ```
 
-## Key Features
+Ground truth is used only to evaluate the run. It is not an input to
+perception, grasp selection, or planning.
 
-- **Perception-driven object localization.** A depth-plane segmentation
-  detector estimates the object's visible top-surface position from RGB-D
-  data (`object_detector.cpp`), and a separate node transforms it into the
-  world frame with TF2 (`object_position_world.cpp`). Neither node reads
-  Gazebo's ground-truth object pose.
+## PlanningScene Lifecycle
 
-<p align="center">
-  <img src="docs/assets/rgbd_object_detection.png"
-       alt="RGB-D object detection with bounding box and detected centroid"
-       width="700">
-</p>
+The collision matrix uses three narrowly scoped exception classes:
 
-*RGB-D object detection showing the detected object bounding box and 2D/3D centroid.*
+- `P = table ↔ base_link_inertia`: permanent table/base exception.
+- `C1 = pick_target ↔ pad_fixed_link` and
+  `C2 = pick_target ↔ pad_moving_link`: enabled only for grasp closure.
+- `S = pick_target ↔ table`: temporary support exception.
 
-- **Deterministic pregrasp / IK branch selection.** Multiple IK solutions
-  can reach the same pregrasp pose; a fixed selection rule picks one so the
-  same scene always produces the same approach, rather than depending on
-  planner internals.
-- **MoveIt 2 / OMPL planning** for the free-space legs (pregrasp, transit,
-  transport), and a **Cartesian path** for the final descent and the
-  place-descent, so the last few centimetres of motion are a straight line
-  rather than a planned trajectory.
-- **Parallel-jaw grasp geometry** with a closed-form aperture/TCP-offset
-  relationship (`scripts/lib/parallel_jaw_geometry.py`), instead of a
-  numerically-fit constant.
-- **Quantitative ground-truth validation.** Every run is checked against
-  Gazebo's own object and flange poses — perception error, grasp aperture,
-  lift/transport slip, placement error, and final orientation error are all
-  measured, not inferred from a status flag.
-- **Repeatability and position-generalization campaigns** (below), plus
-  diagnostic tooling for isolating planner, controller, and perception
-  behavior independently (`scripts/`, `scripts/perception/`).
+The validated lifecycle is:
 
-## Validation Results
-
-All reported results are from simulation.
-
-| Check | Result |
-|---|---|
-| Scene-A repeatability | **5 / 5 cycles PASS** (2026-08-27, fixed object pose) |
-| Position generalization (G1–G5) | **5 / 5 poses PASS** (2026-08-27/28, five distinct XY object positions) |
-| Post-cleanup regression | **1 / 1 PASS** (2026-08-28) — confirms the cleaned repository still reproduces the validated cycle; not an additional repeatability or generalization data point |
-| Perception error | acceptance threshold < 3 mm; measured 1.47–1.76 mm across G1–G5, 1.6134 mm in the repeatability campaign |
-| Cartesian descent fraction | 1.0000 in every cited run |
-| Grasp aperture | 29.9995 mm, against a 30 ± 1 mm target |
-| Lift slip | sub-millimetre in every cited run (max 0.0521 mm) |
-| Transport slip | sub-millimetre in every cited run (max 0.0815 mm) |
-| Placement error | approximately 2 mm in every cited run (range 1.89–2.20 mm) |
-
-**On G1–G5 homogeneity:** G1–G4 ran with MoveIt's `plan_attempts = 20`; the
-final G5 qualification ran with `plan_attempts = 1` (a diagnosability change,
-not a planning-quality change — see Known Limitations). The five-pose
-campaign is therefore evidence of position generalization under two
-adjacent planner-attempt settings, not one strictly uniform configuration.
-
-Full per-run figures are in `HANDOFF.md` and `PROJECT_STATE.md`.
-
-## Stage-1 Experimental Scope
-
-Stage 1 demonstrated perception-driven pick-and-place across **five distinct
-XY object positions**, with the object's geometry, height, and orientation
-held fixed and the same manipulation task repeated at each position.
-
-**Not yet demonstrated:**
-
-- perception or manipulation under arbitrary object **orientation** (yaw) —
-  planned as Stage 2, not started;
-- object **size** variation beyond the two configurations already tested
-  (30 mm / 45 mm cube);
-- transfer to a **real robot** — everything above is simulation-only;
-- robustness to broader **environmental** variation (lighting, clutter,
-  multiple objects, occlusion).
-
-## Architecture / Packages
-
-- **`ur5e_pick_place`** — the application layer: the perception nodes
-  (`object_detector`, `object_position_world`), the pick-place state machine
-  (`m3_grasp.cpp`, `transport.cpp`), and the launch files that wire them
-  together.
-- **`ur5e_robotiq_description`** — the robot model: the merged UR5e +
-  gripper URDF/xacro (both the vendor Robotiq linkage and the parallel-jaw
-  model, selected by a launch argument), the overhead camera, controller
-  configuration, and the Gazebo world.
-- **`ur5e_robotiq_moveit_config`** — the MoveIt 2 configuration for both
-  gripper models: planning groups, kinematics, and controller mapping.
-
-## Repository Structure
-
-```
-config/                       scene.yaml — single source of truth for object
-                               pose, grasp geometry, and pipeline thresholds
-docs/                         design documents and milestone handoffs
-scripts/                      setup, diagnostic, and validation tooling
-  scripts/perception/         the perception-milestone and campaign harnesses
-ur5e_pick_place/               application code and launch files
-ur5e_robotiq_description/      robot model, controllers, Gazebo world
-ur5e_robotiq_moveit_config/    MoveIt 2 configuration
+```text
+world target
+→ collision-protected descent
+→ enable C1/C2 only for closure
+→ attach target to gripper_base_link (touch links: exactly the two pads)
+→ remove C1/C2 and enable S
+→ 5 mm pickup clearance
+→ clone the scene, remove S in the clone, and collision-check
+→ remove live S
+→ 115 mm lift and collision-aware transport
+→ 95 mm placement descent with S absent
+→ verify positive pre-contact separation
+→ enable S only for the final 5 mm
+→ release, detach to the world, and retreat
 ```
 
-Raw experiment output under `evidence/` (Gazebo pose streams, per-run logs,
-CSVs — several gigabytes) is intentionally excluded from Git. Durable
-results are recorded as text in `HANDOFF.md` and `PROJECT_STATE.md`, not as
-committed raw data.
+This lifecycle demonstrates explicit collision-state management in the
+validated simulation; it is not a claim of formal safety certification.
 
-## Requirements
+## Validation
 
-- Ubuntu 24.04 (Noble)
-- ROS 2 Jazzy Jalisco
+| Case | XY offset | Yaw | Result |
+|---|---:|---:|:---:|
+| Scene-A | 0, 0 mm | 0 deg | PASS |
+| D1 | +30, +30 mm | +30 deg | PASS |
+| D2 | -30, -30 mm | -30 deg | PASS |
+| D3 | +30, -30 mm | +45 deg | PASS |
+
+Scene-A is the lifecycle-integrated baseline. D1, D2, and D3 are the 3/3
+Stage-2D planar XY+yaw regression cases.
+
+| Verified metric | Scene-A | D1 | D2 | D3 |
+|---|---:|---:|---:|---:|
+| Perception error (mm) | 1.613 | 1.3900 | 1.2849 | 1.6104 |
+| Perceived yaw error (deg) | 0.0000 | -0.0215 | -0.2371 | ≈0 (+0.000016) |
+| Cartesian descent fraction | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| Descent TCP error (mm) | 0.00032 | 0.00028 | 0.00070 | 0.00071 |
+| Pre-close contacts, fixed / moving | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Grasp aperture (mm) | 30.0000 | 30.0022 | 30.0034 | 29.9995 |
+| Pickup separation (mm) | +4.982 | +4.977 | +4.981 | +4.959 |
+| Lift slip (mm) | 0.000 | 0.0101 | 0.0101 | 0.0107 |
+| Transport slip (mm) | 0.000 | 0.0044 | 0.0027 | 0.0071 |
+| Placement pre-contact separation (mm) | +4.954 | +4.994 | +4.940 | +4.968 |
+| Placement position error (mm) | 1.613 | 2.0300 | 2.2234 | 1.9793 |
+| Result | SUCCESS | PASS | PASS | PASS |
+
+The D3 placement value above is the authoritative PlanningScene regression
+result. A later recording-only demo run measured 2.1433 mm and is not used as
+the qualification metric.
+
+## D3 Failure → Root Cause → Fix
+
+At the historical 1.5 mm fixed-side clearance, D3's governing fixed-side
+projection was approximately 1.5759 mm:
+
+```text
+predicted margin = 1.5000 - 1.5759 ≈ -0.0759 mm
+```
+
+The negative margin produced a fixed-pad collision: an approximately 59.2 µm
+contact sliver and approximately 301 N of simulated contact force. Cartesian
+descent failed.
+
+The production fixed-side clearance was corrected to 2.0 mm. With the
+conservative working model margin
+`Mmodel_working = 0.000001 mm`:
+
+```text
+predicted margin ≈ 2.0000 - 1.5759 - 0.000001 ≈ +0.4241 mm
+```
+
+The corrected D3 run verified zero fixed-pad pre-close contacts, zero
+moving-pad pre-close contacts, a Cartesian descent fraction of 1.0000, and a
+complete-cycle PASS. The working model margin is a design allowance, not a
+measured uncertainty. See the
+[clearance analysis](docs/evidence/d3_clearance_analysis.md) for the concise
+engineering record.
+
+## Startup Reliability Fix
+
+A cold-start demo exposed a MoveIt `CurrentStateMonitor` race: the physical
+robot was at M1, but a lazily initialized monitor could return a default zero
+`RobotState` before a genuine `/joint_states` sample arrived.
+
+The startup path now explicitly initializes the monitor, waits for a bounded
+genuine `JointState` containing all required arm joints, returns
+`STARTUP_STATE_UNAVAILABLE` when no valid sample arrives, and emits
+`STARTUP_M1_VERIFIED` only after checking real state. The M1 tolerance remains
+0.01 rad; no arbitrary startup sleep was added. The focused startup tests pass
+10/10, and the current package suite passes 105/105.
+
+## Tech Stack
+
+- ROS 2 Jazzy
 - Gazebo Harmonic
-- MoveIt 2
-- colcon
-- OpenCV, `cv_bridge`, `message_filters` (for the perception nodes)
+- MoveIt 2 with OMPL RRTConnect
+- `ros2_control` and `gz_ros2_control`
+- OpenCV
+- C++ nodes and Python validation harnesses
 
-`scripts/02_bootstrap_noble.sh` installs the full ROS/Gazebo environment on a
-clean Ubuntu 24.04 machine, including `rosdep`-resolved package
-dependencies.
+## Build / Run
 
-## Build
-
-The repository root is itself the colcon workspace — the three ROS packages
-live directly under it, with no separate `src/` layout required.
+This repository is the colcon workspace. The validated development workflow
+uses a symlink install:
 
 ```bash
 cd ~/ur5e_pickplace
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
-source install/setup.bash
+source ~/ur5e_pickplace/install/setup.bash
 ```
 
-## Running the System
+Then run the D3 command from [Demo](#demo). The demo launch currently resolves
+repository-side scripts and configuration and therefore should be treated as
+a workspace demo, not as a proven relocatable binary install.
 
-The validated baseline requires the parallel-jaw gripper and perception
-explicitly enabled — the launch files default to the older vendor gripper
-with perception off, for backward compatibility with the classical
-(non-perception) pipeline described in `docs/HANDOFF_M3.md`.
-
-**One complete perception-driven cycle, single command:**
+## Tests
 
 ```bash
-cd ~/ur5e_pickplace
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-REPEATABILITY_CYCLES=1 python3 scripts/perception/run_5_cycles.py
+source ~/ur5e_pickplace/install/setup.bash
+colcon test --packages-select ur5e_pick_place
+colcon test-result --verbose
 ```
 
-This is the same harness that produced the 5/5 repeatability and Stage-1
-results: it brings up the simulation and controllers with
-`gripper_model:=parallel_jaw`, starts MoveIt, spawns the object, starts the
-perception nodes, runs one full perception-driven cycle, evaluates the
-result against Gazebo ground truth, and shuts everything down. Set
-`REPEATABILITY_CYCLES` to a higher number to repeat it.
+Current baseline: **105 tests, 0 failures**.
 
-**The same sequence by hand, to watch each stage in the Gazebo GUI** (four
-terminals, run in order):
+## Repository Structure
 
-```bash
-# Terminal 1 — simulation, controllers, camera
-ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py \
-  gripper_model:=parallel_jaw enable_camera:=true gazebo_gui:=true
-
-# Terminal 2 — MoveIt (after the controllers report active)
-ros2 launch ur5e_robotiq_moveit_config move_group.launch.py \
-  gripper_model:=parallel_jaw
-
-# Terminal 3 — perception nodes (after move_group is up)
-ros2 run ur5e_pick_place object_detector --ros-args -p use_sim_time:=true
-ros2 run ur5e_pick_place object_position_world --ros-args -p use_sim_time:=true
-
-# Terminal 4 — spawn the object, then run the pick-place cycle
-bash scripts/08_spawn_pick_object.sh
-ros2 launch ur5e_pick_place m3_grasp.launch.py \
-  gripper_model:=parallel_jaw use_perceived_position:=true require_perception:=true
+```text
+config/                        shared scene and manipulation parameters
+docs/                          public docs and retained engineering history
+  assets/                      repository-sized images
+  evidence/                    compact public validation summaries
+scripts/                       setup, diagnostics, and validation harnesses
+  perception/                  perception and Stage-2D campaign tooling
+ur5e_pick_place/               application nodes, launch files, and tests
+ur5e_robotiq_description/      robot model, controllers, and Gazebo world
+ur5e_robotiq_moveit_config/    MoveIt configuration
 ```
 
-`m3_grasp.launch.py` does not exit on its own once the cycle finishes — end
-the session with Ctrl+C.
+See the [documentation index](docs/README.md) for public guides and historical
+engineering records.
 
-## Validation / Reproduction
+## Limitations / Current Scope
 
-`scripts/perception/run_5_cycles.py` (above) is the general-purpose
-reproduction path — it accepts `REPEATABILITY_CYCLES` for a repeatability
-run at the fixed Scene-A pose. The Stage-1 position-generalization campaign
-used the same underlying harness, `scripts/perception/milestone_f1_harness.py`,
-with the object spawned at each of the five G1–G5 positions in turn.
-`scripts/perception/evaluate_placement.py` scores a completed run's
-placement against the configured target.
+- Generalization is validated for planar XY offsets and axial yaw, not full
+  arbitrary SO(3) orientation.
+- The validated scene contains one target object and is simulation-only.
+- OMPL RRTConnect is stochastic and the current configuration uses one
+  planning attempt.
+- The `+0.5 px` shadow estimator is diagnostic and non-production.
+- Gazebo ground truth is evaluation-only and never planning input.
 
-These campaigns generate substantial ground-truth logging; the single-cycle
-command above is the right default rather than a multi-cycle sweep.
+## Evidence
 
-## Known Limitations
+The compact public evidence bundle is documented in
+[docs/evidence/README.md](docs/evidence/README.md). Multi-gigabyte raw captures
+remain local and are not committed to Git.
 
-- **Simulation only.** Nothing here has run on physical hardware.
-- **Object orientation was fixed during Stage 1.** All five validated
-  positions used the same object yaw; the perception pipeline has not been
-  evaluated against orientation variation.
-- **Perception currently validates position, not orientation.** The
-  detector estimates the object's top-surface position; no yaw or
-  orientation estimation exists in the current pipeline.
-- **One historical planner anomaly remains open.** A single MoveIt/OMPL
-  transport-planning attempt took 15.001 s and returned `PLAN_FAILURE`
-  during an earlier G5 trial, after perception, grasp, and lift had already
-  succeeded. It did not reproduce across two later G5 runs, and an offline
-  investigation ruled out IK goal-sampling starvation as the cause. It
-  remains unexplained. A related configuration change
-  (`plan_attempts: 20 → 1`) was made for diagnosability — so a future
-  recurrence would produce a usable planner status — not as a fix, and is
-  not claimed as one.
-- **Stage 2 (object orientation generalization) has not started.**
+## License / Third-Party Assets
 
-## Current Status
-
-- **Stage 1 — Position generalization: COMPLETE / PASS.**
-- **Stage 2 — Orientation generalization: planned, not started.**
-
-## Documentation
-
-- [`PROJECT_STATE.md`](PROJECT_STATE.md) — current validated state, updated
-  as results change.
-- [`HANDOFF.md`](HANDOFF.md) — full session-by-session record of every
-  measurement and decision behind the current state.
-- [`docs/HANDOFF_RGBD_PERCEPTION.md`](docs/HANDOFF_RGBD_PERCEPTION.md) —
-  the perception pipeline's validation record, milestone by milestone.
-- [`docs/GRIPPER_REDESIGN_DESIGN.md`](docs/GRIPPER_REDESIGN_DESIGN.md) —
-  the architecture analysis and design rationale behind the parallel-jaw
-  gripper.
-
-## Author
-
-Sachin Kumar Pal
-M.Sc. Mechatronics and Cyber-Physical Systems
-Deggendorf Institute of Technology
-
-[GitHub](https://github.com/Sachin6120)
+Licensing and third-party attribution are documented separately; see the
+repository license and third-party notice once finalized.

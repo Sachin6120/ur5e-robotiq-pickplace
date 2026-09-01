@@ -13,7 +13,11 @@
 
 ### Milestone Summary
 
-- **Repository**: `~/ur5e_pickplace`, branch `stage2-orientation-generalization`, HEAD `a32a68b` (`docs: record PlanningSceneManager integration and verified Scene-A baseline`).
+- **Release-preparation lineage**: `~/ur5e_pickplace`, branch
+  `stage2-orientation-generalization`, includes `2557aa6` (startup
+  state-monitor race fix), `19ae062` (one-command D3 demo launcher), and
+  `059d1a5` (tracked runtime-artifact cleanup). Historical milestone commit
+  identities below remain preserved as evidence.
 - **Milestone Outcome**: Full Stage-2D regression suite is **100% COMPLETE & VERIFIED** under the production MoveIt `PlanningSceneManager` collision lifecycle.
   - **Scene-A Lifecycle Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS** (`evidence/perception_validation_pj_20260901_021651`)
   - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): **PASS** (`evidence/stage2d_pose/D1_planning_scene_20260901_0222`)
@@ -1229,7 +1233,7 @@ trusting this block if the working tree has since changed.
 Audited `docs/`, `runs/`, `scripts/perception/`, the repository root, and
 `/tmp`. No evidence was moved, renamed, or altered by this audit.
 
-**A. Durable RAW evidence that survives**
+**A. Raw evidence retained locally**
 
 - `runs/prod_reg_test_c_roll90_width30_{pose,traj}_20260823_004208_6512.csv`
   (1.0 MB + 2.4 MB) and the matching
@@ -1242,9 +1246,13 @@ Audited `docs/`, `runs/`, `scripts/perception/`, the repository root, and
   the classical lifecycle.
   **Note its scope precisely:** `preclose_achieved=0.2280`, i.e. the OLD
   `preclose_margin_rad: 0.30` configuration. It predates the `0.070 rad`
-  correction and is NOT evidence for the frozen candidate.
-- The 27 `docs/*markers_*/` directories and their `runs/` counterparts for
-  M8/M9/M10 and the four `prod_reg` configurations — the classical baseline.
+  correction and is NOT evidence for the frozen candidate. These runtime
+  captures were removed from the tracked public-release branch during cleanup;
+  the conclusion and quantitative scope are retained here.
+- The 27 `docs/*markers_*/` directories and their former tracked `runs/`
+  counterparts for M8/M9/M10 and the four `prod_reg` configurations — the
+  classical baseline. Runtime outputs are now local-only; their conclusions
+  remain in this record.
 
 **B. Durable SUMMARIZED evidence that survives**
 
