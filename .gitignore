@@ -53,3 +53,22 @@ docs/*_markers_*/
 *.liftdone_ready
 *.transportdone_ready
 *.run_summary_ready
+
+# Python/test/tool caches
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Runtime process files
+*.pid
