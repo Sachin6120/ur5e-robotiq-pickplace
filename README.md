@@ -27,8 +27,15 @@ copied-install portability has not yet been established.
 `full_cycle.launch.py` is the earlier fixed-scene/classical orchestration entry
 point; it does not run the RGB-D Stage-2D case harness.
 
-<!-- Future D3 media target: docs/assets/d3_demo_thumbnail.png. The full MP4
-     should be published as a GitHub Release asset, not committed to Git. -->
+### D3 Demo
+
+[![UR5e Stage-2 D3 pose-generalization demo](docs/assets/d3_demo_thumbnail.png)](../../releases/tag/stage2-pose-generalization-pass)
+
+**D3 validation case:** +30 mm X, -30 mm Y, +45° yaw.
+
+[Watch or download the full D3 demo video](../../releases/download/stage2-pose-generalization-pass/ur5e_stage2_d3_demo.mp4)
+
+The full Stage-2 release, validation summary, and downloadable source archives are available in the [`stage2-pose-generalization-pass`](../../releases/tag/stage2-pose-generalization-pass) release.
 
 ## Pipeline
 
