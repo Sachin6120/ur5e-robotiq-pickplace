@@ -11,6 +11,7 @@ current operating instructions.
 - [WSL setup notes](SETUP_WSL.md)
 - [Curated validation evidence](evidence/README.md)
 - [Parallel-jaw gripper design rationale](GRIPPER_REDESIGN_DESIGN.md)
+- [Licensing and third-party attribution](../THIRD_PARTY_NOTICES.md)
 
 ## Current engineering state
 

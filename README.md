@@ -20,8 +20,12 @@ ros2 launch ur5e_pick_place d3_demo.launch.py
 
 The launch orchestrates the Gazebo GUI, controllers, MoveIt, RViz, RGB-D
 perception, the D3 object spawn, manipulation, evidence/analyzer processes,
-and teardown. It has been validated from this repository's symlink-install
-workspace; copied-install portability has not yet been established.
+and teardown. Validated with `--symlink-install` from the repository workspace;
+copied-install portability has not yet been established.
+
+`d3_demo.launch.py` is the current validated Stage-2D visual demonstration.
+`full_cycle.launch.py` is the earlier fixed-scene/classical orchestration entry
+point; it does not run the RGB-D Stage-2D case harness.
 
 <!-- Future D3 media target: docs/assets/d3_demo_thumbnail.png. The full MP4
      should be published as a GitHub Release asset, not committed to Git. -->
@@ -221,5 +225,9 @@ remain local and are not committed to Git.
 
 ## License / Third-Party Assets
 
-Licensing and third-party attribution are documented separately; see the
-repository license and third-party notice once finalized.
+This is a multi-license repository. Original root-level material defaults to
+the [MIT license](LICENSE); original ROS package content follows the license
+declared in each package's `package.xml`. Modified vendored Robotiq files and
+MoveIt-generated configuration retain their applicable upstream terms. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the precise scope,
+provenance, license texts, and dependency/asset boundary.
