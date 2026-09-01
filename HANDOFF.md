@@ -1,7 +1,7 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The section immediately below, "2026-08-31
-> Stage-2D Planar Pose Generalization — CURRENT AUTHORITY", is the sole
+> READ THIS SECTION FIRST. The section immediately below, "2026-09-01
+> PlanningSceneManager Integration & Verified Scene-A Pick-and-Place — CURRENT AUTHORITY", is the sole
 > current-authority statement of repository state.
 > Every other authority label anywhere else in this file is superseded and
 > has been relabelled
@@ -9,7 +9,205 @@
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-## 2026-08-31 Stage-2D Planar Pose Generalization — CURRENT AUTHORITY
+## 2026-09-01 PlanningSceneManager Integration & Verified Scene-A Pick-and-Place — CURRENT AUTHORITY
+
+### Milestone Summary
+
+- **Repository**: `~/ur5e_pickplace`, branch `stage2-orientation-generalization`, HEAD `ee82e8b` (`fix(scene): preserve attached bodies during cloned planning scene measured-variable updates`).
+- **Milestone Result**: Complete end-to-end perception-driven pick-and-place under MoveIt PlanningScene collision lifecycle verified on Scene-A (`result=SUCCESS`, evidence in `evidence/perception_validation_pj_20260901_021651`).
+- **Tests**: 94/94 workspace unit/integration tests passing (0 failures, 0 errors, 0 skipped); 23/23 `PlanningSceneManager` tests passing.
+
+---
+
+### Planning Scene Infrastructure & Lifecycle
+
+`PlanningSceneManager` is fully integrated into `m3_grasp.cpp` and `transport.cpp`, managing the complete planning scene and collision matrix lifecycle:
+
+1. **A. Startup Scene Initialization**:
+   - Table CollisionObject initialized from `config/scene.yaml` dimensions ($1.20 \times 0.80 \times 0.75\text{ m}$) at center $z = 0.375\text{ m}$.
+   - Permanent table isolation exception `P = (table <-> base_link_inertia)` enabled in MoveIt ACM.
+   - `pick_target` is strictly absent from the scene.
+   - Readback verified with fingerprint `0:0:0:0`.
+2. **B. Perception Insertion**:
+   - Perceived target object ($0.030 \times 0.045 \times 0.045\text{ m}$) inserted into MoveIt world scene at perceived center coordinates.
+   - Grasp closure exemptions `C1`, `C2`, and support exception `S` are strictly absent.
+   - Readback verified with fingerprint `1:<x>:<y>:<z>`.
+3. **C. Descent**:
+   - Robot approaches pregrasp and executes Cartesian descent with `pick_target` present in world collision scene.
+   - Pad-target collisions remain forbidden. Live execution verified with 0 fixed-pad and 0 moving-pad contacts.
+4. **D. Closure**:
+   - Grasp closure contact exemptions enabled in ACM:
+     - `C1 = (pick_target <-> pad_fixed_link)`
+     - `C2 = (pick_target <-> pad_moving_link)`
+   - Support exception `S` remains absent.
+   - Verified via `CLOSURE_ACM_VERIFIED`.
+5. **E. Attachment**:
+   - Gripper stalls on object at nominal width ($30.00\text{ mm}$).
+   - `pick_target` attached to `gripper_base_link` with touch links restricted to `["pad_fixed_link", "pad_moving_link"]`.
+   - Contact exemptions `C1` and `C2` removed from ACM.
+   - Support exception `S = (pick_target <-> table)` enabled in live ACM.
+   - Verified via `TARGET_ATTACHED_VERIFIED` with fingerprint `2:<x>:<y>:<z>`.
+6. **F. Pickup Support Clearance (5.0 mm)**:
+   - Upward straight-line translation of $5.0\text{ mm}$ executed with `S` enabled.
+   - Local cloned planning scene created from live scene with `S` erased.
+   - Pre-check: confirmed `pick_target` attached in clone before variable update.
+   - Measured robot variables (all arm and gripper joints) copied in-place via `PlanningSceneManager::copyRobotStateVariables` and updated with `.update(true)`.
+   - Post-check: confirmed `pick_target` remains attached.
+   - Attached target global pose resolved via `moveit::core::AttachedBody::getGlobalCollisionBodyTransforms()`.
+   - Analytical check: target bottom $z - 0.750\text{ m} > 0$ verified ($+4.982\text{ mm}$).
+   - Cloned collision check: verified 0 collisions with `S` absent (`PICKUP_CLONE_VALID`).
+   - Live `S` removed from production ACM (`PICKUP_CLEARANCE_VERIFIED`).
+   - Remaining $115.0\text{ mm}$ lift executed with payload collision active and `S` absent.
+7. **G. Transport**:
+   - Arm transports attached payload to target placement region with `S` absent throughout transit.
+   - Verified with 0 slip over 2.0 s dwell.
+8. **H. Placement Protected Descent (95.0 mm)**:
+   - Downward Cartesian descent of $95.0\text{ mm}$ executed with `S` absent.
+   - Pre-contact check: measured robot state synchronized in precontact scene.
+   - Attached target global pose resolved via `AttachedBody::getGlobalCollisionBodyTransforms()`.
+   - Analytical check: target bottom $z - 0.750\text{ m} > 0$ verified ($+4.954\text{ mm}$).
+   - Collision check: verified 0 collisions with `S` absent (`PLACEMENT_PRECONTACT_VALID`).
+   - `S` enabled in live ACM for final $5.0\text{ mm}$ terminal placement stroke.
+9. **I. Release, Detach, and Retreat**:
+   - Terminal $5.0\text{ mm}$ stroke places target in contact with table.
+   - Gripper opens while target is attached.
+   - Target detached and returned to world CollisionObject at current settled pose.
+   - `S`, `C1`, and `C2` cleared from ACM (`DETACH_VERIFIED`).
+   - Upward retreat executed with world target active.
+
+---
+
+### Startup-M1 Authority Policy
+
+- **Sole Authority**: `config/scene.yaml` `milestones.m1.goal_positions`: `[0.5, -1.2, 1.0, -1.4, -1.5708, 0.0]`.
+- Simulation spawns directly at M1; `m3_grasp` verifies startup joint state against this vector.
+- `allowed_start_tolerance = 0.010 rad`.
+- Verified live max startup error: $0.000019\text{ rad} \ll 0.010\text{ rad}$.
+- No target-unknown arm motion occurs before perception.
+
+---
+
+### Collision Model & Margin Audit
+
+- **Production Fixed-Side Clearance**: $2.0\text{ mm}$ (bilateral $2.0\text{ mm}$ pad clearance verified collision-free in live MoveIt).
+- **Live MoveIt Controls Verified**:
+  - Nominal bilateral $2.0\text{ mm}$ pad clearance: collision-free.
+  - Deliberate $0.5\text{ mm}$ fixed-pad and moving-pad overlaps: rejected without `C1`/`C2`.
+  - Same pad contacts: permitted only when `C1`/`C2` enabled.
+  - Unrelated robot/world collisions: remain strictly forbidden.
+- **MoveIt Padding/Scale**: pad padding = 0, scale = 1.
+- **Model Resolution Margin**: $M_{\text{model,working}} = 1\text{ nm} = 10^{-6}\text{ mm} = 10^{-9}\text{ m}$.
+- (Historical 2 mm "FCL padding" claim is falsified and removed).
+
+---
+
+### Transition Distance Policy
+
+- **Working Execution Uncertainty**: $U_{\text{exec,working}} = 2.0\text{ mm}$ (from predeclared `stage2_tcp_err_mm_max` gate).
+- **Observed Healthy Execution Error**: $\approx 0.32-0.67\ \mu\text{m}$ across audited runs.
+- **Explicit Engineering Design Margin**: $3.0\text{ mm}$.
+- **Frozen Transition Distances**:
+  - Pickup support-clearance stroke: $5.0\text{ mm}$
+  - Remaining lift: $115.0\text{ mm}$
+  - Placement protected descent: $95.0\text{ mm}$
+  - Terminal placement: $5.0\text{ mm}$
+- *(The extra 3 mm is an explicit design margin, NOT measured uncertainty).*
+
+---
+
+### Attached-Body Defect History & Forensic Resolutions
+
+Two integration defects were identified and resolved during live validation:
+
+1. **Defect 1 (World/World Pose Composition Bug)**:
+   - *Bug*: `composePoses(gripper_pose, target_pose_)` treated `target_pose_` as a relative transform, when it was actually the world pose.
+   - *Fix*: Replaced invalid composition with MoveIt's authoritative `moveit::core::AttachedBody::getGlobalCollisionBodyTransforms()`.
+   - *Commit*: `1cf263f` (`fix(scene): resolve attached target global pose via MoveIt AttachedBody representation`).
+   - *Evidence Preserved*: `evidence/perception_validation_pj_20260901_015611`.
+2. **Defect 2 (Cloned RobotState Replacement Bug)**:
+   - *Bug*: `clone_scene->setCurrentState(current_state)` completely overwrote the cloned scene's `RobotState`, erasing the `AttachedBody` created by `usePlanningSceneMsg()`.
+   - *Fix*: Implemented `PlanningSceneManager::copyRobotStateVariables` to copy all arm and gripper variable positions in-place on `clone_scene->getCurrentStateNonConst()` followed by `update(true)`, preserving attached bodies.
+   - *Commit*: `ee82e8b` (`fix(scene): preserve attached bodies during cloned planning scene measured-variable updates`).
+   - *Evidence Preserved*: `evidence/perception_validation_pj_20260901_020504`.
+
+---
+
+### Scene-A Verified Production Run Metrics
+
+- **Evidence Directory**: `evidence/perception_validation_pj_20260901_021651`
+- **Result**: `SUCCESS` (`result=SUCCESS` in `scene_a_perceived_result.csv`)
+
+| Parameter / Milestone Step | Measured Value | Gate / Requirement | Status |
+|---|---:|---:|:---:|
+| **Startup M1 Max Joint Error** | $0.000019\text{ rad}$ | $\le 0.010000\text{ rad}$ | **PASS** |
+| **Perception $\Delta x, \Delta y, \Delta z$** | $+0.965, +1.293, 0.000\text{ mm}$ | — | **PASS** |
+| **Perception Euclidean Error** | $1.613\text{ mm}$ | $\le 3.0\text{ mm}$ | **PASS** |
+| **Perception Yaw Error** | $0.000^\circ$ | $\le 2.0^\circ$ | **PASS** |
+| **Pregrasp Planning Time** | $0.0154\text{ s}$ | $< 5.0\text{ s}$ | **PASS** |
+| **Descent Cartesian Fraction** | $1.0000$ | $\ge 0.9500$ | **PASS** |
+| **Descent Achieved TCP Error** | $0.00032\text{ mm}$ | $\le 2.0\text{ mm}$ | **PASS** |
+| **Pre-Close Aperture** | $34.41\text{ mm}$ | Nominal $\approx 34.0\text{ mm}$ | **PASS** |
+| **Pre-Close Pad Contacts** | $0$ fixed, $0$ moving | $0$ | **PASS** |
+| **Final Grasp Aperture** | $30.00\text{ mm}$ | $29.0 - 31.0\text{ mm}$ | **PASS** |
+| **Grasp Close Result** | `STALLED` ($30.00\text{ mm}$) | Verified | **PASS** |
+| **Attachment Verification** | `fingerprint 2:...` | Verified | **PASS** |
+| **5 mm Pickup Stroke Fraction** | $1.0000$ | $1.0000$ | **PASS** |
+| **Measured Pickup Separation** | $+4.982\text{ mm}$ | $> 0\text{ mm}$ | **PASS** |
+| **Cloned Pickup Collision Check** | $0$ contacts | $0$ contacts | **PASS** |
+| **115 mm Remaining Lift Fraction** | $1.0000$ | $1.0000$ | **PASS** |
+| **Lift Slip (2.0 s dwell)** | $0$ detected | $\le 1.0\text{ mm}$ | **PASS** |
+| **Transport Planning Time** | $0.0382\text{ s}$ | $< 5.0\text{ s}$ | **PASS** |
+| **Transport Execution** | `SUCCESS` | `SUCCESS` | **PASS** |
+| **Transport Slip (2.0 s dwell)** | $0$ detected | $\le 1.0\text{ mm}$ | **PASS** |
+| **95 mm Placement Descent Fraction** | $1.0000$ | $1.0000$ | **PASS** |
+| **Pre-Contact Separation** | $+4.954\text{ mm}$ | $> 0\text{ mm}$ | **PASS** |
+| **Pre-Contact Collision Check** | $0$ contacts | $0$ contacts | **PASS** |
+| **5 mm Terminal Placement Fraction** | $1.0000$ | $1.0000$ | **PASS** |
+| **Release Action** | `REACHED_GOAL` ($84.6\text{ mm}$) | $> 60.0\text{ mm}$ | **PASS** |
+| **Detach Verification** | `DETACH_VERIFIED` | S/C1/C2 absent | **PASS** |
+| **Retreat Fraction** | $1.0000$ | $1.0000$ | **PASS** |
+| **Teardown Escalation** | $0$ SIGKILL | Clean SIGTERM | **PASS** |
+
+---
+
+### Preserved Scene-A Evidence Runs
+
+1. **Run 1** (`perception_validation_pj_20260901_015611`): Valid physical execution through 5 mm lift; halted by Defect 1.
+2. **Run 2** (`perception_validation_pj_20260901_020504`): Valid physical execution through 5 mm lift; halted by Defect 2.
+3. **Run 3** (`perception_validation_pj_20260901_021651`): Complete successful production pick-and-place run.
+
+---
+
+### Overall Milestone Status
+
+- Stage-1 perceived XYZ/D10: **COMPLETE**
+- Stage-2A configured yaw: **COMPLETE**
+- Stage-2B yaw perception: **COMPLETE**
+- Stage-2C perceived yaw drives manipulation: **COMPLETE**
+- Stage-2D XY+yaw generalization: **COMPLETE**
+- MoveIt/FCL model-margin audit: **COMPLETE**
+- PlanningSceneManager infrastructure: **COMPLETE**
+- PlanningSceneManager integration: **COMPLETE**
+- Scene-A lifecycle-integrated baseline: **COMPLETE / VERIFIED**
+
+---
+
+### Next Validation Freeze (Stage-2D D1/D2/D3 Regression)
+
+Next stage validation must execute D1, D2, and D3 under the exact frozen Scene-A configuration:
+- HEAD `ee82e8b` (or subsequent doc commit).
+- $2.0\text{ mm}$ fixed-side clearance.
+- $5/115/95/5\text{ mm}$ transition distances.
+- Startup directly at M1.
+- Production perception pipeline (shadow estimator disabled / non-production).
+- Ground truth strictly evaluation-only.
+- Exact `P`/`C1`/`C2`/`S` PlanningScene lifecycle.
+- `plan_attempts = 1`, no automatic retries.
+- Fail closed on first causal failure.
+
+## 2026-08-31 Stage-2D Planar Pose Generalization — SUPERSEDED
+
+> Superseded by the 2026-09-01 section above: PlanningSceneManager is now integrated and live-validated on Scene-A with full collision lifecycle and 2.0 mm clearance. The Stage-2D results below are retained as historical qualification of D1/D2/D3 under the 2.0 mm clearance prior to PlanningSceneManager integration.
 
 ### Milestone status
 
