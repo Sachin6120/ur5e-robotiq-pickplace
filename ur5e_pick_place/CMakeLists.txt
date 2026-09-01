@@ -152,6 +152,12 @@ if(BUILD_TESTING)
   ament_target_dependencies(m3_perceived_yaw_test
     rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
     tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
+  ament_add_gtest(m3_startup_m1_test test/test_m3_startup_m1.cpp)
+  target_include_directories(m3_startup_m1_test PRIVATE include)
+  target_link_libraries(m3_startup_m1_test planning_scene_manager)
+  ament_target_dependencies(m3_startup_m1_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
+    tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
   ament_add_gtest(planning_scene_manager_test test/test_planning_scene_manager.cpp)
   target_link_libraries(planning_scene_manager_test planning_scene_manager)
   ament_target_dependencies(planning_scene_manager_test rclcpp moveit_msgs geometry_msgs)

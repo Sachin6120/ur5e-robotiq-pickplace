@@ -702,6 +702,82 @@ GripperCloseResult gripper_close_and_hold(
   return out;
 }
 
+// Check whether a JointState message contains all required joint names with valid position entries.
+inline bool joint_state_has_joints(
+  const sensor_msgs::msg::JointState & js,
+  const std::vector<std::string> & required_joint_names)
+{
+  if (js.name.empty() || js.name.size() != js.position.size() || required_joint_names.empty()) {
+    return false;
+  }
+  for (const auto & name : required_joint_names) {
+    if (std::find(js.name.begin(), js.name.end(), name) == js.name.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Extract joint positions from a JointState message matching the given joint names order.
+inline std::optional<std::vector<double>> extract_joint_positions(
+  const sensor_msgs::msg::JointState & js,
+  const std::vector<std::string> & joint_names)
+{
+  if (!joint_state_has_joints(js, joint_names)) {
+    return std::nullopt;
+  }
+  std::vector<double> positions;
+  positions.reserve(joint_names.size());
+  for (const auto & name : joint_names) {
+    auto it = std::find(js.name.begin(), js.name.end(), name);
+    auto idx = std::distance(js.name.begin(), it);
+    positions.push_back(js.position[idx]);
+  }
+  return positions;
+}
+
+// Evaluate whether the measured joint positions match the authoritative M1 goal within tolerance.
+inline Result evaluate_startup_m1_positions(
+  const std::vector<double> & measured_positions,
+  const std::vector<double> & goal_positions,
+  double tolerance_rad,
+  double & max_error_out)
+{
+  if (measured_positions.empty() || measured_positions.size() != goal_positions.size()) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::CONFIG_ERROR;
+  }
+  max_error_out = 0.0;
+  for (std::size_t i = 0; i < measured_positions.size(); ++i) {
+    max_error_out = std::max(max_error_out, std::abs(measured_positions[i] - goal_positions[i]));
+  }
+  if (max_error_out <= tolerance_rad) {
+    return Result::SUCCESS;
+  }
+  return Result::STARTUP_NOT_AT_M1;
+}
+
+// Evaluate a received JointState sample (or nullptr if timed out) against authoritative M1.
+inline Result evaluate_startup_sample_and_m1(
+  const sensor_msgs::msg::JointState::ConstSharedPtr & initial_js,
+  const std::vector<std::string> & joint_names,
+  const std::vector<double> & goal_positions,
+  double tolerance_rad,
+  double & max_error_out)
+{
+  if (!initial_js || !joint_state_has_joints(*initial_js, joint_names)) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::STARTUP_STATE_UNAVAILABLE;
+  }
+  auto measured_positions = extract_joint_positions(*initial_js, joint_names);
+  if (!measured_positions) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::CONFIG_ERROR;
+  }
+  return evaluate_startup_m1_positions(
+    *measured_positions, goal_positions, tolerance_rad, max_error_out);
+}
+
 }  // namespace
 
 #ifndef UR5E_PICK_PLACE_M3_GRASP_UNIT_TEST
@@ -881,6 +957,7 @@ int main(int argc, char ** argv)
   double stationary_velocity_eps = 1.0e-3;
   int stationary_consecutive_samples = 6;
   double stationary_timeout_s = 25.0;
+  double startup_state_timeout_s = 5.0;
   double startup_m1_tolerance_rad = 0.01;
   std::string joint_states_topic = "/joint_states";
   // Pre-grasp is a free-air pose 0.1 m above the object, so it does not carry
@@ -979,6 +1056,7 @@ int main(int argc, char ** argv)
     "stationary_consecutive_samples", stationary_consecutive_samples,
     stationary_consecutive_samples);
   node->get_parameter_or("stationary_timeout_s", stationary_timeout_s, stationary_timeout_s);
+  node->get_parameter_or("startup_state_timeout_s", startup_state_timeout_s, startup_state_timeout_s);
   node->get_parameter_or("startup_m1_tolerance_rad", startup_m1_tolerance_rad, startup_m1_tolerance_rad);
   node->get_parameter_or("joint_states_topic", joint_states_topic, joint_states_topic);
   node->get_parameter_or(
@@ -1380,6 +1458,7 @@ int main(int argc, char ** argv)
     move_group.setNumPlanningAttempts(plan_attempts);
     move_group.setMaxVelocityScalingFactor(vel_scale);
     move_group.setMaxAccelerationScalingFactor(acc_scale);
+    move_group.startStateMonitor(startup_state_timeout_s);
 
     // =====================================================================
     // PLANNING SCENE: Initialize PlanningSceneManager & Table CollisionObject
@@ -1411,34 +1490,6 @@ int main(int argc, char ** argv)
     // that could have been exposed while the arm was still moving.
     rclcpp::Time m1_stationary_stamp(0, 0, RCL_ROS_TIME);
     if (ur5e_pick_place::ok(result) && use_perceived_position) {
-      // Startup policy A: the simulation is spawned at M1.  Never command an
-      // unknown-target home->M1 path as a fallback.
-      const auto current = move_group.getCurrentState(2.0);
-      double max_error = std::numeric_limits<double>::infinity();
-      if (current && m1_joint_names.size() == m1_goal_positions.size()) {
-        max_error = 0.0;
-        for (std::size_t i = 0; i < m1_joint_names.size(); ++i) {
-          const auto & variable_names = current->getRobotModel()->getVariableNames();
-          if (std::find(variable_names.begin(), variable_names.end(), m1_joint_names[i]) ==
-              variable_names.end()) {
-            max_error = std::numeric_limits<double>::infinity(); break;
-          }
-          max_error = std::max(
-            max_error, std::abs(current->getVariablePosition(m1_joint_names[i]) - m1_goal_positions[i]));
-        }
-      }
-      if (!(max_error <= startup_m1_tolerance_rad)) {
-        RCLCPP_ERROR(logger, "STARTUP_NOT_AT_M1: max joint error %.6f rad exceeds %.6f rad; refusing any arm trajectory before perception.", max_error, startup_m1_tolerance_rad);
-        result = Result::STARTUP_NOT_AT_M1;
-      } else {
-        RCLCPP_INFO(logger, "STARTUP_M1_VERIFIED: max joint error %.6f rad (tolerance %.6f rad).", max_error, startup_m1_tolerance_rad);
-      }
-    }
-
-    if (ur5e_pick_place::ok(result) && use_perceived_position) {
-      // Stationarity from /joint_states velocities.  A single below-threshold
-      // sample is not evidence of rest -- the same lesson gz_settle.py records
-      // -- so N consecutive samples are required.
       struct JointWatch
       {
         std::mutex mutex;
@@ -1452,62 +1503,118 @@ int main(int argc, char ** argv)
           watch->last = std::move(msg);
         });
 
-      int consecutive = 0;
-      double last_vmax = -1.0;
-      const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::duration<double>(stationary_timeout_s);
-      while (std::chrono::steady_clock::now() < deadline &&
-        consecutive < stationary_consecutive_samples)
-      {
-        rclcpp::sleep_for(50ms);
-        sensor_msgs::msg::JointState::ConstSharedPtr snap;
+      // 1. Genuine startup state acquisition & M1 verification
+      // Startup policy A: the simulation is spawned at M1. Never command an
+      // unknown-target home->M1 path as a fallback.
+      // Explicitly wait for at least one genuine JointState sample containing
+      // all required arm joints before evaluating M1. Never evaluate an
+      // unpopulated default RobotState as physical robot state.
+      sensor_msgs::msg::JointState::ConstSharedPtr initial_js;
+      const auto state_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(startup_state_timeout_s);
+      while (std::chrono::steady_clock::now() < state_deadline) {
         {
           std::lock_guard<std::mutex> lock(watch->mutex);
-          snap = watch->last;
-        }
-        if (!snap || snap->velocity.empty()) {
-          continue;
-        }
-        double vmax = 0.0;
-        bool complete = true;
-        for (const auto & joint_name : m1_joint_names) {
-          const auto it = std::find(snap->name.begin(), snap->name.end(), joint_name);
-          if (it == snap->name.end()) {
-            complete = false;
+          if (watch->last && joint_state_has_joints(*watch->last, m1_joint_names)) {
+            initial_js = watch->last;
             break;
           }
-          const std::size_t idx =
-            static_cast<std::size_t>(std::distance(snap->name.begin(), it));
-          if (idx >= snap->velocity.size()) {
-            complete = false;
-            break;
-          }
-          vmax = std::max(vmax, std::abs(snap->velocity[idx]));
         }
-        if (!complete) {
-          continue;
-        }
-        last_vmax = vmax;
-        consecutive = (vmax < stationary_velocity_eps) ? consecutive + 1 : 0;
+        rclcpp::sleep_for(10ms);
       }
 
-      if (consecutive < stationary_consecutive_samples) {
+      double max_error = 0.0;
+      result = evaluate_startup_sample_and_m1(
+        initial_js, m1_joint_names, m1_goal_positions, startup_m1_tolerance_rad, max_error);
+      if (result == Result::SUCCESS) {
+        RCLCPP_INFO(
+          logger, "STARTUP_M1_VERIFIED: max joint error %.6f rad (tolerance %.6f rad).",
+          max_error, startup_m1_tolerance_rad);
+      } else if (result == Result::STARTUP_NOT_AT_M1) {
         RCLCPP_ERROR(
           logger,
-          "EXECUTE_FAILURE: the six arm joints never held below %.2e rad/s for %d "
-          "consecutive samples within %.1fs at M1 (last max |velocity| = %.3e). "
-          "Refusing to perceive from a moving arm.",
-          stationary_velocity_eps, stationary_consecutive_samples, stationary_timeout_s,
-          last_vmax);
-        result = Result::EXECUTE_FAILURE;
-      } else {
-        m1_stationary_stamp = node->now();
-        RCLCPP_INFO(
+          "STARTUP_NOT_AT_M1: max joint error %.6f rad exceeds %.6f rad; refusing any arm trajectory before perception.",
+          max_error, startup_m1_tolerance_rad);
+      } else if (result == Result::STARTUP_STATE_UNAVAILABLE) {
+        RCLCPP_ERROR(
           logger,
-          "F1: M1_STATIONARY max|velocity|=%.3e rad/s over %d consecutive samples; "
-          "freshness boundary = %.9f (sim time). Observations at or before this "
-          "stamp are rejected.",
-          last_vmax, stationary_consecutive_samples, m1_stationary_stamp.seconds());
+          "STARTUP_STATE_UNAVAILABLE: no genuine joint_states sample containing required arm joints "
+          "received within %.1fs; refusing any arm trajectory before perception.",
+          startup_state_timeout_s);
+      } else {
+        RCLCPP_ERROR(
+          logger,
+          "CONFIG_ERROR: failed to extract required arm joints from startup state.");
+      }
+
+      // 2. Stationarity verification from /joint_states velocities.
+      if (ur5e_pick_place::ok(result)) {
+        int consecutive = 0;
+        double last_vmax = -1.0;
+        const auto deadline = std::chrono::steady_clock::now() +
+          std::chrono::duration<double>(stationary_timeout_s);
+        while (std::chrono::steady_clock::now() < deadline &&
+          consecutive < stationary_consecutive_samples)
+        {
+          rclcpp::sleep_for(50ms);
+          sensor_msgs::msg::JointState::ConstSharedPtr snap;
+          {
+            std::lock_guard<std::mutex> lock(watch->mutex);
+            snap = watch->last;
+          }
+          if (!snap || snap->velocity.empty()) {
+            continue;
+          }
+          double vmax = 0.0;
+          bool complete = true;
+          for (const auto & joint_name : m1_joint_names) {
+            const auto it = std::find(snap->name.begin(), snap->name.end(), joint_name);
+            if (it == snap->name.end()) {
+              complete = false;
+              break;
+            }
+            const std::size_t idx =
+              static_cast<std::size_t>(std::distance(snap->name.begin(), it));
+            if (idx >= snap->velocity.size()) {
+              complete = false;
+              break;
+            }
+            vmax = std::max(vmax, std::abs(snap->velocity[idx]));
+          }
+          if (!complete) {
+            continue;
+          }
+          last_vmax = vmax;
+          consecutive = (vmax < stationary_velocity_eps) ? consecutive + 1 : 0;
+        }
+
+        if (consecutive < stationary_consecutive_samples) {
+          RCLCPP_ERROR(
+            logger,
+            "EXECUTE_FAILURE: the six arm joints never held below %.2e rad/s for %d "
+            "consecutive samples within %.1fs at M1 (last max |velocity| = %.3e). "
+            "Refusing to perceive from a moving arm.",
+            stationary_velocity_eps, stationary_consecutive_samples, stationary_timeout_s,
+            last_vmax);
+          result = Result::EXECUTE_FAILURE;
+        } else {
+          sensor_msgs::msg::JointState::ConstSharedPtr final_snap;
+          {
+            std::lock_guard<std::mutex> lock(watch->mutex);
+            final_snap = watch->last;
+          }
+          if (final_snap) {
+            m1_stationary_stamp = final_snap->header.stamp;
+          } else {
+            m1_stationary_stamp = node->now();
+          }
+          RCLCPP_INFO(
+            logger,
+            "F1: M1_STATIONARY max|velocity|=%.3e rad/s over %d consecutive samples; "
+            "freshness boundary = %.9f (sim time). Observations at or before this "
+            "stamp are rejected.",
+            last_vmax, stationary_consecutive_samples, m1_stationary_stamp.seconds());
+        }
       }
     }
 

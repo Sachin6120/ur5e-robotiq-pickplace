@@ -51,6 +51,7 @@ enum class Result
                             // perception failure indistinguishable from a
                             // perception success in the evidence.
   STARTUP_NOT_AT_M1,        // simulation startup did not converge at the required M1 observation pose.
+  STARTUP_STATE_UNAVAILABLE, // startup state subscription timed out without genuine arm joint sample
   SCENE_INIT_FAILURE,       // table initialization or readback verification failed
   TARGET_INSERTION_FAILURE, // perceived world target insertion or readback failed
   SCENE_STALE_OR_CORRUPT,   // planning scene fingerprint or readback verification mismatch
@@ -81,6 +82,7 @@ inline const char * to_string(Result r)
     case Result::PRE_LIFT_BARRIER_TIMEOUT: return "PRE_LIFT_BARRIER_TIMEOUT";
     case Result::PERCEPTION_TIMEOUT:     return "PERCEPTION_TIMEOUT";
     case Result::STARTUP_NOT_AT_M1:       return "STARTUP_NOT_AT_M1";
+    case Result::STARTUP_STATE_UNAVAILABLE: return "STARTUP_STATE_UNAVAILABLE";
     case Result::SCENE_INIT_FAILURE:     return "SCENE_INIT_FAILURE";
     case Result::TARGET_INSERTION_FAILURE: return "TARGET_INSERTION_FAILURE";
     case Result::SCENE_STALE_OR_CORRUPT: return "SCENE_STALE_OR_CORRUPT";
