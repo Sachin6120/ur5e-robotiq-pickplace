@@ -84,6 +84,8 @@
        in with enable_camera:=true. See the CAMERA block near the end of this
        file for the mount derivation. -->
   <xacro:arg name="enable_camera" default="false"/>
+  <xacro:arg name="camera_width" default="960"/>
+  <xacro:arg name="camera_height" default="720"/>
 
   <!-- Where the arm base is bolted, in the world frame. Keep consistent with
        the table pose in config/scene.yaml. -->
@@ -116,6 +118,16 @@
        PASS (see HANDOFF.md). -->
   <xacro:arg name="gripper_model" default="robotiq_linkage"/>
   <xacro:property name="gripper_model" value="$(arg gripper_model)"/>
+
+  <!-- Simulation-only arm spawn state.  The sim launch derives these six
+       arguments from scene.yaml milestones.m1.goal_positions.  Defaults keep
+       direct xacro users on the historical home pose. -->
+  <xacro:arg name="initial_shoulder_pan" default="0.0"/>
+  <xacro:arg name="initial_shoulder_lift" default="-1.5708"/>
+  <xacro:arg name="initial_elbow" default="1.5708"/>
+  <xacro:arg name="initial_wrist_1" default="-1.5708"/>
+  <xacro:arg name="initial_wrist_2" default="-1.5708"/>
+  <xacro:arg name="initial_wrist_3" default="0.0"/>
 
   <!-- Controller parameter file handed to the gz_ros2_control system plugin. -->
   <xacro:arg name="controllers_file"
@@ -260,12 +272,12 @@
       </joint>
     </xacro:macro>
 
-    <xacro:ur_joint jname="shoulder_pan_joint"  init="0.0"/>
-    <xacro:ur_joint jname="shoulder_lift_joint" init="-1.5708"/>
-    <xacro:ur_joint jname="elbow_joint"         init="1.5708"/>
-    <xacro:ur_joint jname="wrist_1_joint"       init="-1.5708"/>
-    <xacro:ur_joint jname="wrist_2_joint"       init="-1.5708"/>
-    <xacro:ur_joint jname="wrist_3_joint"       init="0.0"/>
+    <xacro:ur_joint jname="shoulder_pan_joint"  init="$(arg initial_shoulder_pan)"/>
+    <xacro:ur_joint jname="shoulder_lift_joint" init="$(arg initial_shoulder_lift)"/>
+    <xacro:ur_joint jname="elbow_joint"         init="$(arg initial_elbow)"/>
+    <xacro:ur_joint jname="wrist_1_joint"       init="$(arg initial_wrist_1)"/>
+    <xacro:ur_joint jname="wrist_2_joint"       init="$(arg initial_wrist_2)"/>
+    <xacro:ur_joint jname="wrist_3_joint"       init="$(arg initial_wrist_3)"/>
   </ros2_control>
 
   <!-- ===================================================================== -->
@@ -462,8 +474,8 @@
         <camera>
           <horizontal_fov>1.047</horizontal_fov>
           <image>
-            <width>960</width>
-            <height>720</height>
+            <width>$(arg camera_width)</width>
+            <height>$(arg camera_height)</height>
             <format>R8G8B8</format>
           </image>
           <clip>

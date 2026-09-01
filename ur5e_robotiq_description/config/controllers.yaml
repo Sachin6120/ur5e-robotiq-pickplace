@@ -176,7 +176,7 @@ parallel_jaw_gripper_controller:
         # Carried over UNCHANGED from the vendor joint's own starting values
         # (docs/GRIPPER_REDESIGN_DESIGN.md Section 3.9: "carried over as a
         # starting point"), not retuned for this joint or this run.
-        p: 50.0
+        p: 200.0
         d: 2.0
         i: 0.0
         i_clamp: 0.0

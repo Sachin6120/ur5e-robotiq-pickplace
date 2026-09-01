@@ -207,14 +207,90 @@ Result lift_transport_place(
   const std::array<double, 3> up{
     {-p.approach_axis[0], -p.approach_axis[1], -p.approach_axis[2]}};
 
-  // --- Stage 3: lift -------------------------------------------------------
-  // Straight-line, against the approach axis. This is the leg where a marginal
-  // grasp reveals itself, so it is also where the slip baseline is taken —
-  // after the marker, through a windowed settle, never immediately.
+  // --- Stage 3: lift (Split Support-Clearance Stroke + Remaining Lift) -------
+  // A. Target attached, S enabled in ACM.
+  // B. Execute ONLY the short upward support-clearance stroke.
+  // C/D/E/F. Remove S live at clearance endpoint and verify expected scene.
+  // G. Execute the remaining lift with S absent and payload collision active.
   mark(node, 3, "LIFT_BEGIN", p);
   double frac = 0.0;
-  Result r = cartesian_translate(node, arm, up, p.lift_distance, p, "lift", &frac);
-  if (!ok(r)) { return r; }
+  Result r = Result::SUCCESS;
+
+  if (p.planning_scene_manager) {
+    if (p.lift_distance < p.pickup_clearance_m) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PICKUP_CLEARANCE_FAILURE: lift distance %.4f m is less than required pickup clearance %.4f m.",
+        p.lift_distance, p.pickup_clearance_m);
+      return Result::PICKUP_CLEARANCE_FAILURE;
+    }
+
+    // Step B: Short upward support-clearance stroke with S enabled
+    const double clearance_stroke = p.pickup_clearance_m;
+    r = cartesian_translate(node, arm, up, clearance_stroke, p, "pickup clearance stroke", &frac);
+    if (!ok(r)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PICKUP_CLEARANCE_FAILURE: pickup clearance stroke failed (frac=%.4f).", frac);
+      return Result::PICKUP_CLEARANCE_FAILURE;
+    }
+
+    // Step A/B/C/D/E/F: Obtain actual measured robot state and verify cloned scene with S removed
+    const auto current_state = arm.getCurrentState(2.0);
+    if (!current_state) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PICKUP_CLEARANCE_FAILURE: failed to obtain current robot state after clearance stroke.");
+      return Result::PICKUP_CLEARANCE_FAILURE;
+    }
+
+    double separation_z = 0.0;
+    std::string clone_err;
+    if (!p.planning_scene_manager->checkPickupClearanceClone(*current_state, separation_z, clone_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PICKUP_CLEARANCE_FAILURE: cloned scene check failed (separation_z=%.6f m): %s. Live S remains enabled; halting lift.",
+        separation_z, clone_err.c_str());
+      return Result::PICKUP_CLEARANCE_FAILURE;
+    }
+    RCLCPP_INFO(
+      node->get_logger(),
+      "PICKUP_CLONE_VALID: target bottom > table top (separation_z=%.6f m); cloned collision check passed without S.",
+      separation_z);
+
+    // Step G: Remove S from the live MoveIt scene, read back, and verify expected scene
+    std::string scene_err;
+    if (!p.planning_scene_manager->removePickupSupportException(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PICKUP_CLEARANCE_FAILURE: failed to remove pickup support exception in live scene: %s",
+        scene_err.c_str());
+      return Result::PICKUP_CLEARANCE_FAILURE;
+    }
+    if (!p.planning_scene_manager->verifyExpectedScene(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "SCENE_STALE_OR_CORRUPT: live scene verification failed after S removal: %s",
+        scene_err.c_str());
+      return Result::SCENE_STALE_OR_CORRUPT;
+    }
+    RCLCPP_INFO(
+      node->get_logger(),
+      "PICKUP_CLEARANCE_VERIFIED: live S removed; remaining lift=%.4f m (fingerprint %s).",
+      p.lift_distance - clearance_stroke,
+      p.planning_scene_manager->fingerprint().c_str());
+
+    // Step H: Remaining lift with S absent
+    const double remaining_lift = p.lift_distance - clearance_stroke;
+    if (remaining_lift > 1e-6) {
+      r = cartesian_translate(node, arm, up, remaining_lift, p, "lift remaining", &frac);
+      if (!ok(r)) { return r; }
+    }
+  } else {
+    r = cartesian_translate(node, arm, up, p.lift_distance, p, "lift", &frac);
+    if (!ok(r)) { return r; }
+  }
+
   mark(
     node, 3, "LIFT_DONE", p,
     p.marker_file_prefix.empty() ? "" : p.marker_file_prefix + ".liftdone_ready");
@@ -259,13 +335,25 @@ Result lift_transport_place(
   }
 
   // --- Stage 4: transport --------------------------------------------------
-  // Free-space planned move to a pose one standoff above the place pose.
-  // Deliberately not Cartesian; see the note at the top of this file.
+  // Free-space motion to one standoff directly above object.place_pose.
+  // approach_axis "already resolved into the planning frame" gives us the
+  // unit vector; grasp.standoff gives us the distance.
+  if (p.planning_scene_manager) {
+    std::string scene_err;
+    if (!p.planning_scene_manager->verifyExpectedScene(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "SCENE_STALE_OR_CORRUPT: scene verification failed before transport planning: %s",
+        scene_err.c_str());
+      return Result::SCENE_STALE_OR_CORRUPT;
+    }
+  }
+
   geometry_msgs::msg::Pose above_place = p.place_pose;
   {
     const double n = std::sqrt(
       up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-    if (n < 1e-9) {
+    if (n <= 0.0) {
       RCLCPP_ERROR(
         node->get_logger(),
         "CONFIG_ERROR: approach_axis has zero length; cannot offset the place "
@@ -308,35 +396,123 @@ Result lift_transport_place(
     return Result::SUCCESS;
   }
 
-  // --- Stage 5: descend to place ------------------------------------------
-  // Cartesian again: the object is still held, and a bowed path here scrapes
-  // it against the table on the way down.
+  // --- Stage 5: descend to place (Split Main + Terminal Stroke) -----------
+  // Split into main collision-protected descent (S absent) to pre-contact waypoint,
+  // followed by terminal stroke with S enabled.
+  const double terminal_stroke = p.planning_scene_manager ? p.terminal_stroke_m : 0.0;
+  const double main_descent = p.standoff - terminal_stroke;
+  if (main_descent < 0.0) {
+    RCLCPP_ERROR(
+      node->get_logger(),
+      "CONFIG_ERROR: standoff %.4f m is smaller than terminal stroke %.4f m",
+      p.standoff, terminal_stroke);
+    return Result::CONFIG_ERROR;
+  }
+
   mark(node, 5, "PLACE_DESCEND_BEGIN", p);
-  r = cartesian_translate(
-    node, arm, p.approach_axis, p.standoff, p, "place descent", &frac);
-  if (!ok(r)) { return r; }
+  if (main_descent > 0.0) {
+    r = cartesian_translate(
+      node, arm, p.approach_axis, main_descent, p, "place main descent", &frac);
+    if (!ok(r)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PLACEMENT_PRECONTACT_FAILURE: main descent to pre-contact waypoint failed (frac=%.4f).",
+        frac);
+      return Result::PLACEMENT_PRECONTACT_FAILURE;
+    }
+  }
+
+  if (p.planning_scene_manager && terminal_stroke > 0.0) {
+    // Obtain actual current robot state after main descent
+    const auto current_state = arm.getCurrentState(2.0);
+    if (!current_state) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PLACEMENT_PRECONTACT_FAILURE: failed to obtain current robot state at pre-contact waypoint.");
+      return Result::PLACEMENT_PRECONTACT_FAILURE;
+    }
+
+    // Require authoritative state validity with S absent and positive separation
+    double separation_z = 0.0;
+    std::string precontact_err;
+    if (!p.planning_scene_manager->checkPlacementPrecontact(*current_state, separation_z, precontact_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "PLACEMENT_PRECONTACT_FAILURE: pre-contact state check failed (separation_z=%.6f m): %s",
+        separation_z, precontact_err.c_str());
+      return Result::PLACEMENT_PRECONTACT_FAILURE;
+    }
+    RCLCPP_INFO(
+      node->get_logger(),
+      "PLACEMENT_PRECONTACT_VALID: target bottom > table top (separation_z=%.6f m); collision-free with S absent.",
+      separation_z);
+
+    // Enable placement support S in live scene immediately before terminal stroke
+    std::string scene_err;
+    if (!p.planning_scene_manager->enablePlacementSupport(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "TERMINAL_SUPPORT_FAILURE: could not enable placement support S: %s",
+        scene_err.c_str());
+      return Result::TERMINAL_SUPPORT_FAILURE;
+    }
+    if (!p.planning_scene_manager->verifyExpectedScene(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "SCENE_STALE_OR_CORRUPT: scene verification failed after enabling placement support: %s",
+        scene_err.c_str());
+      return Result::SCENE_STALE_OR_CORRUPT;
+    }
+
+    r = cartesian_translate(
+      node, arm, p.approach_axis, terminal_stroke, p, "place terminal stroke", &frac);
+    if (!ok(r)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "EXECUTE_FAILURE: terminal placement stroke failed (frac=%.4f).",
+        frac);
+      return Result::EXECUTE_FAILURE;
+    }
+  }
   mark(node, 5, "PLACE_DESCEND_DONE", p);
 
   // --- Stage 6: release ----------------------------------------------------
-  // release_position_rad comes from gripper_geometry.theta_for_width() of the
-  // object width plus clearance. Opening to an arbitrary angle also moves the
-  // pads 13.5 mm along the approach axis across the full range, so "just open
-  // it" is a vertical motion as well as a lateral one.
+  // Release while object remains attached in MoveIt scene for bookkeeping.
   mark(node, 6, "RELEASE_BEGIN", p);
   r = gripper_command(p.release_position_rad);
   if (!ok(r)) {
     RCLCPP_ERROR(
       node->get_logger(),
       "release to %.4f rad failed (%s). The object may still be in the "
-      "fingers; the retreat below is NOT attempted.",
+      "fingers; detachment and retreat are NOT attempted.",
       p.release_position_rad, to_string(r));
     return r;
   }
   mark(node, 6, "RELEASE_DONE", p);
 
+  if (p.planning_scene_manager) {
+    std::string scene_err;
+    if (!p.planning_scene_manager->detachTargetToWorld(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "DETACH_FAILURE: could not detach target to world: %s",
+        scene_err.c_str());
+      return Result::DETACH_FAILURE;
+    }
+    if (!p.planning_scene_manager->verifyExpectedScene(scene_err)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "SCENE_STALE_OR_CORRUPT: scene verification failed after detach: %s",
+        scene_err.c_str());
+      return Result::SCENE_STALE_OR_CORRUPT;
+    }
+    RCLCPP_INFO(
+      node->get_logger(),
+      "DETACH_VERIFIED: target detached and returned to world at current pose; S/C1/C2 absent.");
+  }
+
   // --- Stage 7: retreat ----------------------------------------------------
-  // Straight up and away. Cartesian so the open fingers lift clear of the
-  // object rather than sweeping through it.
+  // Straight up and away with target present in world.
   mark(node, 7, "RETREAT_BEGIN", p);
   r = cartesian_translate(node, arm, up, p.standoff, p, "retreat", &frac);
   if (!ok(r)) { return r; }

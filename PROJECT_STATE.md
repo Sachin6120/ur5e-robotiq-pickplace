@@ -21,25 +21,304 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## Current Milestone Status
+## 2026-09-01 Stage-2D PlanningSceneManager Regression & Full Generalization Closeout — CURRENT AUTHORITY
+
+- **Release-preparation lineage**: branch `stage2-orientation-generalization`
+  includes `2557aa6` (startup state-monitor race fix), `19ae062` (one-command
+  D3 demo launcher), and `059d1a5` (tracked runtime-artifact cleanup). The
+  historical milestone commit identities below remain preserved as evidence.
+- **Milestone Outcome**: Full Stage-2D regression suite is **100% COMPLETE & VERIFIED** under the production MoveIt `PlanningSceneManager` collision lifecycle.
+  - **Scene-A Lifecycle-Integrated Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS** (`evidence/perception_validation_pj_20260901_021651`)
+  - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): **PASS** (`evidence/stage2d_pose/D1_planning_scene_20260901_0222`)
+  - **D2 Case** ($-30\text{ mm}, -30\text{ mm}, -30^\circ$): **PASS** (`evidence/stage2d_pose/D2_planning_scene_20260901_0226`)
+  - **D3 Case** ($+30\text{ mm}, -30\text{ mm}, +45^\circ$): **PASS** (`evidence/stage2d_pose/D3_planning_scene_20260901_0230`)
+  - *(Note: Scene-A serves as the lifecycle-integrated baseline; D1, D2, and D3 constitute the 3/3 Stage-2D planar pose regression cases).*
+
+- **D3 Critical Defect Closure**:
+  - *Historical 1.5 mm Failure*: Governing fixed-side perception error projection $\approx 1.5759\text{ mm}$ resulted in predicted negative margin $\approx -0.0759\text{ mm}$, producing a rigid mechanical collision ($59.2\ \mu\text{m}$ contact sliver, $\sim 301\text{ N}$ force) halting descent at $58.4\%$ travel (`EXECUTE_FAILURE`).
+  - *Current 2.0 mm Production Regression*: Governing projection is identically $1.5759\text{ mm}$, yielding a predicted positive clearance margin of $\mathbf{+0.4241\text{ mm}}$ with $M_{\text{model,working}} = 1\times 10^{-6}\text{ mm}$. Physical execution verified **0 fixed-pad and 0 moving-pad pre-close contacts**, Cartesian descent fraction $1.0000$, and full cycle `SUCCESS`. Direct regression proof that the defect remains eliminated under MoveIt collision management.
+
+- **Verified Regression Metrics Summary**:
+  - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): Perception error $1.3900\text{ mm}$, yaw error $-0.0215^\circ$, descent fraction $1.0000$, TCP error $0.00028\text{ mm}$, grasp aperture $30.0022\text{ mm}$, pickup separation $+4.977\text{ mm}$, pickup clone contacts $0$, lift slip $0.0101\text{ mm}$, transport slip $0.0044\text{ mm}$, placement pre-contact separation $+4.994\text{ mm}$, placement error $2.0300\text{ mm}$, placement yaw error $0.0342^\circ$, final upright tilt $0.0001^\circ$.
+  - **D2 Case** ($-30\text{ mm}, -30\text{ mm}, -30^\circ$): Perception error $1.2849\text{ mm}$, yaw error $-0.2371^\circ$, descent fraction $1.0000$, TCP error $0.00070\text{ mm}$, grasp aperture $30.0034\text{ mm}$, pickup separation $+4.981\text{ mm}$, pickup clone contacts $0$, lift slip $0.0101\text{ mm}$, transport slip $0.0027\text{ mm}$, placement pre-contact separation $+4.940\text{ mm}$, placement error $2.2234\text{ mm}$, placement yaw error $0.0055^\circ$, final upright tilt $0.000006^\circ$.
+  - **D3 Case** ($+30\text{ mm}, -30\text{ mm}, +45^\circ$): Perception error $1.6104\text{ mm}$, yaw error $+0.000016^\circ$, governing fixed-side projection $1.5759\text{ mm}$, predicted fixed-side margin $+0.4241\text{ mm}$, descent fraction $1.0000$, TCP error $0.00071\text{ mm}$, pre-close pad contacts fixed=$0$/moving=$0$, grasp aperture $29.9995\text{ mm}$, pickup separation $+4.959\text{ mm}$, pickup clone contacts $0$, lift slip $0.0107\text{ mm}$, transport slip $0.0071\text{ mm}$, placement pre-contact separation $+4.968\text{ mm}$, placement error $1.9793\text{ mm}$, placement yaw error $0.0380^\circ$, final upright tilt $0.000013^\circ$, teardown SIGKILL count $0$.
+
+- **PlanningScene Lifecycle Management**:
+  - Permanent Table Isolation: $P = (\text{table} \leftrightarrow \text{base\_link\_inertia})$
+  - Grasp Closure Contact Exemptions: $C_1 = (\text{pick\_target} \leftrightarrow \text{pad\_fixed\_link})$, $C_2 = (\text{pick\_target} \leftrightarrow \text{pad\_moving\_link})$
+  - Table Support Exception: $S = (\text{pick\_target} \leftrightarrow \text{table})$
+  - Unified lifecycle validated across all runs: World Target $\rightarrow$ Collision-protected descent $\rightarrow$ $C_1/C_2$ closure $\rightarrow$ Attachment with $S$ $\rightarrow$ 5 mm support clearance $\rightarrow$ Cloned collision check without $S$ $\rightarrow$ Live $S$ removal $\rightarrow$ 115 mm lift & transport $\rightarrow$ 95 mm protected descent $\rightarrow$ Pre-contact check $\rightarrow$ 5 mm terminal stroke with $S$ $\rightarrow$ Release & detach $\rightarrow$ World target retreat.
+
+- **Current Project Status**:
+  - Stage-1 perceived XYZ/D10: **COMPLETE / VERIFIED**
+  - Stage-2A configured yaw: **COMPLETE / VERIFIED**
+  - Stage-2B yaw perception: **COMPLETE / VERIFIED**
+  - Stage-2C perceived yaw manipulation: **COMPLETE / VERIFIED**
+  - Stage-2D planar XY+yaw generalization: **COMPLETE / VERIFIED**
+  - 2.0 mm production clearance correction: **COMPLETE / VERIFIED**
+  - MoveIt/FCL model-margin audit: **COMPLETE / VERIFIED**
+  - PlanningSceneManager infrastructure: **COMPLETE / VERIFIED**
+  - PlanningSceneManager integration: **COMPLETE / VERIFIED**
+  - Scene-A lifecycle baseline: **COMPLETE / VERIFIED**
+  - D1/D2/D3 PlanningScene regression: **COMPLETE / VERIFIED**
+  - *Shadow Estimator*: Remains diagnostic/non-production (not promoted to production).
+
+- **Next Development Boundary**:
+  - The current planar pose generalization and PlanningScene collision lifecycle regression phase is **CLOSED**.
+  - No further manipulation experiments are needed or authorized for Stage-2D qualification.
+  - Future tasks should establish new milestone research objectives (e.g., full SO(3) roll/pitch orientation handling, MoveIt gripper visual-collision URDF modeling, or multi-object scenes).
+
+## 2026-08-31 Stage-2D Planar Pose Generalization — SUPERSEDED
+
+Superseded by the 2026-09-01 section above: PlanningSceneManager is now integrated and live-validated on Scene-A with full collision lifecycle and 2.0 mm clearance. The Stage-2D results below are retained as historical qualification of D1/D2/D3 under the 2.0 mm clearance prior to PlanningSceneManager integration.
+
+- Repository: branch `stage2-orientation-generalization`, HEAD `0562222`
+  (`geometry: raise parallel-jaw fixed-side grasp TCP clearance to 2.0 mm`).
+- **`GRASP_TCP_FIXED_SIDE_CLEARANCE_M` (`scripts/lib/parallel_jaw_geometry.py`)
+  is now 2.0 mm, raised from 1.5 mm.** This is now the production value;
+  every earlier statement in this file or `HANDOFF.md` naming 1.5 mm as
+  current is superseded. `DECLARED_CLEARANCE_M` (4.0 mm), the aperture
+  split, the pre-close aperture, the final close target, controllers,
+  perception, and URDF are all unchanged.
+- Stage-2D extended Stage-2C with combined planar XY-offset + yaw cases:
+  D1 (+30/+30 mm, yaw +30 deg), D2 (-30/-30 mm, yaw -30 deg), D3
+  (+30/-30 mm, yaw +45 deg). D3 failed deterministically at the former
+  1.5 mm clearance (`EXECUTE_FAILURE` during Cartesian descent,
+  `evidence/stage2d_pose/D3`, `D3_retry1_diagnostics`).
+- **D3 root cause is a fixed-pad/object-top hard contact during descent,
+  not a controller-authority problem.** A read-only source-and-disassembly
+  audit of `gz_ros2_control`'s `position_proportional_gain` (0.1, a
+  compiled plugin default never set by this project's own code) found no
+  saturation in its position-command path, a commanded velocity (3.53
+  rad/s) already exceeding shoulder_lift's own URDF limit at the observed
+  tracking error, and a sustained ~301 N contact force for 6.3 s on the
+  fixed pad — the controller-gain hypothesis is **falsified**. The joint
+  errors (shoulder_lift +0.0707 rad, wrist_1 -0.0590 rad) are the
+  kinematic image of a rigid stop 41.4 mm short of the 100 mm descent
+  target, matching a measured 22.000 mm x 59.2 um contact sliver on the
+  fixed pad's inner face at closing-axis position -15.0000 mm.
+- **Predicted closing-axis margin, computed from each case's own
+  perceived point vs. measured ground truth:** D3 = -0.0759 mm (overlap,
+  matches the observed failure) at 1.5 mm, **+0.4241 mm** at 2.0 mm; D1 =
+  +0.1701 mm -> +0.6701 mm; D2 = +1.1690 mm -> +1.6690 mm.
+- **2.0 mm validated before the production change, in order:** D1/D2/D3
+  all PASS with zero fixed-pad and zero moving-pad contact before
+  `GRIPPER_CLOSE` under the diagnostic override
+  (`evidence/stage2d_pose/D{1,2,3}_clearance2mm_diag`); D3 re-run through
+  the actual production default (no override) PASSes identically,
+  confirming the resolved TCP offset X = -0.025500 m and
+  `fixed_side_clearance_m_override: null`
+  (`evidence/stage2d_pose/D3_production_default_2mm`); two independent
+  Scene-A/Stage-1 cycles at the production default PASS with all 11 gates
+  and zero pad contact
+  (`evidence/stage1_scene_a_production_2mm_confirmation{,_run2}`).
+- **Stage-2D D1/D2/D3 are qualified at the 2.0 mm production default.
+  Stage-2D is COMPLETE.**
+- **Accepted placement trade-off (not "no regression"):** raising the
+  clearance measurably shifts placement position, since the grasp TCP
+  moves 0.5 mm relative to the object. Scene-A: +0.388 mm (two
+  independent cycles, +0.3876 mm and +0.3880 mm, agreeing to 0.4 um).
+  D1: +0.524 mm. D2: +0.661 mm. All remain comfortably inside the 10 mm
+  `placement_pos_err_mm_max` gate (`stage2a_analyzer.py`).
+- **Stage-2C (C1-C3) was NOT rerun.** Their perceived-yaw consumption,
+  configured/spawned-yaw decoupling, axial-yaw semantics, and physical
+  manipulation results remain valid for their actual diagnostic 2880x2160
+  runs. Their numerical XYZ and yaw-error values are resolution-specific and
+  are not 960x720 production qualification. Their closing-axis fixed-side margins
+  increase by the full 0.5 mm at 2.0 mm (C1 +1.055 -> +1.555 mm, C2
+  +1.388 -> +1.888 mm, C3 +1.041 -> +1.541 mm, computed from their own
+  existing evidence). Their recorded placement-position numbers
+  (1.535-1.583 mm) were measured under the **former 1.5 mm** clearance and
+  are retained as historical; see `HANDOFF.md`'s Stage-2C section
+  (now superseded) for the full addendum.
+- Detailed case metrics, the D3 mechanism evidence, and the full
+  validation chain are recorded in the current Stage-2D section of
+  `HANDOFF.md`.
+- **NEXT:** no next-stage objective is authorized yet. Two open,
+  already-flagged gaps: full SO(3) orientation change (roll/pitch) remains
+  diagnostic-only; the gripper has no MoveIt collision geometry, so
+  fixed-pad/object contact stays invisible to planning-time checks. At the
+  34 mm pre-close aperture (unchanged), the object's derived physical gap
+  from the moving pad is now 2.0 mm too (`preclose_aperture - width -
+  c_fixed_m`) — numerically equal to the fixed side, though
+  `MOVING_SIDE_CLEARANCE_M` itself (a separate named constant, feeding
+  only `DECLARED_CLEARANCE_M`'s sum) remains its own unchanged 3.5 mm. No
+  further headroom remains on the fixed side without widening
+  `DECLARED_CLEARANCE_M`; the durable fix for any future overlap is the
+  underlying ~1.3-1.6 mm closing-axis perception bias, not a third
+  clearance increase. See `HANDOFF.md`'s Stage-2D "Next stage" subsection
+  for detail.
+
+## 2026-08-31 Stage-2C Orientation Generalization — SUPERSEDED
+
+Superseded by the Stage-2D section above: Stage-2D closes with the
+production fixed-side clearance raised to 2.0 mm, which C1-C3 below did
+not run under. The C1-C3 resolution claims in this historical section are
+also superseded by the provenance correction below: these were diagnostic
+2880x2160 runs, not 960x720 production runs. Their yaw-path and physical
+manipulation conclusions remain valid for the actual 3x runs; their numerical
+XYZ and yaw-error values are not 960x720 qualification.
+
+- Repository: branch `stage2-orientation-generalization`, HEAD `eb74c27`.
+- Stage-2C is closed with three independent perceived-yaw full cycles:
+  C1 spawned +30 deg, C2 spawned -30 deg, and C3 spawned +45 deg. Each
+  retained configured pick/place yaw 0 deg, used fresh `pose_world` yaw,
+  production thresholds/controllers, one planning attempt, and no retries or
+  tuning. All three are PASS.
+- Authoritative semantics: configured yaw is decoupled from spawned ground
+  truth; yaw is sourced from `/object_detector/pose_world`; yaw comparisons
+  are axial/mod 180 via `axial_difference()`.
+- Results (diagnostic 2880x2160 only): perceived yaw error <= 0.049 deg,
+  position error ~0.45 mm,
+  aperture ~30.00 mm, yaw-invariant grasp tilt <= 0.063 deg, lift and
+  transport slip ~0.01 mm, placement position 1.5-1.6 mm, and axial
+  placement yaw <= 0.056 deg. Full SO(3) change is diagnostic only.
+- CORRECTION (2026-08-31 provenance audit): C1-C3 ran at diagnostic
+  2880x2160, not the 960x720 launch default. The committed wrappers did not
+  forward resolution arguments; the recorded runtime commands used a
+  transient inline Python shim that appended
+  `camera_width:=2880 camera_height:=2160` before process creation. The `_3x`
+  evidence-directory names are accurate. The ~0.45 mm XYZ results and
+  numerical yaw-error values are resolution-specific and must not be used
+  for 960x720 production qualification. Perceived-yaw consumption,
+  configured/spawned-yaw decoupling, axial-yaw semantics, and physical
+  manipulation results remain valid for the actual 3x runs. Separate 960x720
+  Stage-2B evidence remains separate and must not be conflated with C1-C3.
+  The Stage-2B perception chain remains frozen.
+- Negative control (configured 0 deg, spawned +30 deg, perceived yaw OFF)
+  aborted during descent before grasp closure. It is comparative/incomplete
+  evidence only; yaw mismatch is not identified as the abort cause.
+- Known non-blocking telemetry cleanup: `configured_object_yaw_deg` is NaN
+  when `use_perceived_yaw=false`.
+- Detailed case metrics and evidence paths are recorded in the current
+  Stage-2C section of `HANDOFF.md`.
+
+## Historical Milestone Status (superseded)
 
 ```
-LATEST VERIFIED MILESTONE:
-  Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS (2026-08-28)
+HISTORICAL STATE — 2026-08-30 (superseded by the section above):
+
+  PRODUCTION: parallel-jaw P=200 (controllers.yaml, commit e37383e) is now
+  production, not diagnostic-only. D10 XYZ estimator is production. Fixed-
+  side clearance 1.5 mm, plan_attempts=1, both unchanged. HEAD = e37383e.
+
+  STAGE-1: requalified end-to-end under production P=200.
+    G1-G5 production-default P=200 regression: 5/5 PASS.
+    Scene-A production-default P=200 repeatability: 5/5 PASS
+      (evidence/stage1_scene_a_final_repeatability_20260830/R1..R5).
+    Supersedes the P=50 baselines recorded further below (kept as history).
+
+  STAGE-2A: configured-yaw manipulation feasibility COMPLETE.
+    D10 perception-only yaw regression P0-P4: 5/5 PASS.
+    O0-O4 perception-driven-XY, P=200, full cycle: 5/5 physical PASS
+      (O2's stored verdict reads FAIL only from the analyzer's pre-lift
+      window artifact -- direct ground truth is PASS; see HANDOFF.md).
+    O2-O4 are NOT blocked; the O1 configured-center diagnostic already ran.
+    LIMITATION: XYZ is perception-driven; yaw is still read from
+    scene.yaml's object.pick_pose.yaw, not estimated. Not yet true
+    perception-driven yaw generalization.
+
+  NEXT: Stage-2B -- yaw perception implementation and perception-only
+  qualification. Start with an isolated mask-orientation estimator + unit
+  tests (no ROS topic wiring yet). Yaw is axial/mod-180: use the shortest
+  axial difference canonicalised into [-90, +90) deg, NOT ordinary wrap_pi.
+  Stage-2C (manipulation with perceived yaw, configured yaw deliberately
+  decoupled from spawned yaw) follows only after Stage-2B qualifies.
+  Full detail: HANDOFF.md 2026-08-30 current-authority section.
+
+  --- superseded below, kept as history ---
+
+  Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS (2026-08-28, P=50)
   Position generalization across five distinct object poses experimentally
   validated. Planner-attempt configuration difference (G1-G4 at
   plan_attempts=20, G5 qualification at plan_attempts=1) explicitly
   documented; see HANDOFF.md 2026-08-28 section for caveats.
-  FROZEN: do not re-run G1-G5 to add evidence -- Stage 2 (below) is next.
+  Superseded by the 2026-08-30 P=200 requalification above.
 
-  Scene-A Perception-Driven Pick & Place Repeatability — PASS (2026-08-27)
+  Scene-A Perception-Driven Pick & Place Repeatability — PASS (2026-08-27, P=50)
   5/5 consecutive clean perception-driven cycles PASSED with parallel_jaw baseline.
+  Superseded by the 2026-08-30 P=200 requalification above.
 
   Post-cleanup Scene-A regression — PASS (2026-08-28), CONFIRMATION ONLY
   One cycle via the unmodified run_5_cycles.py harness after the baseline
   cleanup below: all 11 Stage-1 criteria PASS. Does NOT add to either
   campaign's N; see HANDOFF.md 2026-08-28 "Baseline Frozen" section.
 ```
+
+## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Complete — CURRENT AUTHORITY
+
+Branch `stage2-orientation-generalization`, HEAD `e37383e` (`control: raise
+parallel-jaw grasp gain to validated value`). `parallel_jaw_gripper_controller`
+p=200.0 is production in `controllers.yaml`, not diagnostic-only. D10 XYZ
+estimator, 1.5 mm fixed-side clearance, and `plan_attempts=1` are unchanged.
+
+Stage-1 is requalified end-to-end under production P=200: G1-G5 regression
+5/5 PASS, and Scene-A repeatability 5/5 PASS (five consecutive clean cycles,
+no retries/tuning between them; evidence
+`evidence/stage1_scene_a_final_repeatability_20260830/R1..R5`). This
+supersedes the P=50 baselines recorded further below.
+
+Stage-2A configured-yaw manipulation feasibility is COMPLETE: O0-O4
+(perception-driven XY, configured yaw 0/+-15/+-30 deg, production P=200)
+all 5 physically PASS. O2's stored `cycle_metrics.json` verdict reads FAIL
+only because the generic analyzer's fixed pre-lift quiescence window
+overlaps the intentional P=200 force-seating motion (a known, documented
+measurement-window artifact -- the analyzer itself is unmodified); direct
+ground-truth re-measurement is PASS (lift slip 0.0125 mm, tilt 0.0244 deg).
+The same artifact affects G1's P=200 regression run; its direct ground truth
+is likewise PASS (lift slip 0.00492 mm, tilt 0.0444 deg). O2-O4 are NOT
+blocked, and the O1 configured-center/zero-clearance/force-authority
+diagnostics are historical completed work that led to the P=200 fix, not a
+pending task. Some `evidence/stage2a_o{0,3}_..._run{1..4}/` directories are
+infrastructure/preflight aborts (harness exited before `m3_grasp` launched,
+no `m3_grasp.log`), not repeated manipulation attempts.
+
+**Current limitation:** XYZ is perception-driven; object yaw is still read
+from `config/scene.yaml`'s `object.pick_pose.yaw`, not estimated from sensor
+data (`m3_grasp.cpp`'s perception substitution replaces translation only).
+True perception-driven yaw generalization is not yet validated.
+
+**Next:** Stage-2B (yaw perception implementation + perception-only
+qualification) — begin with an isolated mask-orientation estimator and unit
+tests before any ROS topic wiring. Design caution: yaw is axial/mod-180 for
+a 2-fold-symmetric object; use the shortest axial difference canonicalised
+into `[-90, +90)` degrees, NOT ordinary `wrap_pi`/`[-180,+180)` wrapping.
+Stage-2C (manipulation with perceived yaw, configured yaw deliberately
+decoupled from spawned yaw) follows only once Stage-2B qualifies on its own
+acceptance criteria. Full detail: `HANDOFF.md`'s 2026-08-30 current-authority
+section.
+
+## 2026-08-29 Stage-2A Orientation — D10 Integrated; O1 Lift-Onset Failure — superseded 2026-08-30 (historical: this predates the P=200 force-authority fix now in production; O2-O4 are NOT blocked and have since run and passed; HEAD is now e37383e, not a056023 — see the current-authority block above)
+
+Repository authority AT THE TIME was branch `stage2-orientation-generalization` at
+commit `a056023` (`perception: use robust D10 object position estimator`). The
+production estimator back-projects the selected connected component's
+subpixel centroid with a deterministic 10% symmetric trimmed mean of finite,
+positive masked depths. The affected package built successfully and all
+focused D10 tests passed.
+
+The post-D10 perception-only yaw regression P0-P4 passed 5/5, and every tested
+yaw now has positive predicted fixed-side clearance. The subsequent full O1
+manipulation rerun at +15 degrees did not qualify despite the manipulation
+node returning `SUCCESS`: peak tilt was 3.3757 degrees and lift slip was
+1.5656 mm. Transport slip (0.0364 mm), placement position error (1.8865 mm),
+and placement yaw error (0.022 degrees) passed.
+
+Forensic comparison with the preserved pre-D10 O1 evidence established two
+distinct mechanisms. The historical O1 suffered pre-close mechanical
+interference during descent and tipped before final close; D10 eliminated that
+collision. The current O1 remains upright through pre-close, descent, and
+close, then develops tilt/slip at lift onset while seating from unilateral to
+bilateral pad contact. Residual XY misregistration plus the asymmetric initial
+contact is the current failure classification. Once seated, the object is
+stable through transport.
+
+O2-O4 were **BLOCKED at the time this section was written**; they have since
+run and passed (2026-08-30, see current-authority block above), and the O1
+configured-center diagnostic control described below has already been
+carried out — it led directly to the P=200 force-authority fix now in
+production. This paragraph is retained as historical description of the
+reasoning at the time, not as a pending instruction.
 
 ## 2026-08-28 Baseline Frozen — Stage-1 Commits + Local Tag
 
@@ -70,10 +349,12 @@ committed. Full detail: `HANDOFF.md` §"2026-08-28 Baseline Frozen".
 - Raw bulk evidence (`evidence/`, ~7.7 GB) is intentionally excluded from
   Git and stays local-only; only curated summaries are ever committed.
 
-**Next task: Generalization Stage 2 — object orientation/yaw variation.**
-Not started. Position generalization (Stage 1) and repeatability are closed;
-Stage 2 is a new campaign against a different variable, not a re-run of
-Stage 1's poses.
+**Historical next-task note:** at the 2026-08-28 freeze, Generalization Stage 2
+had not started. It is now COMPLETE for configured-yaw feasibility (Stage-2A,
+2026-08-30) and both this file's top "LATEST VERIFIED STATE" block and
+`HANDOFF.md`'s 2026-08-30 current-authority section supersede this old resume
+point. Position generalization (Stage 1) and repeatability remain closed, and
+are now also requalified under production P=200.
 
 ## 2026-08-28 Generalization Stage-1 — RESOLVED — G1-G5 ALL PASS
 

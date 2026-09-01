@@ -1082,12 +1082,14 @@ discipline §8.9 applied to Milestone B's lost artefacts.
 
 What does survive, on local disk:
 
-- **Raw:** the classical regression suffixed `20260823_004208_6512`
+- **Raw, local-only:** the classical regression suffixed `20260823_004208_6512`
   (`runs/prod_reg_test_c_roll90_width30_{pose,traj}_*.csv` plus the
   `docs/prod_reg_test_c_roll90_width30_*` log/CSV set and marker directory).
   It ran on the F2 code base and proves no classical regression from the F2
   additions — but at `preclose_achieved=0.2280`, i.e. the OLD `0.30` margin.
-  It is not evidence for the frozen `0.070 rad` candidate.
+  It is not evidence for the frozen `0.070 rad` candidate. These runtime
+  artifacts were removed from the tracked public-release branch during
+  cleanup; the conclusion and quantitative scope remain in this document.
 - **Summarized:** §§10-11 of this file and the dated F1/F2 sections of
   `HANDOFF.md`.
 - **Procedure:** `scripts/perception/milestone_{d,e,f1}_{harness,truth}.py`.

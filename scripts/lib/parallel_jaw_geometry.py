@@ -151,12 +151,18 @@ MOVING_SIDE_CLEARANCE_M = 0.0035
 # Total declared clearance (both sides): preclose_aperture = width + this (4.0 mm).
 DECLARED_CLEARANCE_M = FIXED_SIDE_CLEARANCE_M + MOVING_SIDE_CLEARANCE_M  # 0.0040 m = 4.0 mm
 
-# Fixed-side clearance used solely to position the grasp TCP.  This is 1.5 mm
-# rather than the aperture split's 0.5 mm so the captured +0.965 mm
-# closing-axis perception bias still leaves about 0.5 mm physical clearance.
-# It changes preclose_pose_offset_m(0.030) from 0.027 m to 0.026 m without
+# Fixed-side clearance used solely to position the grasp TCP. Raised from
+# 1.5 mm to 2.0 mm (2026-08-31) after Stage-2D case D3 (spawn offset
+# +30/-30 mm from configured, spawn yaw +45 deg) showed a closing-axis
+# perception-error projection of 1.576 mm -- 0.076 mm past the 1.5 mm
+# budget -- producing a deterministic fixed-pad/object-top contact during
+# Cartesian descent (evidence/stage2d_pose/D3_retry1_diagnostics). 2.0 mm
+# restores positive margin (+0.424 mm at that same case); D1/D2 (smaller
+# closing-axis projections) gain additional margin with no observed
+# regression (evidence/stage2d_pose/D{1,2,3}_clearance2mm_diag). It
+# changes preclose_pose_offset_m(0.030) from 0.0260 m to 0.0255 m without
 # changing the pre-close aperture or final close target.
-GRASP_TCP_FIXED_SIDE_CLEARANCE_M = 0.0015
+GRASP_TCP_FIXED_SIDE_CLEARANCE_M = 0.0020
 
 
 def preclose_aperture_m(width_m, clearance_m=DECLARED_CLEARANCE_M):
@@ -186,8 +192,8 @@ def preclose_pose_offset_m(
     Since m3_grasp computes tool0_x = object_x - (-offset_x), the positive offset
     magnitude toward the fixed jaw is:
         offset_x = 0.0425 - (width_m / 2.0) - c_fixed_m.
-    For width_m = 0.030 m and c_fixed_m = 0.0015 m (1.5 mm):
-        offset_x = 0.0425 - 0.0150 - 0.0015 = +0.0260 m (+26.0 mm).
+    For width_m = 0.030 m and c_fixed_m = 0.0020 m (2.0 mm):
+        offset_x = 0.0425 - 0.0150 - 0.0020 = +0.0255 m (+25.5 mm).
     """
     return 0.0425 - (width_m / 2.0) - c_fixed_m
 

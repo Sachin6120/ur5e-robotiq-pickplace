@@ -147,12 +147,25 @@ def launch_setup(context, *args, **kwargs):
     fingertip_grasp_theta = LaunchConfiguration("fingertip_grasp_theta")
     enable_diagnostic_contacts = LaunchConfiguration("enable_diagnostic_contacts")
     gripper_model = LaunchConfiguration("gripper_model")
+    # DIAGNOSTIC-ONLY OVERRIDE, 2026-08-29. Default "" (see its own
+    # DeclareLaunchArgument below) leaves parallel_jaw_gripper_controller_
+    # spawner's parameters list byte-for-byte identical to before this
+    # existed -- perform()ed here, not left as a LaunchConfiguration, so the
+    # "is it set" branch below is a plain Python string check.
+    parallel_jaw_p_gain_override_raw = LaunchConfiguration(
+        "parallel_jaw_p_gain_override"
+    ).perform(context)
     controllers_file = LaunchConfiguration("controllers_file")
     description_file = LaunchConfiguration("description_file")
     model_name = LaunchConfiguration("model_name")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     world_file = LaunchConfiguration("world_file")
     enable_camera = LaunchConfiguration("enable_camera")
+    camera_width = LaunchConfiguration("camera_width")
+    camera_height = LaunchConfiguration("camera_height")
+    initial_joint_args = [LaunchConfiguration(name) for name in (
+        "initial_shoulder_pan", "initial_shoulder_lift", "initial_elbow",
+        "initial_wrist_1", "initial_wrist_2", "initial_wrist_3")]
 
     # See design note 5 above. Every ROS prefix's share/ dir goes on
     # GZ_SIM_RESOURCE_PATH so package://robotiq_description/... resolves.
@@ -211,6 +224,18 @@ def launch_setup(context, *args, **kwargs):
             " ",
             "enable_camera:=",
             enable_camera,
+            " ",
+            "camera_width:=",
+            camera_width,
+            " ",
+            "camera_height:=",
+            camera_height,
+            " initial_shoulder_pan:=", initial_joint_args[0],
+            " initial_shoulder_lift:=", initial_joint_args[1],
+            " initial_elbow:=", initial_joint_args[2],
+            " initial_wrist_1:=", initial_joint_args[3],
+            " initial_wrist_2:=", initial_joint_args[4],
+            " initial_wrist_3:=", initial_joint_args[5],
         ]
     )
     # ParameterValue(..., value_type=str) is required, not cosmetic: launch_ros
@@ -260,6 +285,31 @@ def launch_setup(context, *args, **kwargs):
     # exactly gripper_jaw_joint via parallel_jaw_gripper_controller
     # (config/../controllers.yaml) -- no mimic/follower controller exists to
     # spawn alongside it.
+    # DIAGNOSTIC-ONLY, 2026-08-29: when parallel_jaw_p_gain_override_raw is
+    # set, this appends one entry to the spawner's own `parameters=` list.
+    # launch_ros writes any raw-dict entry there to a temp YAML file and
+    # appends it to the spawner's `--params-file` CLI args; `ros2 run
+    # controller_manager spawner` (controller_manager/spawner.py's
+    # get_ros_params_files / set_controller_parameters_from_param_files,
+    # both installed under /opt/ros/jazzy) collects EVERY --params-file it
+    # was given and layers them onto parallel_jaw_gripper_controller's own
+    # params_file list before that controller node is constructed. This
+    # project's own run log already shows this exact mechanism firing for
+    # use_sim_time ("Controller 'parallel_jaw_gripper_controller' node
+    # arguments: --params-file .../controllers.yaml ... --params-file
+    # /tmp/launch_params_...",
+    # evidence/stage2a_o1_configured_center_control/run_combined.log). This
+    # reuses that same path to carry one more key: gains.gripper_jaw_joint.p,
+    # which HardwareInterfaceAdapter<HW_IF_EFFORT>::init()
+    # (gripper_controllers/hardware_interface_adapter.hpp, installed) reads
+    # via auto_declare() at controller construction -- when the params file
+    # already declares it, that value wins over controllers.yaml's own 50.0.
+    # controllers.yaml itself is NEVER written to by this path.
+    parallel_jaw_spawner_params = [{"use_sim_time": True}]
+    if parallel_jaw_p_gain_override_raw != "":
+        parallel_jaw_spawner_params.append(
+            {"gains.gripper_jaw_joint.p": float(parallel_jaw_p_gain_override_raw)}
+        )
     parallel_jaw_gripper_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -268,7 +318,7 @@ def launch_setup(context, *args, **kwargs):
             "--controller-manager",
             "/controller_manager",
         ],
-        parameters=[{"use_sim_time": True}],
+        parameters=parallel_jaw_spawner_params,
         condition=IfCondition(
             PythonExpression(["'", gripper_model, "' == 'parallel_jaw'"])
         ),
@@ -460,10 +510,21 @@ def _default_base_args(scene):
     return module.xacro_base_args(scene)
 
 
+def _default_initial_arm_args(scene):
+    """Map the one authoritative M1 vector into named xacro arguments."""
+    names = ("shoulder_pan", "shoulder_lift", "elbow", "wrist_1", "wrist_2", "wrist_3")
+    home = [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+    values = (scene or {}).get("milestones", {}).get("m1", {}).get("goal_positions", home)
+    if not isinstance(values, list) or len(values) != len(names):
+        raise RuntimeError("CONFIG_ERROR: milestones.m1.goal_positions must contain six values.")
+    return {f"initial_{name}": str(float(value)) for name, value in zip(names, values)}
+
+
 def generate_launch_description():
     scene = _load_scene()
     default_base_args = _default_base_args(scene)
     default_gripper_args = _default_gripper_args(scene)
+    default_initial_arm_args = _default_initial_arm_args(scene)
     declared_arguments = [
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("tf_prefix", default_value=""),
@@ -471,6 +532,11 @@ def generate_launch_description():
         DeclareLaunchArgument("gripper_rotation", default_value="0.0"),
         DeclareLaunchArgument("base_xyz", default_value=default_base_args["base_xyz"]),
         DeclareLaunchArgument("base_rpy", default_value=default_base_args["base_rpy"]),
+        *[
+            DeclareLaunchArgument(name, default_value=value,
+                                  description="Simulation-only initial arm state, derived from scene.yaml M1.")
+            for name, value in default_initial_arm_args.items()
+        ],
         DeclareLaunchArgument(
             "fingertip_grasp_theta",
             default_value=default_gripper_args["fingertip_grasp_theta"],
@@ -487,6 +553,19 @@ def generate_launch_description():
             "unchanged behavior) or parallel_jaw (V1, opt-in only -- see "
             "docs/GRIPPER_REDESIGN_DESIGN.md). Selects both the xacro "
             "expansion and which gripper controller spawner runs."),
+        DeclareLaunchArgument(
+            "parallel_jaw_p_gain_override",
+            default_value="",
+            description="DIAGNOSTIC-ONLY, 2026-08-29. Empty (default) leaves "
+            "parallel_jaw_gripper_controller's gains.gripper_jaw_joint.p "
+            "exactly as controllers.yaml declares it (50.0) -- every "
+            "existing and future run that does not pass this argument is "
+            "byte-for-byte unaffected, and controllers.yaml is never edited "
+            "by this path. When set, overrides ONLY that one PID gain via a "
+            "layered --params-file at controller construction (see the "
+            "spawner definition's own comment for the mechanism). Ignored "
+            "when gripper_model is not parallel_jaw.",
+        ),
         DeclareLaunchArgument(
             "model_name",
             default_value="ur5e_robotiq",
@@ -546,6 +625,16 @@ def generate_launch_description():
             ),
             description="World name inside this becomes 'empty', matching "
             "scripts/m0_verify.sh's WORLD default.",
+        ),
+        DeclareLaunchArgument(
+            "camera_width",
+            default_value="960",
+            description="Overhead camera image width in pixels (diagnostic override).",
+        ),
+        DeclareLaunchArgument(
+            "camera_height",
+            default_value="720",
+            description="Overhead camera image height in pixels (diagnostic override).",
         ),
     ]
 

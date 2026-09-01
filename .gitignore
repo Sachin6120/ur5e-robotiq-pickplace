@@ -32,10 +32,9 @@ docs/m3_guicycle_shots_*/
 # Raw experiment evidence (2026-08-28 Stage-1 cleanup, D1)
 # ------------------------------------------------------------
 # Raw/bulk evidence stays local. Do not `git add -A` this tree. Curated,
-# durable results (README + MANIFEST.sha256 + summary CSV/JSON only) are
-# committed individually, by explicit path, when a milestone is closed --
-# never through a blanket add of evidence/.
-evidence/
+# durable results under docs/evidence/ are committed individually, by explicit
+# path, when a milestone is closed -- never through a blanket add of /evidence/.
+/evidence/
 
 # Root-level runtime CSV outputs (default csv_path of m1_joint_goal.launch.py
 # and m3_grasp.launch.py / full_cycle.launch.py). The durable M1 dataset is
@@ -53,3 +52,22 @@ docs/*_markers_*/
 *.liftdone_ready
 *.transportdone_ready
 *.run_summary_ready
+
+# Python/test/tool caches
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Runtime process files
+*.pid

@@ -76,6 +76,7 @@
 #include <tf2/exceptions.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <control_msgs/action/gripper_command.hpp>
@@ -89,6 +90,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -100,8 +102,10 @@
 
 #include "ur5e_pick_place/failure.hpp"
 #include "ur5e_pick_place/gz_topic_utils.hpp"
+#include "ur5e_pick_place/mask_orientation.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
 #include <moveit/robot_state/robot_state.hpp>
+#include "ur5e_pick_place/planning_scene_manager.hpp"
 #include "ur5e_pick_place/transport.hpp"
 
 using ur5e_pick_place::Result;
@@ -138,6 +142,110 @@ struct PregraspCandidate {
 
 static double wrap_angle(double a) {
   return std::atan2(std::sin(a), std::cos(a));
+}
+
+// Stage-2C intentionally supports yaw changes only for the existing vertical
+// pick geometry. General tilted-approach composition is a separate problem:
+// rejecting it here keeps the validated local-Z/downward contract explicit.
+constexpr double kYawGeometryToleranceRad = 1.0e-4;
+constexpr double kYawQuaternionNormTolerance = 1.0e-3;
+
+bool perceived_yaw_configuration_valid(bool use_perceived_yaw, bool use_perceived_position)
+{
+  return !use_perceived_yaw || use_perceived_position;
+}
+
+Result perceived_yaw_sample_result(bool have_sample)
+{
+  return have_sample ? Result::SUCCESS : Result::PERCEPTION_TIMEOUT;
+}
+
+std::optional<double> planar_yaw_from_valid_quaternion(
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  const auto & q_msg = pose.pose.orientation;
+  if (!std::isfinite(q_msg.x) || !std::isfinite(q_msg.y) ||
+    !std::isfinite(q_msg.z) || !std::isfinite(q_msg.w))
+  {
+    return std::nullopt;
+  }
+  const double norm_sq = q_msg.x * q_msg.x + q_msg.y * q_msg.y +
+    q_msg.z * q_msg.z + q_msg.w * q_msg.w;
+  if (!std::isfinite(norm_sq) || std::abs(norm_sq - 1.0) > kYawQuaternionNormTolerance) {
+    return std::nullopt;
+  }
+  tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
+  q.normalize();
+  const tf2::Matrix3x3 basis(q);
+  const double yaw = std::atan2(basis[1][0], basis[0][0]);
+  return std::isfinite(yaw) ? std::optional<double>(yaw) : std::nullopt;
+}
+
+// This is telemetry-only when perceived yaw is disabled: failure to obtain a
+// configured yaw must not alter the established configured-yaw manipulation
+// path. Perceived-yaw targeting performs the additional approach validation
+// below and turns invalid geometry into CONFIG_ERROR.
+std::optional<double> configured_object_planar_yaw(const tf2::Transform & T_world_object)
+{
+  double roll = 0.0;
+  double pitch = 0.0;
+  double yaw = 0.0;
+  T_world_object.getBasis().getRPY(roll, pitch, yaw);
+  if (!std::isfinite(roll) || !std::isfinite(pitch) || !std::isfinite(yaw) ||
+    std::abs(roll) > kYawGeometryToleranceRad ||
+    std::abs(pitch) > kYawGeometryToleranceRad)
+  {
+    return std::nullopt;
+  }
+  return yaw;
+}
+
+bool is_fresh_world_pose(
+  const geometry_msgs::msg::PoseStamped & pose,
+  const std::string & world_frame,
+  const rclcpp::Time & m1_stationary_stamp)
+{
+  return pose.header.frame_id == world_frame &&
+    rclcpp::Time(pose.header.stamp) > m1_stationary_stamp;
+}
+
+bool configured_yaw_reference_supported(
+  const tf2::Transform & T_world_object,
+  const tf2::Transform & T_world_grasp,
+  double & configured_yaw,
+  std::string & error)
+{
+  const auto yaw = configured_object_planar_yaw(T_world_object);
+  if (!yaw) {
+    error = "configured object frame is not level (roll/pitch must be approximately zero)";
+    return false;
+  }
+
+  const tf2::Vector3 local_z_in_world =
+    T_world_grasp.getBasis() * tf2::Vector3(0.0, 0.0, 1.0);
+  const tf2::Vector3 expected_world_down(0.0, 0.0, -1.0);
+  if (!std::isfinite(local_z_in_world.x()) || !std::isfinite(local_z_in_world.y()) ||
+    !std::isfinite(local_z_in_world.z()) ||
+    (local_z_in_world - expected_world_down).length() > kYawGeometryToleranceRad)
+  {
+    error = "grasp approach local +Z is not approximately world -Z";
+    return false;
+  }
+  configured_yaw = *yaw;
+  return true;
+}
+
+tf2::Matrix3x3 grasp_basis_with_perceived_yaw(
+  const tf2::Matrix3x3 & existing_basis,
+  bool use_perceived_yaw,
+  double perceived_yaw,
+  double configured_yaw)
+{
+  if (!use_perceived_yaw) {
+    return existing_basis;
+  }
+  const double delta = ur5e_pick_place::axial_difference(perceived_yaw, configured_yaw);
+  return R_from_rpy(0.0, 0.0, delta) * existing_basis;
 }
 
 static bool select_deterministic_pregrasp_branch(
@@ -594,8 +702,85 @@ GripperCloseResult gripper_close_and_hold(
   return out;
 }
 
+// Check whether a JointState message contains all required joint names with valid position entries.
+inline bool joint_state_has_joints(
+  const sensor_msgs::msg::JointState & js,
+  const std::vector<std::string> & required_joint_names)
+{
+  if (js.name.empty() || js.name.size() != js.position.size() || required_joint_names.empty()) {
+    return false;
+  }
+  for (const auto & name : required_joint_names) {
+    if (std::find(js.name.begin(), js.name.end(), name) == js.name.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Extract joint positions from a JointState message matching the given joint names order.
+inline std::optional<std::vector<double>> extract_joint_positions(
+  const sensor_msgs::msg::JointState & js,
+  const std::vector<std::string> & joint_names)
+{
+  if (!joint_state_has_joints(js, joint_names)) {
+    return std::nullopt;
+  }
+  std::vector<double> positions;
+  positions.reserve(joint_names.size());
+  for (const auto & name : joint_names) {
+    auto it = std::find(js.name.begin(), js.name.end(), name);
+    auto idx = std::distance(js.name.begin(), it);
+    positions.push_back(js.position[idx]);
+  }
+  return positions;
+}
+
+// Evaluate whether the measured joint positions match the authoritative M1 goal within tolerance.
+inline Result evaluate_startup_m1_positions(
+  const std::vector<double> & measured_positions,
+  const std::vector<double> & goal_positions,
+  double tolerance_rad,
+  double & max_error_out)
+{
+  if (measured_positions.empty() || measured_positions.size() != goal_positions.size()) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::CONFIG_ERROR;
+  }
+  max_error_out = 0.0;
+  for (std::size_t i = 0; i < measured_positions.size(); ++i) {
+    max_error_out = std::max(max_error_out, std::abs(measured_positions[i] - goal_positions[i]));
+  }
+  if (max_error_out <= tolerance_rad) {
+    return Result::SUCCESS;
+  }
+  return Result::STARTUP_NOT_AT_M1;
+}
+
+// Evaluate a received JointState sample (or nullptr if timed out) against authoritative M1.
+inline Result evaluate_startup_sample_and_m1(
+  const sensor_msgs::msg::JointState::ConstSharedPtr & initial_js,
+  const std::vector<std::string> & joint_names,
+  const std::vector<double> & goal_positions,
+  double tolerance_rad,
+  double & max_error_out)
+{
+  if (!initial_js || !joint_state_has_joints(*initial_js, joint_names)) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::STARTUP_STATE_UNAVAILABLE;
+  }
+  auto measured_positions = extract_joint_positions(*initial_js, joint_names);
+  if (!measured_positions) {
+    max_error_out = std::numeric_limits<double>::infinity();
+    return Result::CONFIG_ERROR;
+  }
+  return evaluate_startup_m1_positions(
+    *measured_positions, goal_positions, tolerance_rad, max_error_out);
+}
+
 }  // namespace
 
+#ifndef UR5E_PICK_PLACE_M3_GRASP_UNIT_TEST
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
@@ -706,8 +891,11 @@ int main(int argc, char ** argv)
   bool close_and_hold_only = false;
   bool use_perceived_position = false;
   std::string perceived_position_topic = "object_detector/position_world";
+  bool use_perceived_yaw = false;
+  std::string perceived_pose_topic = "object_detector/pose_world";
   double perceived_position_timeout_s = 2.0;
   double object_height_m = 0.0;
+  std::string object_frame_name = "object_frame";
 
   // --- Milestone F1 (evidence-grade perception mode) ------------------------
   // require_perception turns the production-convenience fallback OFF. With it
@@ -769,6 +957,8 @@ int main(int argc, char ** argv)
   double stationary_velocity_eps = 1.0e-3;
   int stationary_consecutive_samples = 6;
   double stationary_timeout_s = 25.0;
+  double startup_state_timeout_s = 5.0;
+  double startup_m1_tolerance_rad = 0.01;
   std::string joint_states_topic = "/joint_states";
   // Pre-grasp is a free-air pose 0.1 m above the object, so it does not carry
   // the grasp target's tight tolerance; this is the F1 acceptance bound.
@@ -777,8 +967,14 @@ int main(int argc, char ** argv)
   // so the evidence states the source instead of leaving it to be inferred
   // from commanded coordinates after the fact.
   std::string position_source = "configured";
+  std::string yaw_source = "configured";
+  double configured_object_yaw_deg = std::numeric_limits<double>::quiet_NaN();
+  double perceived_object_yaw_deg = std::numeric_limits<double>::quiet_NaN();
+  double yaw_delta_deg = std::numeric_limits<double>::quiet_NaN();
+  double commanded_grasp_yaw_deg = std::numeric_limits<double>::quiet_NaN();
 
   node->get_parameter_or("world_frame", world_frame, world_frame);
+  node->get_parameter_or("object_frame_name", object_frame_name, object_frame_name);
   node->get_parameter_or("grasp_frame_name", grasp_frame_name, grasp_frame_name);
   node->get_parameter_or("place_frame_name", place_frame_name, place_frame_name);
   node->get_parameter_or("tool0_frame", tool0_frame, tool0_frame);
@@ -832,6 +1028,8 @@ int main(int argc, char ** argv)
     "use_perceived_position", use_perceived_position, use_perceived_position);
   node->get_parameter_or(
     "perceived_position_topic", perceived_position_topic, perceived_position_topic);
+  node->get_parameter_or("use_perceived_yaw", use_perceived_yaw, use_perceived_yaw);
+  node->get_parameter_or("perceived_pose_topic", perceived_pose_topic, perceived_pose_topic);
   node->get_parameter_or(
     "perceived_position_timeout_s", perceived_position_timeout_s, perceived_position_timeout_s);
   node->get_parameter_or("object_height_m", object_height_m, object_height_m);
@@ -858,6 +1056,8 @@ int main(int argc, char ** argv)
     "stationary_consecutive_samples", stationary_consecutive_samples,
     stationary_consecutive_samples);
   node->get_parameter_or("stationary_timeout_s", stationary_timeout_s, stationary_timeout_s);
+  node->get_parameter_or("startup_state_timeout_s", startup_state_timeout_s, startup_state_timeout_s);
+  node->get_parameter_or("startup_m1_tolerance_rad", startup_m1_tolerance_rad, startup_m1_tolerance_rad);
   node->get_parameter_or("joint_states_topic", joint_states_topic, joint_states_topic);
   node->get_parameter_or(
     "pregrasp_pose_error_max_m", pregrasp_pose_error_max_m, pregrasp_pose_error_max_m);
@@ -936,6 +1136,15 @@ int main(int argc, char ** argv)
       logger,
       "CONFIG_ERROR: object_height_m must be > 0 when use_perceived_position is true, got %.6f",
       object_height_m);
+    result = Result::CONFIG_ERROR;
+  }
+  if (ur5e_pick_place::ok(result) &&
+    !perceived_yaw_configuration_valid(use_perceived_yaw, use_perceived_position))
+  {
+    RCLCPP_ERROR(
+      logger,
+      "CONFIG_ERROR: use_perceived_yaw is true but use_perceived_position is false. "
+      "Perceived yaw is accepted only at the validated M1 perception boundary.");
     result = Result::CONFIG_ERROR;
   }
   if (ur5e_pick_place::ok(result) && require_perception && !use_perceived_position) {
@@ -1119,6 +1328,7 @@ int main(int argc, char ** argv)
 
   bool got_grasp_tf = false;
   tf2::Transform T_world_grasp;
+  double configured_object_yaw = std::numeric_limits<double>::quiet_NaN();
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener;
@@ -1150,6 +1360,59 @@ int main(int argc, char ** argv)
         world_frame.c_str(), grasp_frame_name.c_str(), tf_lookup_timeout_s,
         tf_error.c_str());
       result = Result::TF_LOOKUP_TIMEOUT;
+    }
+
+    // Record configured object yaw whenever the static reference is already
+    // available, independently of whether this run consumes perceived yaw.
+    // This lookup is deliberately best-effort for default-off behavior: a
+    // missing/invalid telemetry reference must not create a new failure path.
+    bool got_object_tf = false;
+    tf2::Transform T_world_object;
+    if (tf_buffer->canTransform(world_frame, object_frame_name, tf2::TimePointZero, &tf_error)) {
+      auto stamped = tf_buffer->lookupTransform(world_frame, object_frame_name, tf2::TimePointZero);
+      tf2::fromMsg(stamped.transform, T_world_object);
+      got_object_tf = true;
+      const auto telemetry_yaw = configured_object_planar_yaw(T_world_object);
+      if (telemetry_yaw) {
+        configured_object_yaw_deg = *telemetry_yaw * 180.0 / M_PI;
+      }
+    }
+
+    if (ur5e_pick_place::ok(result) && use_perceived_yaw) {
+      const auto object_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(tf_lookup_timeout_s);
+      while (!got_object_tf && std::chrono::steady_clock::now() < object_deadline) {
+        if (tf_buffer->canTransform(world_frame, object_frame_name, tf2::TimePointZero, &tf_error)) {
+          auto stamped = tf_buffer->lookupTransform(world_frame, object_frame_name, tf2::TimePointZero);
+          tf2::fromMsg(stamped.transform, T_world_object);
+          got_object_tf = true;
+          break;
+        }
+        rclcpp::sleep_for(20ms);
+      }
+      if (!got_object_tf) {
+        RCLCPP_ERROR(
+          logger,
+          "TF_LOOKUP_TIMEOUT: could not resolve %s -> %s within %.1fs: %s",
+          world_frame.c_str(), object_frame_name.c_str(), tf_lookup_timeout_s,
+          tf_error.c_str());
+        result = Result::TF_LOOKUP_TIMEOUT;
+      } else {
+        std::string geometry_error;
+        if (!configured_yaw_reference_supported(
+            T_world_object, T_world_grasp, configured_object_yaw, geometry_error))
+        {
+          RCLCPP_ERROR(
+            logger, "CONFIG_ERROR: perceived-yaw targeting requires %s.", geometry_error.c_str());
+          result = Result::CONFIG_ERROR;
+        } else {
+          configured_object_yaw_deg = configured_object_yaw * 180.0 / M_PI;
+        }
+      }
+    }
+    if (got_grasp_tf) {
+      const auto & basis = T_world_grasp.getBasis();
+      commanded_grasp_yaw_deg = std::atan2(basis[1][0], basis[0][0]) * 180.0 / M_PI;
     }
   }
 
@@ -1195,9 +1458,30 @@ int main(int argc, char ** argv)
     move_group.setNumPlanningAttempts(plan_attempts);
     move_group.setMaxVelocityScalingFactor(vel_scale);
     move_group.setMaxAccelerationScalingFactor(acc_scale);
+    move_group.startStateMonitor(startup_state_timeout_s);
 
     // =====================================================================
-    // MILESTONE F1: M1 observation pose -> stationarity -> ONE fresh sample
+    // PLANNING SCENE: Initialize PlanningSceneManager & Table CollisionObject
+    // =====================================================================
+    auto psm = std::make_shared<ur5e_pick_place::PlanningSceneManager>(node, world_frame);
+    if (ur5e_pick_place::ok(result)) {
+      std::string scene_err;
+      if (!psm->initializeTable(scene_err)) {
+        RCLCPP_ERROR(logger, "SCENE_INIT_FAILURE: table initialization failed: %s", scene_err.c_str());
+        result = Result::SCENE_INIT_FAILURE;
+      } else if (!psm->verifyExpectedScene(scene_err)) {
+        RCLCPP_ERROR(logger, "SCENE_INIT_FAILURE: startup table verification failed: %s", scene_err.c_str());
+        result = Result::SCENE_INIT_FAILURE;
+      } else {
+        RCLCPP_INFO(
+          logger, "SCENE_INIT_SUCCESS: table initialized and verified with fingerprint %s",
+          psm->fingerprint().c_str());
+      }
+    }
+
+    // =====================================================================
+    // MILESTONE F1 / Stage-2C: M1 observation pose -> stationarity -> fresh
+    // position and (when enabled) independently subscribed yaw samples.
     // =====================================================================
     // Order matters and is not negotiable.  Milestones C, D and E were every
     // one of them validated with the arm at M1; a sample taken from any other
@@ -1206,28 +1490,6 @@ int main(int argc, char ** argv)
     // that could have been exposed while the arm was still moving.
     rclcpp::Time m1_stationary_stamp(0, 0, RCL_ROS_TIME);
     if (ur5e_pick_place::ok(result) && use_perceived_position) {
-      RCLCPP_INFO(logger, "F1: moving to the M1 observation pose before perceiving.");
-      std::map<std::string, double> m1_target;
-      for (std::size_t i = 0; i < m1_joint_names.size(); ++i) {
-        m1_target[m1_joint_names[i]] = m1_goal_positions[i];
-      }
-      move_group.setJointValueTarget(m1_target);
-      moveit::planning_interface::MoveGroupInterface::Plan m1_plan;
-      if (move_group.plan(m1_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(logger, "PLAN_FAILURE: could not plan to the M1 observation pose.");
-        result = Result::PLAN_FAILURE;
-      } else if (move_group.execute(m1_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-        RCLCPP_ERROR(logger, "EXECUTE_FAILURE: M1 observation pose execution failed.");
-        result = Result::EXECUTE_FAILURE;
-      } else {
-        RCLCPP_INFO(logger, "F1: M1 reached.");
-      }
-    }
-
-    if (ur5e_pick_place::ok(result) && use_perceived_position) {
-      // Stationarity from /joint_states velocities.  A single below-threshold
-      // sample is not evidence of rest -- the same lesson gz_settle.py records
-      // -- so N consecutive samples are required.
       struct JointWatch
       {
         std::mutex mutex;
@@ -1241,62 +1503,118 @@ int main(int argc, char ** argv)
           watch->last = std::move(msg);
         });
 
-      int consecutive = 0;
-      double last_vmax = -1.0;
-      const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::duration<double>(stationary_timeout_s);
-      while (std::chrono::steady_clock::now() < deadline &&
-        consecutive < stationary_consecutive_samples)
-      {
-        rclcpp::sleep_for(50ms);
-        sensor_msgs::msg::JointState::ConstSharedPtr snap;
+      // 1. Genuine startup state acquisition & M1 verification
+      // Startup policy A: the simulation is spawned at M1. Never command an
+      // unknown-target home->M1 path as a fallback.
+      // Explicitly wait for at least one genuine JointState sample containing
+      // all required arm joints before evaluating M1. Never evaluate an
+      // unpopulated default RobotState as physical robot state.
+      sensor_msgs::msg::JointState::ConstSharedPtr initial_js;
+      const auto state_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(startup_state_timeout_s);
+      while (std::chrono::steady_clock::now() < state_deadline) {
         {
           std::lock_guard<std::mutex> lock(watch->mutex);
-          snap = watch->last;
-        }
-        if (!snap || snap->velocity.empty()) {
-          continue;
-        }
-        double vmax = 0.0;
-        bool complete = true;
-        for (const auto & joint_name : m1_joint_names) {
-          const auto it = std::find(snap->name.begin(), snap->name.end(), joint_name);
-          if (it == snap->name.end()) {
-            complete = false;
+          if (watch->last && joint_state_has_joints(*watch->last, m1_joint_names)) {
+            initial_js = watch->last;
             break;
           }
-          const std::size_t idx =
-            static_cast<std::size_t>(std::distance(snap->name.begin(), it));
-          if (idx >= snap->velocity.size()) {
-            complete = false;
-            break;
-          }
-          vmax = std::max(vmax, std::abs(snap->velocity[idx]));
         }
-        if (!complete) {
-          continue;
-        }
-        last_vmax = vmax;
-        consecutive = (vmax < stationary_velocity_eps) ? consecutive + 1 : 0;
+        rclcpp::sleep_for(10ms);
       }
 
-      if (consecutive < stationary_consecutive_samples) {
+      double max_error = 0.0;
+      result = evaluate_startup_sample_and_m1(
+        initial_js, m1_joint_names, m1_goal_positions, startup_m1_tolerance_rad, max_error);
+      if (result == Result::SUCCESS) {
+        RCLCPP_INFO(
+          logger, "STARTUP_M1_VERIFIED: max joint error %.6f rad (tolerance %.6f rad).",
+          max_error, startup_m1_tolerance_rad);
+      } else if (result == Result::STARTUP_NOT_AT_M1) {
         RCLCPP_ERROR(
           logger,
-          "EXECUTE_FAILURE: the six arm joints never held below %.2e rad/s for %d "
-          "consecutive samples within %.1fs at M1 (last max |velocity| = %.3e). "
-          "Refusing to perceive from a moving arm.",
-          stationary_velocity_eps, stationary_consecutive_samples, stationary_timeout_s,
-          last_vmax);
-        result = Result::EXECUTE_FAILURE;
-      } else {
-        m1_stationary_stamp = node->now();
-        RCLCPP_INFO(
+          "STARTUP_NOT_AT_M1: max joint error %.6f rad exceeds %.6f rad; refusing any arm trajectory before perception.",
+          max_error, startup_m1_tolerance_rad);
+      } else if (result == Result::STARTUP_STATE_UNAVAILABLE) {
+        RCLCPP_ERROR(
           logger,
-          "F1: M1_STATIONARY max|velocity|=%.3e rad/s over %d consecutive samples; "
-          "freshness boundary = %.9f (sim time). Observations at or before this "
-          "stamp are rejected.",
-          last_vmax, stationary_consecutive_samples, m1_stationary_stamp.seconds());
+          "STARTUP_STATE_UNAVAILABLE: no genuine joint_states sample containing required arm joints "
+          "received within %.1fs; refusing any arm trajectory before perception.",
+          startup_state_timeout_s);
+      } else {
+        RCLCPP_ERROR(
+          logger,
+          "CONFIG_ERROR: failed to extract required arm joints from startup state.");
+      }
+
+      // 2. Stationarity verification from /joint_states velocities.
+      if (ur5e_pick_place::ok(result)) {
+        int consecutive = 0;
+        double last_vmax = -1.0;
+        const auto deadline = std::chrono::steady_clock::now() +
+          std::chrono::duration<double>(stationary_timeout_s);
+        while (std::chrono::steady_clock::now() < deadline &&
+          consecutive < stationary_consecutive_samples)
+        {
+          rclcpp::sleep_for(50ms);
+          sensor_msgs::msg::JointState::ConstSharedPtr snap;
+          {
+            std::lock_guard<std::mutex> lock(watch->mutex);
+            snap = watch->last;
+          }
+          if (!snap || snap->velocity.empty()) {
+            continue;
+          }
+          double vmax = 0.0;
+          bool complete = true;
+          for (const auto & joint_name : m1_joint_names) {
+            const auto it = std::find(snap->name.begin(), snap->name.end(), joint_name);
+            if (it == snap->name.end()) {
+              complete = false;
+              break;
+            }
+            const std::size_t idx =
+              static_cast<std::size_t>(std::distance(snap->name.begin(), it));
+            if (idx >= snap->velocity.size()) {
+              complete = false;
+              break;
+            }
+            vmax = std::max(vmax, std::abs(snap->velocity[idx]));
+          }
+          if (!complete) {
+            continue;
+          }
+          last_vmax = vmax;
+          consecutive = (vmax < stationary_velocity_eps) ? consecutive + 1 : 0;
+        }
+
+        if (consecutive < stationary_consecutive_samples) {
+          RCLCPP_ERROR(
+            logger,
+            "EXECUTE_FAILURE: the six arm joints never held below %.2e rad/s for %d "
+            "consecutive samples within %.1fs at M1 (last max |velocity| = %.3e). "
+            "Refusing to perceive from a moving arm.",
+            stationary_velocity_eps, stationary_consecutive_samples, stationary_timeout_s,
+            last_vmax);
+          result = Result::EXECUTE_FAILURE;
+        } else {
+          sensor_msgs::msg::JointState::ConstSharedPtr final_snap;
+          {
+            std::lock_guard<std::mutex> lock(watch->mutex);
+            final_snap = watch->last;
+          }
+          if (final_snap) {
+            m1_stationary_stamp = final_snap->header.stamp;
+          } else {
+            m1_stationary_stamp = node->now();
+          }
+          RCLCPP_INFO(
+            logger,
+            "F1: M1_STATIONARY max|velocity|=%.3e rad/s over %d consecutive samples; "
+            "freshness boundary = %.9f (sim time). Observations at or before this "
+            "stamp are rejected.",
+            last_vmax, stationary_consecutive_samples, m1_stationary_stamp.seconds());
+        }
       }
     }
 
@@ -1309,10 +1627,12 @@ int main(int argc, char ** argv)
     // TOP-SURFACE centre, grasp_frame is anchored at the object CENTRE
     // (static_scene_tf.cpp publishes object_frame -> grasp_frame with zero
     // translation), hence the explicit half-height subtraction.  Only the
-    // translation is replaced; the rotation stays exactly as
-    // orientation_from_approach_axis derived it from approach_axis and
-    // gripper_roll.  object_height_m comes from the configured object size --
-    // nothing here is hardcoded, and no empirical correction is applied.
+    // translation is replaced. With the default yaw mode disabled, the
+    // rotation stays exactly as orientation_from_approach_axis derived it
+    // from approach_axis and gripper_roll. Stage-2C's separate yaw block
+    // below may pre-multiply only an axial world-Z delta. object_height_m
+    // comes from the configured object size -- nothing here is hardcoded,
+    // and no empirical correction is applied.
     //
     // MILESTONE F1 additions: the accepted sample must be stamped strictly
     // after the M1 stationarity boundary, and require_perception removes the
@@ -1417,6 +1737,88 @@ int main(int argc, char ** argv)
       }
     }
 
+    // Stage-2C yaw is deliberately a separate subscription from the position
+    // path above. A valid position never authorises a configured-yaw fallback:
+    // if no fresh valid pose arrives, this run stops before target composition.
+    if (ur5e_pick_place::ok(result) && use_perceived_yaw) {
+      geometry_msgs::msg::PoseStamped::ConstSharedPtr perceived_pose;
+      std::mutex perceived_pose_mutex;
+      std::size_t rejected_stale = 0;
+      std::size_t rejected_invalid = 0;
+      auto pose_subscription = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+        perceived_pose_topic, 10,
+        [&perceived_pose, &perceived_pose_mutex, &rejected_stale, &rejected_invalid, &world_frame,
+        &m1_stationary_stamp](geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+          if (msg->header.frame_id != world_frame || !planar_yaw_from_valid_quaternion(*msg)) {
+            std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+            ++rejected_invalid;
+            return;
+          }
+          if (!is_fresh_world_pose(*msg, world_frame, m1_stationary_stamp)) {
+            std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+            ++rejected_stale;
+            return;
+          }
+          std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+          if (!perceived_pose) {
+            perceived_pose = std::move(msg);
+          }
+        });
+
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(perceived_position_timeout_s);
+      while (std::chrono::steady_clock::now() < deadline) {
+        {
+          std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+          if (perceived_pose) {
+            break;
+          }
+        }
+        rclcpp::sleep_for(20ms);
+      }
+
+      geometry_msgs::msg::PoseStamped::ConstSharedPtr sample;
+      std::size_t stale_count = 0;
+      std::size_t invalid_count = 0;
+      {
+        std::lock_guard<std::mutex> lock(perceived_pose_mutex);
+        sample = perceived_pose;
+        stale_count = rejected_stale;
+        invalid_count = rejected_invalid;
+      }
+      if (sample) {
+        const double perceived_yaw = *planar_yaw_from_valid_quaternion(*sample);
+        const double delta = ur5e_pick_place::axial_difference(
+          perceived_yaw, configured_object_yaw);
+        T_world_grasp.setBasis(grasp_basis_with_perceived_yaw(
+          T_world_grasp.getBasis(), true, perceived_yaw, configured_object_yaw));
+        perceived_object_yaw_deg = perceived_yaw * 180.0 / M_PI;
+        yaw_delta_deg = delta * 180.0 / M_PI;
+        const auto & basis = T_world_grasp.getBasis();
+        commanded_grasp_yaw_deg = std::atan2(basis[1][0], basis[0][0]) * 180.0 / M_PI;
+        yaw_source = "perceived";
+        RCLCPP_INFO(
+          logger,
+          "PERCEPTION_YAW_USED: stamp=%.9f (boundary %.9f) configured_object_yaw_deg=%.6f "
+          "perceived_object_yaw_deg=%.6f axial_delta_deg=%.6f "
+          "commanded_grasp_yaw_deg=%.6f; rejected_stale=%zu rejected_invalid=%zu",
+          rclcpp::Time(sample->header.stamp).seconds(), m1_stationary_stamp.seconds(),
+          configured_object_yaw_deg, perceived_object_yaw_deg, yaw_delta_deg,
+          commanded_grasp_yaw_deg, stale_count, invalid_count);
+      } else {
+        yaw_source = "perception_timeout";
+        RCLCPP_ERROR(
+          logger,
+          "PERCEPTION_TIMEOUT: no fresh valid %s PoseStamped in frame '%s' stamped after "
+          "the M1 stationarity boundary %.9f within %.2fs (rejected_stale=%zu "
+          "rejected_invalid=%zu). NOT falling back to configured yaw, NOT planning, "
+          "NOT executing.",
+          perceived_pose_topic.c_str(), world_frame.c_str(), m1_stationary_stamp.seconds(),
+          perceived_position_timeout_s, stale_count, invalid_count);
+        result = perceived_yaw_sample_result(false);
+      }
+    }
+
     // Same construction as m2_cartesian_approach.cpp, generalised to X,Y,Z via
     // grasp_tcp_offset_vec (defined above): tool0 -> grasp_tcp is
     // Translation(grasp_tcp_offset_vec); its inverse (grasp target -> tool0
@@ -1477,12 +1879,43 @@ int main(int argc, char ** argv)
           T_world_grasp.getOrigin().x(), T_world_grasp.getOrigin().y(),
           T_world_grasp.getOrigin().z());
       }
+
+      // Insert perceived target into planning scene as WORLD CollisionObject
+      if (ur5e_pick_place::ok(result)) {
+        geometry_msgs::msg::Pose perceived_target_pose;
+        perceived_target_pose.position.x = T_world_grasp.getOrigin().x();
+        perceived_target_pose.position.y = T_world_grasp.getOrigin().y();
+        perceived_target_pose.position.z = T_world_grasp.getOrigin().z();
+        tf2::Quaternion q_target;
+        T_world_grasp.getBasis().getRotation(q_target);
+        perceived_target_pose.orientation = tf2::toMsg(q_target);
+
+        std::string scene_err;
+        if (!psm->addWorldTarget(perceived_target_pose, scene_err)) {
+          RCLCPP_ERROR(
+            logger, "TARGET_INSERTION_FAILURE: failed to insert world target: %s",
+            scene_err.c_str());
+          result = Result::TARGET_INSERTION_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "SCENE_STALE_OR_CORRUPT: target scene verification failed: %s",
+            scene_err.c_str());
+          result = Result::SCENE_STALE_OR_CORRUPT;
+        } else {
+          RCLCPP_INFO(
+            logger,
+            "SCENE_TARGET_INSERTED: pick_target added to world at [%.6f %.6f %.6f] "
+            "with fingerprint %s",
+            perceived_target_pose.position.x, perceived_target_pose.position.y,
+            perceived_target_pose.position.z, psm->fingerprint().c_str());
+        }
+      }
     }
 
     // Stage 1: joint-space plan+execute to pre-grasp. Same reasoning as M2.
     moveit::planning_interface::MoveGroupInterface::Plan pregrasp_plan;
     bool pregrasp_planned = false;
-    if (may_move) {
+    if (may_move && ur5e_pick_place::ok(result)) {
       pregrasp_attempted = true;
       move_group.setStartStateToCurrentState();
       if (pregrasp_joint_target.empty()) {
@@ -1682,6 +2115,16 @@ int main(int argc, char ** argv)
 
     // Stage 2: short vertical Cartesian descent to the corrected grasp
     // target. Same 0.95-fraction discipline as M2.
+    if (ur5e_pick_place::ok(result) && !pregrasp_only) {
+      std::string scene_err;
+      if (!psm->verifyExpectedScene(scene_err)) {
+        RCLCPP_ERROR(
+          logger, "SCENE_STALE_OR_CORRUPT: scene invalid before descent: %s",
+          scene_err.c_str());
+        result = Result::SCENE_STALE_OR_CORRUPT;
+      }
+    }
+
     if (ur5e_pick_place::ok(result) && !pregrasp_only) {
       descent_attempted = true;
       commanded_tcp[0] = T_world_grasp.getOrigin().x();
@@ -2040,10 +2483,33 @@ int main(int argc, char ** argv)
         logger, "RESOLVED FINAL CLOSE TARGET: target_position=%.6f %s (aperture=%.6f m)",
         target_position, is_parallel_jaw ? "m" : "rad",
         is_parallel_jaw ? (0.085 - target_position) : -1.0);
-      grip = gripper_close_and_hold(
-        gripper_client, target_position, gripper_max_effort, gripper_command_timeout_s,
-        gz_js_topic, actuated_joint, logger);
-      have_grip_result = true;
+
+      // Enable C1/C2 closure contacts in ACM immediately before final gripper closure
+      if (ur5e_pick_place::ok(result)) {
+        std::string scene_err;
+        if (!psm->enableClosureContacts(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "CLOSURE_ACM_FAILURE: could not enable C1/C2 closure contacts: %s",
+            scene_err.c_str());
+          result = Result::CLOSURE_ACM_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "CLOSURE_ACM_FAILURE: C1/C2 readback verification failed: %s",
+            scene_err.c_str());
+          result = Result::CLOSURE_ACM_FAILURE;
+        } else {
+          RCLCPP_INFO(
+            logger, "CLOSURE_ACM_VERIFIED: C1/C2 enabled in ACM with fingerprint %s",
+            psm->fingerprint().c_str());
+        }
+      }
+
+      if (ur5e_pick_place::ok(result)) {
+        grip = gripper_close_and_hold(
+          gripper_client, target_position, gripper_max_effort, gripper_command_timeout_s,
+          gz_js_topic, actuated_joint, logger);
+        have_grip_result = true;
+      }
 
       RCLCPP_INFO(
         logger, "gripper_close_and_hold: %s in achieved=%.4f %s (target was %.4f)",
@@ -2096,6 +2562,29 @@ int main(int argc, char ** argv)
           "achieved_q=%.6f expected_q=%.6f (width=%.4fm) |err|=%.6f tolerance=%.6f m -> %s",
           grip.achieved_position, pj_q_final_expected, object_width_m, pj_err,
           pj_grasp_tolerance_m, within_tolerance ? "WITHIN TOLERANCE" : "OUTSIDE TOLERANCE");
+      }
+
+      // Attach target to gripper only after physical grasp success verification
+      if (ur5e_pick_place::ok(result) && have_grip_result &&
+          grip.kind != GripperCloseResult::Kind::UNKNOWN_NO_SAMPLE)
+      {
+        std::string scene_err;
+        if (!psm->attachTarget(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "ATTACH_FAILURE: failed to attach target to gripper: %s",
+            scene_err.c_str());
+          result = Result::ATTACH_FAILURE;
+        } else if (!psm->verifyExpectedScene(scene_err)) {
+          RCLCPP_ERROR(
+            logger, "ATTACH_FAILURE: attached target readback verification failed: %s",
+            scene_err.c_str());
+          result = Result::ATTACH_FAILURE;
+        } else {
+          RCLCPP_INFO(
+            logger,
+            "TARGET_ATTACHED_VERIFIED: pick_target attached to gripper_base_link with pad touch links; S enabled (fingerprint %s).",
+            psm->fingerprint().c_str());
+        }
       }
     }
 
@@ -2204,6 +2693,9 @@ int main(int argc, char ** argv)
         tp.cycle_index = 0;
         tp.sim_instance = 0;
         tp.marker_file_prefix = marker_file_prefix;
+        tp.planning_scene_manager = psm;
+        tp.pickup_clearance_m = 0.005;
+        tp.terminal_stroke_m = 0.005;
         // Grasp-loss check (transport.hpp's Stage 3 note). Left at
         // TransportParams' own defaults (expected_grip_angle=0.0, disabling
         // the check) when the grasp table didn't resolve an expected angle
@@ -2358,7 +2850,9 @@ int main(int argc, char ** argv)
       // afterwards from commanded coordinates is not acceptable -- a fallback
       // run and a perceived run differ by ~1 mm, which is unreadable without
       // already knowing the configured value.
-      csv << "result,position_source,pregrasp_only,grasp_only,"
+      csv << "result,position_source,yaw_source,configured_object_yaw_deg,"
+             "perceived_object_yaw_deg,yaw_delta_deg,commanded_grasp_yaw_deg,"
+             "pregrasp_only,grasp_only,"
              "pregrasp_attempted,pregrasp_succeeded,descent_attempted,descent_succeeded,"
              "gripper_close_attempted,gripper_close_succeeded,f2_stop_reached,"
              "lift_attempted,transport_attempted,place_release_attempted,"
@@ -2392,7 +2886,9 @@ int main(int argc, char ** argv)
         ? (kParallelJawApertureFullOpenM - final_close_target_commanded) : -1.0;
       const double achieved_aperture_m = (is_parallel_jaw && have_grip_result)
         ? (kParallelJawApertureFullOpenM - grip.achieved_position) : -1.0;
-      csv << to_string(result) << ',' << position_source
+      csv << to_string(result) << ',' << position_source << ',' << yaw_source
+          << ',' << configured_object_yaw_deg << ',' << perceived_object_yaw_deg
+          << ',' << yaw_delta_deg << ',' << commanded_grasp_yaw_deg
           << ',' << (pregrasp_only ? 1 : 0) << ',' << (grasp_only ? 1 : 0)
           << ',' << (pregrasp_attempted ? 1 : 0) << ',' << (pregrasp_succeeded ? 1 : 0)
           << ',' << (descent_attempted ? 1 : 0) << ',' << (executed ? 1 : 0)
@@ -2433,7 +2929,9 @@ int main(int argc, char ** argv)
   RCLCPP_INFO(
     rclcpp::get_logger("m3_grasp"),
     "RUN SUMMARY: milestone=M3 gripper_model=%s command_units=%s result=%s "
-    "position_source=%s pregrasp_only=%s grasp_only=%s "
+    "position_source=%s yaw_source=%s configured_object_yaw_deg=%.4f "
+    "perceived_object_yaw_deg=%.4f yaw_delta_deg=%.4f commanded_grasp_yaw_deg=%.4f "
+    "pregrasp_only=%s grasp_only=%s "
     "lift_only=%s lift_only_stop_reached=%s "
     "pregrasp_attempted=%s pregrasp_succeeded=%s descent_attempted=%s "
     "descent_succeeded=%s gripper_close_attempted=%s gripper_close_succeeded=%s "
@@ -2443,7 +2941,9 @@ int main(int argc, char ** argv)
     "expected_grip_angle=%.4f within_tolerance=%s preclose_result=%s preclose_achieved=%.4f "
     "attempted_transport=%s transport_result=%s lift_result=%s",
     gripper_model.c_str(), is_parallel_jaw ? "m" : "rad",
-    to_string(result), position_source.c_str(), pregrasp_only ? "yes" : "no",
+    to_string(result), position_source.c_str(), yaw_source.c_str(), configured_object_yaw_deg,
+    perceived_object_yaw_deg, yaw_delta_deg, commanded_grasp_yaw_deg,
+    pregrasp_only ? "yes" : "no",
     grasp_only ? "yes" : "no", lift_only ? "yes" : "no",
     lift_only_stop_reached ? "yes" : "no", pregrasp_attempted ? "yes" : "no",
     pregrasp_succeeded ? "yes" : "no", descent_attempted ? "yes" : "no",
@@ -2482,3 +2982,4 @@ int main(int argc, char ** argv)
 
   return ur5e_pick_place::ok(result) ? 0 : 1;
 }
+#endif  // UR5E_PICK_PLACE_M3_GRASP_UNIT_TEST

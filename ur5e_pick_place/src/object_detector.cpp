@@ -28,6 +28,7 @@
 
 #include <cv_bridge/cv_bridge.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/synchronizer.h>
@@ -39,6 +40,12 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
 #include <std_msgs/msg/u_int32.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+#include "ur5e_pick_place/d10_trimmed_mean.hpp"
+#include "ur5e_pick_place/edge_line_tls.hpp"
+#include "ur5e_pick_place/pixel_centre_shadow.hpp"
 
 namespace
 {
@@ -53,9 +60,9 @@ struct Position3D
   std::size_t mask_pixels{0};
   std::size_t valid_points{0};
   std::size_t invalid_points{0};
-  double median_x{std::numeric_limits<double>::quiet_NaN()};
-  double median_y{std::numeric_limits<double>::quiet_NaN()};
-  double median_z{std::numeric_limits<double>::quiet_NaN()};
+  double d10_x{std::numeric_limits<double>::quiet_NaN()};
+  double d10_y{std::numeric_limits<double>::quiet_NaN()};
+  double d10_z{std::numeric_limits<double>::quiet_NaN()};
   double mean_x{std::numeric_limits<double>::quiet_NaN()};
   double mean_y{std::numeric_limits<double>::quiet_NaN()};
   double mean_z{std::numeric_limits<double>::quiet_NaN()};
@@ -63,22 +70,6 @@ struct Position3D
   double std_y{std::numeric_limits<double>::quiet_NaN()};
   double std_z{std::numeric_limits<double>::quiet_NaN()};
 };
-
-// Sample median: mean of the two central order statistics for an even count.
-// Declared here rather than inline so the estimator's definition is one
-// readable line at the call site.
-double median_of(std::vector<double> & values)
-{
-  const std::size_t n = values.size();
-  const std::size_t mid = n / 2;
-  std::nth_element(values.begin(), values.begin() + mid, values.end());
-  const double upper = values[mid];
-  if (n % 2 != 0) {
-    return upper;
-  }
-  const double lower = *std::max_element(values.begin(), values.begin() + mid);
-  return 0.5 * (lower + upper);
-}
 
 struct Detection
 {
@@ -112,6 +103,8 @@ public:
     max_component_area_ = declare_parameter("max_component_area", 5000);
     min_component_width_ = declare_parameter("min_component_width", 16);
     min_component_height_ = declare_parameter("min_component_height", 10);
+    pixel_centre_shadow_enabled_ = declare_parameter(
+      "enable_pixel_centre_shadow", ur5e_pick_place::kPixelCentreShadowDefaultEnabled);
 
     detected_pub_ = create_publisher<std_msgs::msg::Bool>("object_detector/detected", 10);
     mask_pub_ = create_publisher<Image>("object_detector/mask", 10);
@@ -125,8 +118,14 @@ public:
     // valid back-projected point; never a placeholder, never [0,0,0].
     position_pub_ =
       create_publisher<geometry_msgs::msg::PointStamped>("object_detector/position_camera", 10);
+    if (pixel_centre_shadow_enabled_) {
+      shadow_position_pub_ = create_publisher<geometry_msgs::msg::PointStamped>(
+        "object_detector/position_camera_shadow", 10);
+    }
+    pose_pub_ =
+      create_publisher<geometry_msgs::msg::PoseStamped>("object_detector/pose_camera", 10);
 
-    sync_.setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.05));
+    sync_.setMaxIntervalDuration(rclcpp::Duration::from_seconds(0.20));
     sync_.registerCallback(
       std::bind(&ObjectDetector::callback, this, std::placeholders::_1,
       std::placeholders::_2, std::placeholders::_3));
@@ -136,6 +135,9 @@ public:
       "Fixed detector: brightness>=%d chroma<=%d height=[%.3f,%.3f] m area=[%d,%d]",
       brightness_min_, chroma_max_, min_height_m_, max_height_m_, min_component_area_,
       max_component_area_);
+    RCLCPP_INFO(
+      get_logger(), "pixel-centre shadow estimator: %s (production output unchanged)",
+      pixel_centre_shadow_enabled_ ? "ENABLED" : "disabled");
   }
 
 private:
@@ -203,14 +205,23 @@ private:
       const int area = stats.at<int>(label, cv::CC_STAT_AREA);
       const int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
       const int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+      const int max_dim = std::max(width, height);
+      const int min_dim = std::min(width, height);
       if (area >= min_component_area_ && area <= max_component_area_ &&
-        width >= min_component_width_ && height >= min_component_height_ &&
+        max_dim >= min_component_width_ && min_dim >= min_component_height_ &&
         (selected < 0 || area > stats.at<int>(selected, cv::CC_STAT_AREA)))
       {
         selected = label;
       }
     }
     if (selected < 0) {
+      for (int label = 1; label < count; ++label) {
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        const int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
+        const int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+        RCLCPP_DEBUG(get_logger(), "NO_OBJECT component label=%d area=%d (gate=[%d,%d]) w=%d h=%d (gates=[%d,%d])",
+          label, area, min_component_area_, max_component_area_, width, height, min_component_width_, min_component_height_);
+      }
       return result;
     }
 
@@ -242,7 +253,8 @@ private:
   // deliberately no empirical XYZ gating and no ground-truth-derived offset:
   // any such filter would make the estimate a function of the answer.
   Position3D backproject(
-    const cv::Mat & depth, const cv::Mat & mask, const CameraInfo & info) const
+    const cv::Mat & depth, const cv::Mat & mask, const CameraInfo & info,
+    const cv::Point2d & centroid) const
   {
     Position3D out;
     const double fx = info.k[0];
@@ -298,12 +310,16 @@ private:
     moments(ys, out.mean_y, out.std_y);
     moments(zs, out.mean_z, out.std_z);
 
-    // The estimator is the median.  Mean/stddev above are diagnostics only.
-    // median_of reorders its argument, so it is called on the vectors after
-    // the moments are taken.
-    out.median_x = median_of(xs);
-    out.median_y = median_of(ys);
-    out.median_z = median_of(zs);
+    // D10: symmetrically trim floor(10% * N) samples from each sorted depth
+    // tail, then back-project the selected component's subpixel centroid.
+    // The per-pixel XYZ moments above remain diagnostics only.
+    const auto d10_z = ur5e_pick_place::d10_trimmed_mean(zs);
+    if (!d10_z.has_value()) {
+      return out;
+    }
+    out.d10_z = *d10_z;
+    out.d10_x = (centroid.x - cx) * out.d10_z / fx;
+    out.d10_y = (centroid.y - cy) * out.d10_z / fy;
     out.valid = true;
     return out;
   }
@@ -314,21 +330,37 @@ private:
       return;
     }
     camera_info_reported_ = true;
-    const bool resolution_ok = (info.width == 960u && info.height == 720u);
+    const double sx = static_cast<double>(info.width) / 960.0;
+    const double sy = static_cast<double>(info.height) / 720.0;
+    const bool isotropic = (std::abs(sx - sy) < 1e-4);
+
+    if (!isotropic) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "CAMERA_INFO non-isotropic scaling rejected: width=%u height=%u (sx=%.4f, sy=%.4f)",
+        info.width, info.height, sx, sy);
+      return;
+    }
+
+    if (std::abs(sx - 1.0) > 1e-4) {
+      min_component_area_ = static_cast<int>(std::round(min_component_area_ * sx * sy));
+      max_component_area_ = static_cast<int>(std::round(max_component_area_ * sx * sy));
+      min_component_width_ = static_cast<int>(std::round(min_component_width_ * sx));
+      min_component_height_ = static_cast<int>(std::round(min_component_height_ * sx));
+    }
+
     RCLCPP_INFO(
       get_logger(),
-      "CAMERA_INFO frame=%s width=%u height=%u expected=960x720 resolution_match=%s "
+      "CAMERA_INFO frame=%s width=%u height=%u scale=%.2fx (sx=%.4f, sy=%.4f) "
+      "scaled_gates: area=[%d,%d] width_min=%d height_min=%d "
       "fx=%.9f fy=%.9f cx=%.9f cy=%.9f "
       "K=[%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f] "
       "optical_convention=+X_image_right,+Y_image_down,+Z_camera_forward",
-      info.header.frame_id.c_str(), info.width, info.height, resolution_ok ? "yes" : "NO",
+      info.header.frame_id.c_str(), info.width, info.height, sx, sx, sy,
+      min_component_area_, max_component_area_, min_component_width_, min_component_height_,
       info.k[0], info.k[4], info.k[2], info.k[5],
       info.k[0], info.k[1], info.k[2], info.k[3], info.k[4], info.k[5],
       info.k[6], info.k[7], info.k[8]);
-    if (!resolution_ok) {
-      RCLCPP_ERROR(
-        get_logger(), "CAMERA_INFO resolution is not the frozen 960x720; estimates are suspect");
-    }
   }
 
   void callback(
@@ -367,7 +399,7 @@ private:
     auto recon_finished = seg_finished;
     if (detection.found) {
       recon_started = std::chrono::steady_clock::now();
-      position = backproject(depth, mask, *info_msg);
+      position = backproject(depth, mask, *info_msg, detection.centroid);
       recon_finished = std::chrono::steady_clock::now();
     }
     const double seg_ms =
@@ -409,10 +441,102 @@ private:
         geometry_msgs::msg::PointStamped camera_position;
         camera_position.header.stamp = rgb_msg->header.stamp;
         camera_position.header.frame_id = info_msg->header.frame_id;
-        camera_position.point.x = position.median_x;
-        camera_position.point.y = position.median_y;
-        camera_position.point.z = position.median_z;
+        camera_position.point.x = position.d10_x;
+        camera_position.point.y = position.d10_y;
+        camera_position.point.z = position.d10_z;
         position_pub_->publish(camera_position);
+
+        // Default-off diagnostic only: use the unchanged D10 depth with the
+        // same runtime intrinsics and a +0.5,+0.5 pixel centroid.  The shadow
+        // point is never substituted for position_camera or pose_camera.
+        if (pixel_centre_shadow_enabled_) {
+          const ur5e_pick_place::PixelCentroid raw_centroid{
+            detection.centroid.x, detection.centroid.y};
+          const auto corrected_centroid = ur5e_pick_place::pixel_centre_corrected(raw_centroid);
+          const ur5e_pick_place::PinholeIntrinsics intrinsics{
+            info_msg->k[0], info_msg->k[4], info_msg->k[2], info_msg->k[5]};
+          const auto corrected_camera = ur5e_pick_place::backproject_centroid(
+            corrected_centroid, position.d10_z, intrinsics);
+
+          geometry_msgs::msg::PointStamped shadow_camera_position;
+          shadow_camera_position.header = camera_position.header;
+          shadow_camera_position.point.x = corrected_camera.x;
+          shadow_camera_position.point.y = corrected_camera.y;
+          shadow_camera_position.point.z = corrected_camera.z;
+          shadow_position_pub_->publish(shadow_camera_position);
+
+          RCLCPP_INFO(
+            get_logger(),
+            "PIXEL_CENTRE_SHADOW stamp=%.9f width=%u height=%u "
+            "K=[%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f] "
+            "centroid_raw=[%.9f,%.9f] centroid_corrected=[%.9f,%.9f] d10_depth=%.9f "
+            "production_camera=[%.9f,%.9f,%.9f] corrected_camera=[%.9f,%.9f,%.9f]",
+            rclcpp::Time(camera_position.header.stamp).seconds(), info_msg->width, info_msg->height,
+            info_msg->k[0], info_msg->k[1], info_msg->k[2], info_msg->k[3], info_msg->k[4],
+            info_msg->k[5], info_msg->k[6], info_msg->k[7], info_msg->k[8],
+            raw_centroid.u, raw_centroid.v, corrected_centroid.u, corrected_centroid.v,
+            position.d10_z, camera_position.point.x, camera_position.point.y,
+            camera_position.point.z, shadow_camera_position.point.x,
+            shadow_camera_position.point.y, shadow_camera_position.point.z);
+        }
+
+        // Stage-2B: Edge-Line TLS orientation estimation and camera-frame pose publication
+        const auto tls_result = ur5e_pick_place::estimate_edgelines_tls(mask);
+        if (tls_result.valid && std::isfinite(tls_result.theta_image_rad)) {
+          geometry_msgs::msg::PoseStamped camera_pose;
+          camera_pose.header = camera_position.header;
+          camera_pose.pose.position = camera_position.point;
+
+          // CONTRACT: pose_camera.orientation is the orientation of the
+          // perceived OBJECT frame expressed in camera_optical_frame -- never
+          // a world-frame yaw smuggled into a camera-frame message.
+          //
+          //   R_opt_obj = Rz(theta_image - pi/2) * Rx(pi)
+          //
+          // The Rz term carries the estimated yaw with the long-axis ->
+          // object-+X offset already removed; the Rx(pi) term is mandatory,
+          // not cosmetic -- the object's +Z points world-UP while optical +Z
+          // points DOWN into the scene, so without it the published frame is
+          // improper for a downward camera. tf2's setRPY(r, p, y) builds
+          // Rz(y)*Ry(p)*Rx(r), which is exactly this product.
+          //
+          // Composed with the URDF's R_world_opt this yields Rz(psi) in world
+          // for every angle -- proven in test_edge_line_tls.cpp's
+          // CameraFramePoseMapping suite, not assumed here.
+          tf2::Quaternion q;
+          q.setRPY(
+            ur5e_pick_place::kMaskOrientationPi, 0.0,
+            tls_result.theta_image_rad - ur5e_pick_place::kLongAxisToObjectXOffsetRad);
+          camera_pose.pose.orientation = tf2::toMsg(q);
+          pose_pub_->publish(camera_pose);
+
+          const double object_yaw_deg =
+            ur5e_pick_place::image_axial_to_object_yaw(tls_result.theta_image_rad) * 180.0 /
+            ur5e_pick_place::kMaskOrientationPi;
+          const double long_axis_world_deg =
+            ur5e_pick_place::image_axial_to_world_yaw(tls_result.theta_image_rad) * 180.0 /
+            ur5e_pick_place::kMaskOrientationPi;
+          const double theta_img_deg = tls_result.theta_image_rad * 180.0 / ur5e_pick_place::kMaskOrientationPi;
+
+          RCLCPP_INFO(
+            get_logger(),
+            "EDGE_LINE_TLS stamp=%.9f frame=%s valid=true theta_img=%.2f deg "
+            "object_yaw_axial=%.2f deg long_axis_world_axial=%.2f deg "
+            "eccentricity=%.4f boundary_pixels=%zu supports=[%zu,%zu,%zu,%zu] quality=%.1f",
+            rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
+            theta_img_deg, object_yaw_deg, long_axis_world_deg,
+            tls_result.eccentricity, tls_result.boundary_pixel_count,
+            tls_result.family_support_counts[0], tls_result.family_support_counts[1],
+            tls_result.family_support_counts[2], tls_result.family_support_counts[3],
+            tls_result.quality_score);
+        } else {
+          RCLCPP_INFO(
+            get_logger(),
+            "EDGE_LINE_TLS stamp=%.9f frame=%s refused: valid=%s eccentricity=%.4f (yaw unobservable / mask degenerate); "
+            "pose_camera omitted, position_camera published",
+            rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
+            tls_result.valid ? "true" : "false", tls_result.eccentricity);
+        }
       }
     }
     auto debug_msg = cv_bridge::CvImage(rgb_msg->header, "bgr8", debug).toImageMsg();
@@ -443,11 +567,11 @@ private:
       RCLCPP_INFO(
         get_logger(),
         "POSITION3D stamp=%.9f frame=%s mask_px=%zu valid=%zu invalid=%zu valid_pct=%.4f "
-        "median=[%.9f,%.9f,%.9f] mean=[%.9f,%.9f,%.9f] std=[%.9f,%.9f,%.9f] "
+        "d10=[%.9f,%.9f,%.9f] mean=[%.9f,%.9f,%.9f] std=[%.9f,%.9f,%.9f] "
         "seg_ms=%.3f recon_ms=%.3f total_ms=%.3f",
         rclcpp::Time(rgb_msg->header.stamp).seconds(), info_msg->header.frame_id.c_str(),
         position.mask_pixels, position.valid_points, position.invalid_points, valid_pct,
-        position.median_x, position.median_y, position.median_z,
+        position.d10_x, position.d10_y, position.d10_z,
         position.mean_x, position.mean_y, position.mean_z,
         position.std_x, position.std_y, position.std_z, seg_ms, recon_ms, latency_ms);
     } else if (detection.found) {
@@ -483,7 +607,10 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr centroid_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt32>::SharedPtr area_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr position_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr shadow_position_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
   bool camera_info_reported_{false};
+  bool pixel_centre_shadow_enabled_{false};
 };
 
 int main(int argc, char ** argv)

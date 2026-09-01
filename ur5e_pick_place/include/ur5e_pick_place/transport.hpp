@@ -80,6 +80,7 @@
 #include <string>
 
 #include "ur5e_pick_place/failure.hpp"
+#include "ur5e_pick_place/planning_scene_manager.hpp"
 
 namespace ur5e_pick_place
 {
@@ -139,6 +140,20 @@ struct TransportParams
   // Opt-in Stage 4 boundary: complete Stage 4 transport and its post-TRANSPORT_DONE dwell,
   // then return SUCCESS before PLACE_DESCEND_BEGIN.
   bool transport_only = false;
+
+  // PlanningSceneManager pointer for lifecycle integration. When non-null,
+  // transport integrates exact scene transitions (S removal after lift,
+  // S enablement at placement pre-contact, target detachment upon release).
+  std::shared_ptr<PlanningSceneManager> planning_scene_manager;
+
+  // Minimum upward lift stroke required before removing pickup support exception S (m).
+  // Derived as Mmodel (1 nm) + Uexec_working (2.0 mm) = 2.0 mm, plus 3.0 mm proposed design margin -> 0.005 m.
+  double pickup_clearance_m = 0.005;
+
+  // Terminal placement stroke distance (m).
+  // Derived as Mmodel (1 nm) + Uexec_working (2.0 mm) = 2.0 mm, plus 3.0 mm proposed design margin -> 0.005 m.
+  // Main descent stops at (standoff - terminal_stroke_m), enables S, then executes terminal_stroke_m.
+  double terminal_stroke_m = 0.005;
 
   // Emitted verbatim in the stage markers so a CSV row can be tied back to a
   // specific cycle of a specific sim instance after the fact.

@@ -95,6 +95,9 @@ def _setup(context, *args, **kwargs):
     use_perceived_position = (
         LaunchConfiguration("use_perceived_position").perform(context).lower() == "true"
     )
+    use_perceived_yaw = (
+        LaunchConfiguration("use_perceived_yaw").perform(context).lower() == "true"
+    )
     require_perception = (
         LaunchConfiguration("require_perception").perform(context).lower() == "true"
     )
@@ -196,6 +199,15 @@ def _setup(context, *args, **kwargs):
     # above, and dispatched into the m3_node parameters dict further down --
     # see that dict's own gripper_model-conditioned entries.
     gripper_model = LaunchConfiguration("gripper_model").perform(context)
+    # DIAGNOSTIC-ONLY OVERRIDE, 2026-08-29. Default reproduces
+    # parallel_jaw_geometry.GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0020 m as
+    # of 2026-08-31, raised from 0.0015 m) exactly -- passing nothing
+    # changes no run. See its own
+    # DeclareLaunchArgument below for the full rationale; this is the one
+    # override this diagnostic control is authorized to touch.
+    pj_fixed_side_clearance_m_raw = LaunchConfiguration(
+        "parallel_jaw_fixed_side_clearance_m"
+    ).perform(context)
     if gripper_model not in ("robotiq_linkage", "parallel_jaw"):
         raise RuntimeError(
             f"CONFIG_ERROR: gripper_model='{gripper_model}' is not recognised. "
@@ -223,12 +235,24 @@ def _setup(context, *args, **kwargs):
         # analogous to RELEASE_CLEARANCE_M above (a margin to pick, not a
         # geometric fact to derive).
         PARALLEL_JAW_GRASP_TOLERANCE_M = 0.001
+        if pj_fixed_side_clearance_m_raw == "":
+            preclose_offset_x_m = pjg.preclose_pose_offset_m(object_width_m)
+        else:
+            # Diagnostic path only, exercised when the caller explicitly
+            # passes parallel_jaw_fixed_side_clearance_m. Everything else
+            # about pre-close (aperture, q_preclose) and the final-close
+            # target (Q_MAX_M, commanded past the object) is untouched --
+            # only the ARM/TCP positioning offset that sets how close the
+            # fixed pad starts to the object's fixed-side face changes.
+            preclose_offset_x_m = pjg.preclose_pose_offset_m(
+                object_width_m, c_fixed_m=float(pj_fixed_side_clearance_m_raw)
+            )
         pj_params = {
             "gripper_model": gripper_model,
             "parallel_jaw_q_preclose": pj_q_preclose,
             "parallel_jaw_q_final_expected": pj_q_final_expected,
             "parallel_jaw_q_close_commanded": pjg.Q_MAX_M,
-            "parallel_jaw_preclose_offset_x_m": pjg.preclose_pose_offset_m(object_width_m),
+            "parallel_jaw_preclose_offset_x_m": preclose_offset_x_m,
             "parallel_jaw_tcp_offset_z_m": pjg.TCP_OFFSET_Z_M,
             "parallel_jaw_grasp_tolerance_m": PARALLEL_JAW_GRASP_TOLERANCE_M,
         }
@@ -318,6 +342,17 @@ def _setup(context, *args, **kwargs):
         if is_parallel_jaw
         else "config/moveit_controllers.yaml"
     )
+    controller_path = PROJECT_ROOT / "ur5e_robotiq_moveit_config" / controllers_file
+    controller_config = _load_yaml(str(controller_path), "MoveIt controller config")
+    try:
+        startup_m1_tolerance_rad = float(
+            controller_config["trajectory_execution"]["allowed_start_tolerance"]
+        )
+    except KeyError as exc:
+        raise RuntimeError(
+            "CONFIG_ERROR: MoveIt controller config must define "
+            "trajectory_execution.allowed_start_tolerance for startup M1 verification."
+        ) from exc
     moveit_config = (
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
@@ -336,6 +371,7 @@ def _setup(context, *args, **kwargs):
     node_params = {
         "use_sim_time": True,
         "world_frame": world_frame,
+        "object_frame_name": object_frame_name,
         "grasp_frame_name": grasp_frame_name,
         "place_frame_name": place_frame_name,
         "tool0_frame": flange_frame,
@@ -378,6 +414,8 @@ def _setup(context, *args, **kwargs):
         "close_and_hold_only": close_and_hold_only,
         "use_perceived_position": use_perceived_position,
         "perceived_position_topic": "object_detector/position_world",
+        "use_perceived_yaw": use_perceived_yaw,
+        "perceived_pose_topic": "object_detector/pose_world",
         "perceived_position_timeout_s": float(
             LaunchConfiguration("perceived_position_timeout_s").perform(context)
         ),
@@ -404,6 +442,7 @@ def _setup(context, *args, **kwargs):
         "stationary_timeout_s": float(
             LaunchConfiguration("stationary_timeout_s").perform(context)
         ),
+        "startup_m1_tolerance_rad": startup_m1_tolerance_rad,
         "pregrasp_pose_error_max_m": float(
             LaunchConfiguration("pregrasp_pose_error_max_m").perform(context)
         ),
@@ -481,6 +520,13 @@ def generate_launch_description():
                 default_value="false",
                 description="Use one world-frame RGB-D position for the pick. "
                 "false preserves the configured classical pipeline.",
+            ),
+            DeclareLaunchArgument(
+                "use_perceived_yaw",
+                default_value="false",
+                description="Use one fresh world-frame object pose yaw for the pick. "
+                "Requires use_perceived_position:=true and never falls back to "
+                "configured yaw.",
             ),
             DeclareLaunchArgument(
                 "require_perception",
@@ -597,6 +643,23 @@ def generate_launch_description():
                 "(metres, newtons, parallel_jaw_gripper_controller). The "
                 "matching gripper_model:=parallel_jaw must ALSO be passed to "
                 "ur5e_robotiq_sim_control.launch.py and move_group.launch.py.",
+            ),
+            DeclareLaunchArgument(
+                "parallel_jaw_fixed_side_clearance_m",
+                default_value="",
+                description="DIAGNOSTIC-ONLY, 2026-08-29. Empty (default) "
+                "preserves parallel_jaw_geometry.py's own "
+                "GRASP_TCP_FIXED_SIDE_CLEARANCE_M (0.0020 m as of "
+                "2026-08-31, raised from 0.0015 m) exactly -- every "
+                "existing and future run that does not pass this argument is "
+                "byte-for-byte unaffected. When set, overrides ONLY the "
+                "fixed-side pre-close clearance passed into "
+                "preclose_pose_offset_m()'s c_fixed_m, i.e. how far the arm "
+                "positions the fixed pad's inner face from the object's "
+                "fixed-side face before the final close. Nothing else about "
+                "pre-close aperture, the final-close target, gripper command, "
+                "effort, friction, controllers, or trajectories changes. "
+                "Ignored when gripper_model is not parallel_jaw.",
             ),
             OpaqueFunction(function=_setup),
         ]

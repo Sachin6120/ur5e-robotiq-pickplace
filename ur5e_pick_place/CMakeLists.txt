@@ -31,6 +31,22 @@ find_package(OpenCV REQUIRED)
 
 include_directories(include)
 
+add_library(planning_scene_manager src/planning_scene_manager.cpp)
+target_include_directories(planning_scene_manager PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(planning_scene_manager
+  rclcpp
+  moveit_msgs
+  geometry_msgs
+  moveit_core
+  tf2_geometry_msgs
+)
+
+add_executable(planning_scene_manager_smoke src/planning_scene_manager_smoke.cpp)
+target_link_libraries(planning_scene_manager_smoke planning_scene_manager)
+ament_target_dependencies(planning_scene_manager_smoke rclcpp)
+
 # --- M1: joint-goal planning reliability ------------------------------------
 add_executable(m1_joint_goal src/m1_joint_goal.cpp)
 target_include_directories(m1_joint_goal PUBLIC
@@ -74,6 +90,7 @@ add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
+target_link_libraries(m3_grasp planning_scene_manager)
 ament_target_dependencies(m3_grasp
   rclcpp
   rclcpp_action
@@ -106,8 +123,45 @@ ament_target_dependencies(object_detector
   geometry_msgs
   cv_bridge
   message_filters
+  tf2
+  tf2_geometry_msgs
 )
 target_link_libraries(object_detector ${OpenCV_LIBRARIES})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(object_detector_d10_test test/test_object_detector_d10.cpp)
+  target_include_directories(object_detector_d10_test PRIVATE include)
+  ament_add_gtest(mask_orientation_test test/test_mask_orientation.cpp)
+  target_include_directories(mask_orientation_test PRIVATE include)
+  ament_add_gtest(edge_line_tls_test test/test_edge_line_tls.cpp)
+  target_include_directories(edge_line_tls_test PRIVATE include)
+  target_link_libraries(edge_line_tls_test ${OpenCV_LIBRARIES})
+  ament_target_dependencies(edge_line_tls_test tf2)
+  ament_add_gtest(object_position_world_test test/test_object_position_world.cpp)
+  target_include_directories(object_position_world_test PRIVATE include)
+  ament_target_dependencies(object_position_world_test
+    rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(pixel_centre_shadow_test test/test_pixel_centre_shadow.cpp)
+  target_include_directories(pixel_centre_shadow_test PRIVATE include)
+  ament_target_dependencies(pixel_centre_shadow_test
+    rclcpp geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(m3_perceived_yaw_test test/test_m3_perceived_yaw.cpp)
+  target_include_directories(m3_perceived_yaw_test PRIVATE include)
+  target_link_libraries(m3_perceived_yaw_test planning_scene_manager)
+  ament_target_dependencies(m3_perceived_yaw_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
+    tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
+  ament_add_gtest(m3_startup_m1_test test/test_m3_startup_m1.cpp)
+  target_include_directories(m3_startup_m1_test PRIVATE include)
+  target_link_libraries(m3_startup_m1_test planning_scene_manager)
+  ament_target_dependencies(m3_startup_m1_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
+    tf2 tf2_ros tf2_geometry_msgs geometry_msgs control_msgs sensor_msgs)
+  ament_add_gtest(planning_scene_manager_test test/test_planning_scene_manager.cpp)
+  target_link_libraries(planning_scene_manager_test planning_scene_manager)
+  ament_target_dependencies(planning_scene_manager_test rclcpp moveit_msgs geometry_msgs)
+endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------
 # Deliberately a separate executable from object_detector: the Milestone C/D
@@ -129,6 +183,8 @@ install(TARGETS
   probe_gripper_cmd
   object_detector
   object_position_world
+  planning_scene_manager
+  planning_scene_manager_smoke
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

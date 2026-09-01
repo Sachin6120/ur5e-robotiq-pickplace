@@ -40,7 +40,7 @@ enum class Result
                             // evaluator simply never released the barrier.
                             // The lift is not attempted, and no transport,
                             // place or release occurs.
-  PERCEPTION_TIMEOUT        // require_perception was set and no fresh, valid
+  PERCEPTION_TIMEOUT,       // require_perception was set and no fresh, valid
                             // perceived object position arrived before the
                             // timeout. Deliberately its OWN variant and not
                             // CONFIG_ERROR: the configuration was fine, the
@@ -50,6 +50,20 @@ enum class Result
                             // to the configured position, which would make a
                             // perception failure indistinguishable from a
                             // perception success in the evidence.
+  STARTUP_NOT_AT_M1,        // simulation startup did not converge at the required M1 observation pose.
+  STARTUP_STATE_UNAVAILABLE, // startup state subscription timed out without genuine arm joint sample
+  SCENE_INIT_FAILURE,       // table initialization or readback verification failed
+  TARGET_INSERTION_FAILURE, // perceived world target insertion or readback failed
+  SCENE_STALE_OR_CORRUPT,   // planning scene fingerprint or readback verification mismatch
+  UNEXPECTED_COLLISION,     // collision detected during descent or before closure
+  CLOSURE_ACM_FAILURE,      // C1/C2 closure contact ACM enablement failed
+  ATTACH_FAILURE,           // target attachment to gripper failed
+  PICKUP_CLEARANCE_FAILURE, // pickup support-clearance verification or S-removal failed
+  PAYLOAD_COLLISION,        // collision detected during payload transport
+  PLACEMENT_PRECONTACT_FAILURE, // placement pre-contact waypoint reached with collision or invalid fraction
+  TERMINAL_SUPPORT_FAILURE, // placement support S enablement failed
+  DETACH_FAILURE,           // target detachment to world failed
+  FINAL_WORLD_UPDATE_FAILURE // post-retreat world target update failed
 };
 
 inline const char * to_string(Result r)
@@ -67,6 +81,20 @@ inline const char * to_string(Result r)
     case Result::GRASP_LOST_DURING_LIFT: return "GRASP_LOST_DURING_LIFT";
     case Result::PRE_LIFT_BARRIER_TIMEOUT: return "PRE_LIFT_BARRIER_TIMEOUT";
     case Result::PERCEPTION_TIMEOUT:     return "PERCEPTION_TIMEOUT";
+    case Result::STARTUP_NOT_AT_M1:       return "STARTUP_NOT_AT_M1";
+    case Result::STARTUP_STATE_UNAVAILABLE: return "STARTUP_STATE_UNAVAILABLE";
+    case Result::SCENE_INIT_FAILURE:     return "SCENE_INIT_FAILURE";
+    case Result::TARGET_INSERTION_FAILURE: return "TARGET_INSERTION_FAILURE";
+    case Result::SCENE_STALE_OR_CORRUPT: return "SCENE_STALE_OR_CORRUPT";
+    case Result::UNEXPECTED_COLLISION:   return "UNEXPECTED_COLLISION";
+    case Result::CLOSURE_ACM_FAILURE:    return "CLOSURE_ACM_FAILURE";
+    case Result::ATTACH_FAILURE:         return "ATTACH_FAILURE";
+    case Result::PICKUP_CLEARANCE_FAILURE: return "PICKUP_CLEARANCE_FAILURE";
+    case Result::PAYLOAD_COLLISION:      return "PAYLOAD_COLLISION";
+    case Result::PLACEMENT_PRECONTACT_FAILURE: return "PLACEMENT_PRECONTACT_FAILURE";
+    case Result::TERMINAL_SUPPORT_FAILURE: return "TERMINAL_SUPPORT_FAILURE";
+    case Result::DETACH_FAILURE:         return "DETACH_FAILURE";
+    case Result::FINAL_WORLD_UPDATE_FAILURE: return "FINAL_WORLD_UPDATE_FAILURE";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the

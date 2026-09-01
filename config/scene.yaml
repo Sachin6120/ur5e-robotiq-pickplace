@@ -99,19 +99,27 @@ object:
   size: [0.030, 0.045, 0.045]       # x, y, z  [m]
   # DEPRECATED 2026-08-21 (M6), kept only as a cross-check. This index is no
   # longer what selects the grasp width: scene_xacro_args.resolve_closing_axis()
-  # DERIVES the axis from grasp.approach_axis + grasp.gripper_roll and raises
-  # CONFIG_ERROR if this value disagrees with it.
+  # DERIVES the axis from grasp.approach_axis + grasp.gripper_roll (+
+  # gripper.mount_rotation) and raises CONFIG_ERROR if this value disagrees
+  # with that derivation. Do not hand-set this from approach_axis alone --
+  # gripper_roll rotates the closing direction about the approach axis and
+  # changes which object axis it lands on.
   #
-  # CORRECTED 0 -> 1. It was wrong, and silently so for the whole of M1-M5.
-  # With approach_axis [0,0,-1] the gripper closes along object-frame +Y, so
-  # the squeezed dimension is size[1], not size[0]. That was unobservable
+  # CURRENT (verified live against resolve_closing_axis(), 2026-08-30): with
+  # approach_axis=[0.0, 0.0, -1.0] and gripper_roll=1.57079632679 rad
+  # (pi/2), the derived closing axis is object-frame X (alignment=1.0,
+  # axis_index=0), matching size[0]=0.030 m -- i.e. grasp_width_axis=0 below
+  # is correct and the cross-check raises no CONFIG_ERROR.
+  #
+  # HISTORICAL BUG this cross-check exists to catch (M6, 2026-08-21): under a
+  # DIFFERENT gripper_roll than today's, this field was left at 0 while the
+  # derived closing axis was object-frame Y (size[1]), silently feeding
+  # 0.030 m to a grasp that physically closed on 0.045 m -- a 0.1069 rad
+  # grip-angle error against a 0.0235 rad tolerance. It was unobservable
   # while the object was a 45mm CUBE (size[0] == size[1]); M6's change to
-  # [0.030, 0.045, 0.045] was the first configuration where the two differed,
-  # and it fed 0.030 m to a grasp that physically closes on 0.045 m --
-  # a 0.1069 rad grip-angle error against a 0.0235 rad tolerance.
-  #
-  # This does NOT change what M1-M5 measured: on a cube both indices give
-  # 0.045 m, so every prior result stands.
+  # [0.030, 0.045, 0.045] was the first configuration where the two
+  # differed. Re-derive this value (do not hand-edit it) any time
+  # approach_axis, gripper_roll, or mount_rotation changes.
   grasp_width_axis: 0               # index into size[] the fingers close ACROSS
   mass: 0.150                       # [kg]
 
