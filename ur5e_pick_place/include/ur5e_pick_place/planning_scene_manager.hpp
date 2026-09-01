@@ -37,6 +37,9 @@ public:
   static geometry_msgs::msg::Pose effectivePrimitivePose(
     const moveit_msgs::msg::CollisionObject & object, std::size_t primitive_index = 0);
   static bool samePose(const geometry_msgs::msg::Pose & a, const geometry_msgs::msg::Pose & b);
+  static bool currentAttachedTargetGlobalPose(
+    const moveit::core::RobotState & state, const std::string & target_id,
+    geometry_msgs::msg::Pose & global_pose, std::string & error);
 
   bool initializeTable(std::string & error);
   bool addWorldTarget(const geometry_msgs::msg::Pose & perceived_pose, std::string & error);

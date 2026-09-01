@@ -2,6 +2,12 @@
 
 #include "ur5e_pick_place/planning_scene_manager.hpp"
 
+#include <geometric_shapes/shapes.h>
+#include <moveit/planning_scene/planning_scene.hpp>
+#include <moveit/robot_model/robot_model.hpp>
+#include <srdfdom/srdfdom/model.h>
+#include <urdf_parser/urdf_parser.h>
+
 namespace
 {
 using ur5e_pick_place::PlanningSceneManager;
@@ -428,6 +434,127 @@ TEST(PlanningSceneManager, CloneSceneRemovesOnlySAndLeavesLiveUntouched)
   EXPECT_TRUE(val);
   ASSERT_TRUE(PlanningSceneManager::pairValue(live_acm, "table", "base_link_inertia", val));
   EXPECT_TRUE(val);
+}
+
+TEST(PlanningSceneManager, AttachedTargetGlobalPoseRotatedFrame)
+{
+  // 1. Create a minimal robot model with a prismatic Z joint and a gripper_base_link
+  const std::string urdf =
+    "<?xml version=\"1.0\"?>"
+    "<robot name=\"test_arm\">"
+    "  <link name=\"world\"/>"
+    "  <link name=\"gripper_base_link\"/>"
+    "  <joint name=\"prismatic_z\" type=\"prismatic\">"
+    "    <parent link=\"world\"/>"
+    "    <child link=\"gripper_base_link\"/>"
+    "    <axis xyz=\"0 0 1\"/>"
+    "    <limit lower=\"-2.0\" upper=\"2.0\" effort=\"100.0\" velocity=\"1.0\"/>"
+    "  </joint>"
+    "</robot>";
+  auto urdf_model = urdf::parseURDF(urdf);
+  ASSERT_NE(urdf_model, nullptr);
+  auto srdf_model = std::make_shared<srdf::Model>();
+  srdf_model->initString(*urdf_model, "<robot name=\"test_arm\"/>");
+  auto robot_model = std::make_shared<moveit::core::RobotModel>(urdf_model, srdf_model);
+  ASSERT_NE(robot_model, nullptr);
+
+  planning_scene::PlanningScene scene(robot_model);
+
+  // 2. Set gripper_base_link at grasp height (Z = 0.8215 m)
+  scene.getCurrentStateNonConst().setVariablePosition("prismatic_z", 0.8215);
+  scene.getCurrentStateNonConst().update(true);
+
+  // 3. Attach target with world pose [0.450965, -0.148707, 0.772500] (grasp pose on table)
+  geometry_msgs::msg::Pose target_world_pose;
+  target_world_pose.position.x = 0.450965;
+  target_world_pose.position.y = -0.148707;
+  target_world_pose.position.z = 0.772500;
+  target_world_pose.orientation.w = 1.0;
+
+  moveit_msgs::msg::AttachedCollisionObject attached_msg;
+  attached_msg.link_name = "gripper_base_link";
+  attached_msg.touch_links = {"pad_fixed_link", "pad_moving_link"};
+  attached_msg.object = PlanningSceneManager::makeTarget("world", target_world_pose,
+    ur5e_pick_place::TargetPoseSource::PRODUCTION_PERCEPTION);
+  attached_msg.object.operation = moveit_msgs::msg::CollisionObject::ADD;
+
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  diff.robot_state.is_diff = true;
+  diff.robot_state.attached_collision_objects.push_back(attached_msg);
+  scene.usePlanningSceneMsg(diff);
+
+  // 4. Verify initial global pose matches grasp pose exactly
+  geometry_msgs::msg::Pose initial_global_pose;
+  std::string err;
+  ASSERT_TRUE(PlanningSceneManager::currentAttachedTargetGlobalPose(
+    scene.getCurrentState(), "pick_target", initial_global_pose, err)) << err;
+
+  EXPECT_NEAR(initial_global_pose.position.x, 0.450965, 1e-6);
+  EXPECT_NEAR(initial_global_pose.position.y, -0.148707, 1e-6);
+  EXPECT_NEAR(initial_global_pose.position.z, 0.772500, 1e-6);
+
+  double initial_bottom_z = initial_global_pose.position.z - 0.045 / 2.0;
+  double initial_separation = initial_bottom_z - 0.750;
+  EXPECT_NEAR(initial_separation, 0.000, 1e-6);
+
+  // 5. Move arm +5.0 mm upward (Z = 0.8265 m)
+  scene.getCurrentStateNonConst().setVariablePosition("prismatic_z", 0.8265);
+  scene.getCurrentStateNonConst().update(true);
+
+  // 6. Verify attached target global pose also moves +5.0 mm
+  geometry_msgs::msg::Pose lifted_global_pose;
+  ASSERT_TRUE(PlanningSceneManager::currentAttachedTargetGlobalPose(
+    scene.getCurrentState(), "pick_target", lifted_global_pose, err)) << err;
+
+  EXPECT_NEAR(lifted_global_pose.position.x, 0.450965, 1e-6);
+  EXPECT_NEAR(lifted_global_pose.position.y, -0.148707, 1e-6);
+  EXPECT_NEAR(lifted_global_pose.position.z, 0.777500, 1e-6);
+
+  double lifted_bottom_z = lifted_global_pose.position.z - 0.045 / 2.0;
+  double lifted_separation = lifted_bottom_z - 0.750;
+  EXPECT_NEAR(lifted_separation, 0.005, 1e-6);
+  EXPECT_GT(lifted_separation, 0.0);  // Positively clear!
+
+  // 7. Verify regression: old erroneous composePoses(world_link, world_target) fails
+  geometry_msgs::msg::Pose link_pose;
+  link_pose.position.z = 0.8265;
+  // Downward-facing gripper has 180° rotation around X (quaternion [1, 0, 0, 0])
+  link_pose.orientation.x = 1.0;
+  link_pose.orientation.w = 0.0;
+  geometry_msgs::msg::Pose bad_pose = PlanningSceneManager::composePoses(link_pose, target_world_pose);
+  double bad_bottom_z = bad_pose.position.z - 0.045 / 2.0;
+  double bad_separation = bad_bottom_z - 0.750;
+  // Bad formula computes ~0.0315 m or <= 0 separation instead of true +5.0 mm
+  EXPECT_NE(bad_separation, 0.005);
+}
+
+TEST(PlanningSceneManager, AttachedTargetAbsentFailsClosed)
+{
+  const std::string urdf =
+    "<?xml version=\"1.0\"?>"
+    "<robot name=\"test_arm\">"
+    "  <link name=\"world\"/>"
+    "  <link name=\"gripper_base_link\"/>"
+    "  <joint name=\"fixed_j\" type=\"fixed\">"
+    "    <parent link=\"world\"/>"
+    "    <child link=\"gripper_base_link\"/>"
+    "  </joint>"
+    "</robot>";
+  auto urdf_model = urdf::parseURDF(urdf);
+  ASSERT_NE(urdf_model, nullptr);
+  auto srdf_model = std::make_shared<srdf::Model>();
+  srdf_model->initString(*urdf_model, "<robot name=\"test_arm\"/>");
+  auto robot_model = std::make_shared<moveit::core::RobotModel>(urdf_model, srdf_model);
+  ASSERT_NE(robot_model, nullptr);
+
+  moveit::core::RobotState state(robot_model);
+  state.update(true);
+
+  geometry_msgs::msg::Pose pose;
+  std::string err;
+  EXPECT_FALSE(PlanningSceneManager::currentAttachedTargetGlobalPose(state, "pick_target", pose, err));
+  EXPECT_TRUE(err.find("ATTACHED_BODY_ABSENT") != std::string::npos);
 }
 
 }  // namespace
