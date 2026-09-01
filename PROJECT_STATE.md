@@ -21,56 +21,49 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-01 PlanningSceneManager Integration & Verified Scene-A Pick-and-Place — CURRENT AUTHORITY
+## 2026-09-01 Stage-2D PlanningSceneManager Regression & Full Generalization Closeout — CURRENT AUTHORITY
 
-- **Repository**: branch `stage2-orientation-generalization`, HEAD `ee82e8b` (`fix(scene): preserve attached bodies during cloned planning scene measured-variable updates`).
-- **PlanningSceneManager Infrastructure**: Fully implemented, unit-tested (23/23 tests passing), and live-validated in production MoveIt / Gazebo simulation.
-  - Complete Lifecycle:
-    1. **Startup**: Table registered as world `CollisionObject`; permanent table isolation `P = (table <-> base_link_inertia)` enabled in ACM; target absent.
-    2. **Perception**: Perceived target inserted as world `CollisionObject`; `C1`, `C2`, and `S` absent from ACM.
-    3. **Descent**: Target present in planning scene; pad-target collisions forbidden (0 pad contacts during descent).
-    4. **Closure**: `C1 = (pick_target <-> pad_fixed_link)` and `C2 = (pick_target <-> pad_moving_link)` enabled in ACM; `S` absent.
-    5. **Attach**: Target attached to `gripper_base_link` with touch links `["pad_fixed_link", "pad_moving_link"]`; `C1`/`C2` removed; support exception `S = (pick_target <-> table)` enabled.
-    6. **Pickup**: 5.0 mm support-clearance stroke executed with `S` enabled; measured `RobotState` synchronized in-place into cloned scene without replacing `AttachedBody`; attached target global pose resolved via `AttachedBody::getGlobalCollisionBodyTransforms()`; separation verified ($z_{\text{separation}} > 0$); cloned collision check verified with `S` absent; live `S` removed; remaining 115.0 mm lift executed with `S` absent.
-    7. **Transport**: Attached payload; `S` absent throughout transit.
-    8. **Placement**: 95.0 mm protected descent with `S` absent; measured pre-contact separation verified ($z_{\text{separation}} > 0$); collision check verified with `S` absent; `S` enabled only for final 5.0 mm terminal stroke.
-    9. **Release / Detach / Retreat**: Gripper opens while target attached; detach returns target to world `CollisionObject`; `S`, `C1`, and `C2` removed; retreat executed with world target active.
-- **Startup-M1 Policy**: Sole authority is `config/scene.yaml` `milestones.m1.goal_positions` `[0.5, -1.2, 1.0, -1.4, -1.5708, 0.0]`. Simulation spawns directly at M1; `m3_grasp` verifies startup joint states within `allowed_start_tolerance = 0.010 rad`. Live measured maximum startup error is $0.000019\text{ rad} \ll 0.010\text{ rad}$. No target-unknown arm motion occurs before perception.
-- **Collision Model & Margin Audit**: Production fixed-side clearance is 2.0 mm (bilateral 2.0 mm pad clearance verified collision-free in live MoveIt). Deliberate 0.5 mm fixed-pad and moving-pad overlaps are rejected when C1/C2 are absent, and permitted only when C1/C2 are enabled. MoveIt pad padding = 0, scale = 1. Model resolution margin $M_{\text{model,working}} = 1\text{ nm} = 10^{-6}\text{ mm} = 10^{-9}\text{ m}$. (Historical 2 mm "FCL padding" claim is falsified and removed).
-- **Transition Distance Policy**: Working Cartesian execution uncertainty $U_{\text{exec,working}} = 2.0\text{ mm}$ (from predeclared `stage2_tcp_err_mm_max` gate); observed healthy execution error $\approx 0.32-0.67\ \mu\text{m}$; explicit engineering design margin $= 3.0\text{ mm}$. Frozen transition policy: pickup clearance stroke $= 5.0\text{ mm}$, remaining lift $= 115.0\text{ mm}$, placement protected descent $= 95.0\text{ mm}$, terminal placement $= 5.0\text{ mm}$. (The extra 3 mm is an explicit design margin, not measured uncertainty).
-- **Attached-Body Defect History & Fixes**:
-  - *Defect 1 (world/world pose composition bug)*: `composePoses(gripper_pose, target_pose_)` evaluated invalid world/world composition. Resolved in `1cf263f` via `moveit::core::AttachedBody::getGlobalCollisionBodyTransforms()`.
-  - *Defect 2 (cloned RobotState replacement bug)*: `clone_scene->setCurrentState(current_state)` wiped attached bodies from the clone. Resolved in `ee82e8b` via in-place `PlanningSceneManager::copyRobotStateVariables` across all arm and gripper variables.
-- **Verified Scene-A Production Run (`evidence/perception_validation_pj_20260901_021651`)**:
-  - Result: **SUCCESS (`result=SUCCESS`)**.
-  - Startup M1 max joint error: $0.000019\text{ rad} \le 0.010\text{ rad}$.
-  - Perception: $\Delta x = +0.965\text{ mm}$, $\Delta y = +1.293\text{ mm}$, $\Delta z = 0.000\text{ mm}$, Euclidean $e_{\text{percept}} = 1.613\text{ mm} < 3.0\text{ mm}$, yaw error $0.000^\circ$.
-  - Pregrasp Plan Time: $0.0154\text{ s}$; Descent fraction: $1.0000$; Descent TCP error: $0.32\ \mu\text{m}$.
-  - Preclose Contacts: 0 fixed, 0 moving ($100\%$ collision-free entry).
-  - Grasp Closure: `STALLED` at $30.00\text{ mm}$ aperture (error $1\ \mu\text{m}$).
-  - Pickup Clearance Stroke (5 mm): fraction $1.0000$; measured separation $\text{separation\_z} = +4.982\text{ mm}$; cloned collision check passed without `S` (0 contacts).
-  - Remaining Lift (115 mm): fraction $1.0000$; 0 slip detected over 2.0 s dwell.
-  - Transport: plan time $0.0382\text{ s}$; execution `SUCCESS`; 0 slip detected over 2.0 s dwell.
-  - Placement Protected Descent (95 mm): fraction $1.0000$; measured pre-contact separation $\text{separation\_z} = +4.954\text{ mm}$; pre-contact collision check passed with `S` absent (0 contacts).
-  - Terminal Placement (5 mm): fraction $1.0000$ with `S` enabled.
-  - Release / Detach / Retreat: Release aperture $84.6\text{ mm}$; `DETACH_VERIFIED`; retreat fraction $1.0000$.
-  - Teardown: Clean SIGTERM exit (0 SIGKILL escalations).
-- **Preserved Evidence Chain**:
-  - Run 1 (Defect 1 evidence): `evidence/perception_validation_pj_20260901_015611`
-  - Run 2 (Defect 2 evidence): `evidence/perception_validation_pj_20260901_020504`
-  - Run 3 (Verified Production Success): `evidence/perception_validation_pj_20260901_021651`
-- **Current Milestone Status**:
-  - Stage-1 perceived XYZ/D10: COMPLETE
-  - Stage-2A configured yaw: COMPLETE
-  - Stage-2B yaw perception: COMPLETE
-  - Stage-2C perceived yaw drives manipulation: COMPLETE
-  - Stage-2D XY+yaw generalization: COMPLETE
-  - MoveIt/FCL model-margin audit: COMPLETE
-  - PlanningSceneManager infrastructure: COMPLETE
-  - PlanningSceneManager integration: COMPLETE
-  - Scene-A lifecycle-integrated baseline: COMPLETE / VERIFIED
-- **Next Validation Freeze (D1/D2/D3 Regression)**:
-  - Freeze configuration: HEAD `ee82e8b` (or doc commit), 2.0 mm fixed-side clearance, 5/115/95/5 mm transition distances, startup-at-M1, production perception, shadow non-production, GT evaluation-only, exact P/C1/C2/S lifecycle, `plan_attempts = 1`, no automatic retries, fail closed on first causal failure.
+- **Repository**: branch `stage2-orientation-generalization`, HEAD `a32a68b` (`docs: record PlanningSceneManager integration and verified Scene-A baseline`).
+- **Milestone Outcome**: Full Stage-2D regression suite is **100% COMPLETE & VERIFIED** under the production MoveIt `PlanningSceneManager` collision lifecycle.
+  - **Scene-A Lifecycle-Integrated Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS** (`evidence/perception_validation_pj_20260901_021651`)
+  - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): **PASS** (`evidence/stage2d_pose/D1_planning_scene_20260901_0222`)
+  - **D2 Case** ($-30\text{ mm}, -30\text{ mm}, -30^\circ$): **PASS** (`evidence/stage2d_pose/D2_planning_scene_20260901_0226`)
+  - **D3 Case** ($+30\text{ mm}, -30\text{ mm}, +45^\circ$): **PASS** (`evidence/stage2d_pose/D3_planning_scene_20260901_0230`)
+  - *(Note: Scene-A serves as the lifecycle-integrated baseline; D1, D2, and D3 constitute the 3/3 Stage-2D planar pose regression cases).*
+
+- **D3 Critical Defect Closure**:
+  - *Historical 1.5 mm Failure*: Governing fixed-side perception error projection $\approx 1.5759\text{ mm}$ resulted in predicted negative margin $\approx -0.0759\text{ mm}$, producing a rigid mechanical collision ($59.2\ \mu\text{m}$ contact sliver, $\sim 301\text{ N}$ force) halting descent at $58.4\%$ travel (`EXECUTE_FAILURE`).
+  - *Current 2.0 mm Production Regression*: Governing projection is identically $1.5759\text{ mm}$, yielding a predicted positive clearance margin of $\mathbf{+0.4241\text{ mm}}$ with $M_{\text{model,working}} = 1\times 10^{-6}\text{ mm}$. Physical execution verified **0 fixed-pad and 0 moving-pad pre-close contacts**, Cartesian descent fraction $1.0000$, and full cycle `SUCCESS`. Direct regression proof that the defect remains eliminated under MoveIt collision management.
+
+- **Verified Regression Metrics Summary**:
+  - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): Perception error $1.3900\text{ mm}$, yaw error $-0.0215^\circ$, descent fraction $1.0000$, TCP error $0.00028\text{ mm}$, grasp aperture $30.0022\text{ mm}$, pickup separation $+4.977\text{ mm}$, pickup clone contacts $0$, lift slip $0.0101\text{ mm}$, transport slip $0.0044\text{ mm}$, placement pre-contact separation $+4.994\text{ mm}$, placement error $2.0300\text{ mm}$, placement yaw error $0.0342^\circ$, final upright tilt $0.0001^\circ$.
+  - **D2 Case** ($-30\text{ mm}, -30\text{ mm}, -30^\circ$): Perception error $1.2849\text{ mm}$, yaw error $-0.2371^\circ$, descent fraction $1.0000$, TCP error $0.00070\text{ mm}$, grasp aperture $30.0034\text{ mm}$, pickup separation $+4.981\text{ mm}$, pickup clone contacts $0$, lift slip $0.0101\text{ mm}$, transport slip $0.0027\text{ mm}$, placement pre-contact separation $+4.940\text{ mm}$, placement error $2.2234\text{ mm}$, placement yaw error $0.0055^\circ$, final upright tilt $0.000006^\circ$.
+  - **D3 Case** ($+30\text{ mm}, -30\text{ mm}, +45^\circ$): Perception error $1.6104\text{ mm}$, yaw error $+0.000016^\circ$, governing fixed-side projection $1.5759\text{ mm}$, predicted fixed-side margin $+0.4241\text{ mm}$, descent fraction $1.0000$, TCP error $0.00071\text{ mm}$, pre-close pad contacts fixed=$0$/moving=$0$, grasp aperture $29.9995\text{ mm}$, pickup separation $+4.959\text{ mm}$, pickup clone contacts $0$, lift slip $0.0107\text{ mm}$, transport slip $0.0071\text{ mm}$, placement pre-contact separation $+4.968\text{ mm}$, placement error $1.9793\text{ mm}$, placement yaw error $0.0380^\circ$, final upright tilt $0.000013^\circ$, teardown SIGKILL count $0$.
+
+- **PlanningScene Lifecycle Management**:
+  - Permanent Table Isolation: $P = (\text{table} \leftrightarrow \text{base\_link\_inertia})$
+  - Grasp Closure Contact Exemptions: $C_1 = (\text{pick\_target} \leftrightarrow \text{pad\_fixed\_link})$, $C_2 = (\text{pick\_target} \leftrightarrow \text{pad\_moving\_link})$
+  - Table Support Exception: $S = (\text{pick\_target} \leftrightarrow \text{table})$
+  - Unified lifecycle validated across all runs: World Target $\rightarrow$ Collision-protected descent $\rightarrow$ $C_1/C_2$ closure $\rightarrow$ Attachment with $S$ $\rightarrow$ 5 mm support clearance $\rightarrow$ Cloned collision check without $S$ $\rightarrow$ Live $S$ removal $\rightarrow$ 115 mm lift & transport $\rightarrow$ 95 mm protected descent $\rightarrow$ Pre-contact check $\rightarrow$ 5 mm terminal stroke with $S$ $\rightarrow$ Release & detach $\rightarrow$ World target retreat.
+
+- **Current Project Status**:
+  - Stage-1 perceived XYZ/D10: **COMPLETE / VERIFIED**
+  - Stage-2A configured yaw: **COMPLETE / VERIFIED**
+  - Stage-2B yaw perception: **COMPLETE / VERIFIED**
+  - Stage-2C perceived yaw manipulation: **COMPLETE / VERIFIED**
+  - Stage-2D planar XY+yaw generalization: **COMPLETE / VERIFIED**
+  - 2.0 mm production clearance correction: **COMPLETE / VERIFIED**
+  - MoveIt/FCL model-margin audit: **COMPLETE / VERIFIED**
+  - PlanningSceneManager infrastructure: **COMPLETE / VERIFIED**
+  - PlanningSceneManager integration: **COMPLETE / VERIFIED**
+  - Scene-A lifecycle baseline: **COMPLETE / VERIFIED**
+  - D1/D2/D3 PlanningScene regression: **COMPLETE / VERIFIED**
+  - *Shadow Estimator*: Remains diagnostic/non-production (not promoted to production).
+
+- **Next Development Boundary**:
+  - The current planar pose generalization and PlanningScene collision lifecycle regression phase is **CLOSED**.
+  - No further manipulation experiments are needed or authorized for Stage-2D qualification.
+  - Future tasks should establish new milestone research objectives (e.g., full SO(3) roll/pitch orientation handling, MoveIt gripper visual-collision URDF modeling, or multi-object scenes).
 
 ## 2026-08-31 Stage-2D Planar Pose Generalization — SUPERSEDED
 
