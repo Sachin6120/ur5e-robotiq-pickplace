@@ -438,6 +438,35 @@ bool PlanningSceneManager::currentAttachedTargetGlobalPose(
   return true;
 }
 
+bool PlanningSceneManager::copyRobotStateVariables(
+  const moveit::core::RobotState & source,
+  moveit::core::RobotState & target,
+  std::string & error)
+{
+  const auto & source_names = source.getRobotModel()->getVariableNames();
+  const auto & target_names = target.getRobotModel()->getVariableNames();
+
+  if (source.getRobotModel()->getVariableCount() == target.getRobotModel()->getVariableCount() &&
+      source_names == target_names)
+  {
+    target.setVariablePositions(source.getVariablePositions());
+    target.update(true);
+    return true;
+  }
+
+  for (const auto & name : target_names) {
+    auto it = std::find(source_names.begin(), source_names.end(), name);
+    if (it != source_names.end()) {
+      target.setVariablePosition(name, source.getVariablePosition(name));
+    } else {
+      error = "INCOMPATIBLE_ROBOT_STATE_VARIABLE: missing variable '" + name + "' in source state";
+      return false;
+    }
+  }
+  target.update(true);
+  return true;
+}
+
 bool PlanningSceneManager::checkPickupClearanceClone(
   const moveit::core::RobotState & current_state, double & separation_z, std::string & error)
 {
@@ -462,15 +491,33 @@ bool PlanningSceneManager::checkPickupClearanceClone(
     error = "FAILED_TO_LOAD_CLONED_PLANNING_SCENE";
     return false;
   }
-  clone_scene->setCurrentState(current_state);
 
-  // 3. Compute attached target's actual global collision-body pose using MoveIt AttachedBody representation
+  // 3. Verify pick_target is attached before measured-state update
+  if (!clone_scene->getCurrentState().hasAttachedBody(kTarget)) {
+    error = "ATTACHED_BODY_PRECHECK_FAILED: target '" + std::string(kTarget) +
+      "' not attached in cloned scene before state update";
+    return false;
+  }
+
+  // 4. Update measured variable positions into clone state without replacing attached bodies
+  if (!copyRobotStateVariables(current_state, clone_scene->getCurrentStateNonConst(), error)) {
+    return false;
+  }
+
+  // 5. Verify pick_target is STILL attached after measured-state update
+  if (!clone_scene->getCurrentState().hasAttachedBody(kTarget)) {
+    error = "ATTACHED_BODY_POSTCHECK_FAILED: target '" + std::string(kTarget) +
+      "' lost after measured variable update";
+    return false;
+  }
+
+  // 6. Compute attached target's actual global collision-body pose using MoveIt AttachedBody representation
   geometry_msgs::msg::Pose target_global_pose;
   if (!currentAttachedTargetGlobalPose(clone_scene->getCurrentState(), kTarget, target_global_pose, error)) {
     return false;
   }
 
-  // 4. Analytically verify target bottom > table top
+  // 7. Analytically verify target bottom > table top
   const double target_bottom_z = target_global_pose.position.z - 0.045 / 2.0;
   const double table_top_z = 0.750;
   separation_z = target_bottom_z - table_top_z;
@@ -483,7 +530,7 @@ bool PlanningSceneManager::checkPickupClearanceClone(
     return false;
   }
 
-  // 5. Run full collision check in the cloned scene
+  // 8. Run full collision check in the cloned scene
   collision_detection::CollisionRequest req;
   req.contacts = true;
   req.max_contacts = 10;
@@ -517,21 +564,39 @@ bool PlanningSceneManager::checkPlacementPrecontact(
     return false;
   }
 
-  // 2. Create local planning scene and check collision with S absent
+  // 2. Create local planning scene and load state
   auto precontact_scene = std::make_shared<planning_scene::PlanningScene>(current_state.getRobotModel());
   if (!precontact_scene->usePlanningSceneMsg(live_scene_msg)) {
     error = "FAILED_TO_LOAD_PRECONTACT_PLANNING_SCENE";
     return false;
   }
-  precontact_scene->setCurrentState(current_state);
 
-  // 3. Compute attached target's actual global collision-body pose using MoveIt AttachedBody representation
+  // 3. Verify pick_target is attached before update
+  if (!precontact_scene->getCurrentState().hasAttachedBody(kTarget)) {
+    error = "ATTACHED_BODY_PRECHECK_FAILED: target '" + std::string(kTarget) +
+      "' not attached in precontact scene before state update";
+    return false;
+  }
+
+  // 4. Update measured variable positions into precontact state without replacing attached bodies
+  if (!copyRobotStateVariables(current_state, precontact_scene->getCurrentStateNonConst(), error)) {
+    return false;
+  }
+
+  // 5. Verify pick_target is STILL attached after update
+  if (!precontact_scene->getCurrentState().hasAttachedBody(kTarget)) {
+    error = "ATTACHED_BODY_POSTCHECK_FAILED: target '" + std::string(kTarget) +
+      "' lost after measured variable update in precontact scene";
+    return false;
+  }
+
+  // 6. Compute attached target's actual global collision-body pose using MoveIt AttachedBody representation
   geometry_msgs::msg::Pose target_global_pose;
   if (!currentAttachedTargetGlobalPose(precontact_scene->getCurrentState(), kTarget, target_global_pose, error)) {
     return false;
   }
 
-  // 4. Analytically verify target bottom > table top
+  // 7. Analytically verify target bottom > table top
   const double target_bottom_z = target_global_pose.position.z - 0.045 / 2.0;
   const double table_top_z = 0.750;
   separation_z = target_bottom_z - table_top_z;
@@ -544,7 +609,7 @@ bool PlanningSceneManager::checkPlacementPrecontact(
     return false;
   }
 
-  // 5. Run collision check with S absent
+  // 8. Run collision check with S absent
   collision_detection::CollisionRequest req;
   req.contacts = true;
   req.max_contacts = 10;

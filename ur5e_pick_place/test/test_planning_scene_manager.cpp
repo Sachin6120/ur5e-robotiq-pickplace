@@ -557,4 +557,103 @@ TEST(PlanningSceneManager, AttachedTargetAbsentFailsClosed)
   EXPECT_TRUE(err.find("ATTACHED_BODY_ABSENT") != std::string::npos);
 }
 
+TEST(PlanningSceneManager, CloneStatePreservesAttachedBodiesAndUpdatesArmAndGripperVariables)
+{
+  const std::string urdf =
+    "<?xml version=\"1.0\"?>"
+    "<robot name=\"test_arm_gripper\">"
+    "  <link name=\"world\"/>"
+    "  <link name=\"gripper_base_link\"/>"
+    "  <link name=\"finger_link\"/>"
+    "  <joint name=\"prismatic_z\" type=\"prismatic\">"
+    "    <parent link=\"world\"/>"
+    "    <child link=\"gripper_base_link\"/>"
+    "    <axis xyz=\"0 0 1\"/>"
+    "    <limit lower=\"-2.0\" upper=\"2.0\" effort=\"100.0\" velocity=\"1.0\"/>"
+    "  </joint>"
+    "  <joint name=\"finger_joint\" type=\"prismatic\">"
+    "    <parent link=\"gripper_base_link\"/>"
+    "    <child link=\"finger_link\"/>"
+    "    <axis xyz=\"1 0 0\"/>"
+    "    <limit lower=\"0.0\" upper=\"0.1\" effort=\"100.0\" velocity=\"1.0\"/>"
+    "  </joint>"
+    "</robot>";
+  auto urdf_model = urdf::parseURDF(urdf);
+  ASSERT_NE(urdf_model, nullptr);
+  auto srdf_model = std::make_shared<srdf::Model>();
+  srdf_model->initString(*urdf_model, "<robot name=\"test_arm_gripper\"/>");
+  auto robot_model = std::make_shared<moveit::core::RobotModel>(urdf_model, srdf_model);
+  ASSERT_NE(robot_model, nullptr);
+
+  auto scene = std::make_shared<planning_scene::PlanningScene>(robot_model);
+  scene->getCurrentStateNonConst().setVariablePosition("prismatic_z", 0.8215);
+  scene->getCurrentStateNonConst().setVariablePosition("finger_joint", 0.0000);
+  scene->getCurrentStateNonConst().update(true);
+
+  // Attach target
+  geometry_msgs::msg::Pose target_world_pose;
+  target_world_pose.position.x = 0.450965;
+  target_world_pose.position.y = -0.148707;
+  target_world_pose.position.z = 0.772500;
+  target_world_pose.orientation.w = 1.0;
+
+  moveit_msgs::msg::AttachedCollisionObject attached_msg;
+  attached_msg.link_name = "gripper_base_link";
+  attached_msg.touch_links = {"pad_fixed_link", "pad_moving_link"};
+  attached_msg.object = PlanningSceneManager::makeTarget("world", target_world_pose,
+    ur5e_pick_place::TargetPoseSource::PRODUCTION_PERCEPTION);
+  attached_msg.object.operation = moveit_msgs::msg::CollisionObject::ADD;
+
+  moveit_msgs::msg::PlanningScene diff;
+  diff.is_diff = true;
+  diff.robot_state.is_diff = true;
+  diff.robot_state.attached_collision_objects.push_back(attached_msg);
+  scene->usePlanningSceneMsg(diff);
+
+  // A. Verify clone has attached pick_target BEFORE variable update
+  ASSERT_TRUE(scene->getCurrentState().hasAttachedBody("pick_target"));
+
+  // B. Construct measured state with arm moved +5 mm and gripper at grasp closed position (0.055 m)
+  moveit::core::RobotState measured_state(robot_model);
+  measured_state.setVariablePosition("prismatic_z", 0.8265);
+  measured_state.setVariablePosition("finger_joint", 0.0550);
+  measured_state.update(true);
+
+  // Apply attachment-preserving variable copy
+  std::string err;
+  ASSERT_TRUE(PlanningSceneManager::copyRobotStateVariables(
+    measured_state, scene->getCurrentStateNonConst(), err)) << err;
+
+  // C. Verify attachment is preserved
+  const auto * attached_body = scene->getCurrentState().getAttachedBody("pick_target");
+  ASSERT_NE(attached_body, nullptr);
+  EXPECT_EQ(attached_body->getName(), "pick_target");
+  EXPECT_EQ(attached_body->getShapes().size(), 1u);
+  const auto & touch = attached_body->getTouchLinks();
+  EXPECT_TRUE(touch.find("pad_fixed_link") != touch.end());
+  EXPECT_TRUE(touch.find("pad_moving_link") != touch.end());
+
+  // D. Verify all variable positions are copied (arm + gripper)
+  EXPECT_DOUBLE_EQ(scene->getCurrentState().getVariablePosition("prismatic_z"), 0.8265);
+  EXPECT_DOUBLE_EQ(scene->getCurrentState().getVariablePosition("finger_joint"), 0.0550);
+
+  // E. Verify target global pose tracks link forward kinematics
+  geometry_msgs::msg::Pose global_pose;
+  ASSERT_TRUE(PlanningSceneManager::currentAttachedTargetGlobalPose(
+    scene->getCurrentState(), "pick_target", global_pose, err)) << err;
+  EXPECT_NEAR(global_pose.position.z, 0.777500, 1e-6);
+
+  double bottom_z = global_pose.position.z - 0.045 / 2.0;
+  double separation = bottom_z - 0.750;
+  EXPECT_NEAR(separation, 0.005, 1e-6);
+  EXPECT_GT(separation, 0.0);
+
+  // F. Regression demonstration: old setCurrentState(measured_state) clears attached bodies
+  auto regression_scene = planning_scene::PlanningScene::clone(scene);
+  ASSERT_TRUE(regression_scene->getCurrentState().hasAttachedBody("pick_target"));
+  regression_scene->setCurrentState(measured_state);  // Old bug
+  EXPECT_FALSE(regression_scene->getCurrentState().hasAttachedBody("pick_target"));
+  EXPECT_EQ(regression_scene->getCurrentState().getAttachedBody("pick_target"), nullptr);
+}
+
 }  // namespace

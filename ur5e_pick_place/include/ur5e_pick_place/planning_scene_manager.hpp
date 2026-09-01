@@ -40,6 +40,10 @@ public:
   static bool currentAttachedTargetGlobalPose(
     const moveit::core::RobotState & state, const std::string & target_id,
     geometry_msgs::msg::Pose & global_pose, std::string & error);
+  static bool copyRobotStateVariables(
+    const moveit::core::RobotState & source,
+    moveit::core::RobotState & target,
+    std::string & error);
 
   bool initializeTable(std::string & error);
   bool addWorldTarget(const geometry_msgs::msg::Pose & perceived_pose, std::string & error);
