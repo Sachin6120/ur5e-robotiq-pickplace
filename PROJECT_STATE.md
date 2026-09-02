@@ -660,36 +660,6 @@ Where relevant, verify against measurable evidence such as:
 - controller state
 - recorded experiment evidence
 
-## Current Agent Roles
-
-### ChatGPT
-Project planning, robotics reasoning, review, research interpretation, milestone decisions, and coordination between agents.
-
-### Claude Code
-Primary debugging and repository investigation.
-
-### Codex
-Focused implementation, code changes, refactoring, and well-scoped engineering tasks.
-
-### Antigravity
-Independent audit, second-opinion investigation, and verification of important results.
-
-These roles are defaults, not absolute restrictions.
-
-Avoid making multiple agents independently repeat the same investigation unless an independent second opinion is intentionally required.
-
-## Agent Startup
-
-Before substantial work:
-
-1. Read `AGENTS.md`.
-2. Read `PROJECT_STATE.md`.
-3. Read `HANDOFF.md`.
-4. Inspect `git status`.
-5. Inspect relevant existing diffs.
-6. Read the relevant milestone-specific documentation.
-7. Work only from the actual repository/evidence state.
-
 ## Detailed Historical Information
 
 Do not expand this file into a complete project diary.

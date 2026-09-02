@@ -1220,8 +1220,8 @@ trusting this block if the working tree has since changed.
   vendor macro carries the opt-in `enable_diagnostic_contacts` observers
   (default false; `<sensor type="contact">` elements only, no geometry,
   surface, inertia, joint, controller, or physics change).
-- **Untracked kept (58 entries total in `git status --short`):** `AGENTS.md`,
-  `CLAUDE.md`, `HANDOFF.md`, `PROJECT_STATE.md`,
+- **Untracked kept (58 entries total in `git status --short`):** local project
+  documentation including `HANDOFF.md` and `PROJECT_STATE.md`,
   `docs/HANDOFF_RGBD_PERCEPTION.md`, `scripts/perception/`,
   `ur5e_pick_place/src/object_detector.cpp`,
   `ur5e_pick_place/src/object_position_world.cpp`,
@@ -1430,7 +1430,7 @@ Evaluation-only (new):
 - `scripts/perception/milestone_f1_harness.py`
 - `scripts/perception/milestone_f1_truth.py`
 
-**Codex's reviewed semantic conversion was NOT altered.** The line
+**The previously reviewed semantic conversion was NOT altered.** The line
 `sample->point.z - object_height_m / 2.0` is byte-identical to the reviewed
 version; the substitution is still `setOrigin()` only, so the configured grasp
 rotation is retained. Frozen components — `object_detector.cpp`,
@@ -1486,7 +1486,8 @@ Tracked modified (8, at F1): `ur5e_pick_place/CMakeLists.txt`,
 `ur5e_robotiq_description/launch/ur5e_robotiq_sim_control.launch.py`,
 `ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro`.
 
-Untracked kept: `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`, `PROJECT_STATE.md`,
+Untracked kept: local project documentation including `HANDOFF.md` and
+`PROJECT_STATE.md`,
 `docs/HANDOFF_RGBD_PERCEPTION.md`, `scripts/perception/`,
 `ur5e_pick_place/src/object_detector.cpp`,
 `ur5e_pick_place/src/object_position_world.cpp`,
@@ -1521,15 +1522,14 @@ Use, in this order:
 5. ROS / Gazebo measurable state
 6. milestone-specific handoff documentation
 
-Do not rely only on previous AI conversation claims.
+Do not rely on undocumented prior assumptions.
 
 ## Before Starting Work
-1. Read `AGENTS.md`.
-2. Read this `HANDOFF.md`.
-3. Inspect `git status`.
-4. Inspect relevant existing diffs.
-5. Read the milestone-specific handoff relevant to the task.
-6. Do not overwrite unrelated existing work.
+1. Read this `HANDOFF.md`.
+2. Inspect `git status`.
+3. Inspect relevant existing diffs.
+4. Read the milestone-specific handoff relevant to the task.
+5. Do not overwrite unrelated existing work.
 
 ## Git Safety
 Do not automatically:
@@ -2817,8 +2817,8 @@ Unchanged by this session and still uncommitted:
   (`transport.hpp`, `transport.cpp`, `m3_grasp.cpp`, `m3_grasp.launch.py`,
   `failure.hpp`, `scene.yaml`, both `CMakeLists.txt`, `package.xml`, the sim
   launch file, and the two URDF/XACRO files).
-- **52 untracked entries**, including `AGENTS.md`, `CLAUDE.md`, `HANDOFF.md`,
-  `PROJECT_STATE.md`, `docs/HANDOFF_RGBD_PERCEPTION.md`, the three `docs/F3_*`
+- **52 untracked entries**, including local project documentation,
+  `docs/HANDOFF_RGBD_PERCEPTION.md`, the three `docs/F3_*`
   documents, `scripts/perception/`, `ur5e_robotiq_description/worlds/`, the two
   perception `.cpp` sources, the M8/M9/M10 and `prod_reg` capture scripts and
   marker directories, and all of `evidence/`.
@@ -3604,8 +3604,8 @@ tracked diffstat: 12 files changed, 1136 insertions(+), 52 deletions(-)  (unchan
 ```
 
 `git status --short`: same 12 modified tracked files as every prior checkpoint,
-plus the untracked set already on record (AGENTS.md, CLAUDE.md, HANDOFF.md,
-PROJECT_STATE.md, `docs/*` capture scripts and marker directories, `evidence/`,
+plus the untracked set already on record (local project documentation,
+`docs/*` capture scripts and marker directories, `evidence/`,
 `scripts/perception/`, two new C++ sources, `ur5e_robotiq_description/worlds/`),
 plus exactly one new untracked file this section: `docs/GRIPPER_REDESIGN_DESIGN.md`.
 
