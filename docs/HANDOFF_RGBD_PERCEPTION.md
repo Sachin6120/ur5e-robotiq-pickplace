@@ -24,8 +24,8 @@ pick-and-place project. It uses `ros2_control`, MoveIt 2, URDF/XACRO, Gazebo
 physics/contact, TF, and C++ ROS nodes. The repository root is
 `~/ur5e_pickplace`.
 
-For a fresh session, read `AGENTS.md`, this file, `git status`, and the relevant
-diffs before acting. Repository/runtime evidence is authoritative. The accepted
+Before making changes, inspect this file, `git status`, and the relevant
+diffs. Repository/runtime evidence is authoritative. The accepted
 measurements in this handoff supplement the repository because most experimental
 captures intentionally live in `/tmp` and are not committed.
 
@@ -293,7 +293,7 @@ Untracked files relevant to RGB-D:
 Other pre-existing untracked local work, preserved and not altered by the RGB-D
 milestones:
 
-- `AGENTS.md`, `m3_grasp.csv`.
+- `m3_grasp.csv`.
 - `docs/m8*`, `docs/m9*`, `docs/m10*`, and `docs/prod_reg*` capture scripts and
   marker directories. These are classical-gripper experimental artifacts.
   Do not delete or assume they are disposable merely because they are untracked.
@@ -880,7 +880,7 @@ extends, and does not revise, the accepted A-E results above.
 
 ### 10.1 Scope and implementation checkpoint
 
-Codex's earlier Milestone F change was an **implementation checkpoint, not an
+The earlier Milestone F change was an **implementation checkpoint, not an
 F1 PASS**. It added an opt-in consumer in `m3_grasp`: subscribe to
 `object_detector/position_world`, convert the visible top-surface Z to the
 object-centre semantics expected by `grasp_frame` with
