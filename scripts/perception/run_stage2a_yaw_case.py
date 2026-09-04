@@ -49,6 +49,29 @@ sys.path.insert(0, str(REPO / "scripts/perception"))
 import milestone_f1_harness as harness
 import stage2a_analyzer as analyzer
 
+
+def _resolve_ros_workspace_setup():
+    """Locate the colcon overlay's setup.bash for either supported layout.
+
+    1. repo-as-colcon-workspace:      REPO/install/setup.bash
+    2. standard <ws>/src/<repo>:      REPO/../../install/setup.bash
+    Resolved once at import time so every subprocess command below sources
+    the same, correct overlay regardless of which layout REPO sits in.
+    """
+    candidates = [REPO / "install" / "setup.bash"]
+    if REPO.parent.name == "src":
+        candidates.append(REPO.parent.parent / "install" / "setup.bash")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    checked = ", ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"Could not locate colcon overlay setup.bash. Checked: {checked}"
+    )
+
+
+ROS_WORKSPACE_SETUP = _resolve_ros_workspace_setup()
+
 CASES = {
     "O0": 0.0,
     "O1": 15.0,
@@ -125,7 +148,7 @@ def wait_for_camera_topics():
         unavailable = []
         for topic in topics:
             out, rc = run_cmd(
-                "source /opt/ros/jazzy/setup.bash && source install/setup.bash && "
+                f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
                 f"ros2 topic info {topic}",
                 timeout=10,
             )
@@ -134,7 +157,7 @@ def wait_for_camera_topics():
                 last_out = out
         if not unavailable:
             info_out, info_rc = run_cmd(
-                "source /opt/ros/jazzy/setup.bash && source install/setup.bash && "
+                f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
                 "ros2 topic echo /overhead_camera/camera_info --once",
                 timeout=5,
             )
@@ -148,7 +171,7 @@ def wait_for_camera_topics():
 def wait_for_perception_point(timeout_s=15.0):
     probe_path = REPO / "scripts/perception/pointstamped_readiness_probe.py"
     output, returncode = run_cmd(
-        "source /opt/ros/jazzy/setup.bash && source install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         f"python3 {probe_path} --timeout {timeout_s}",
         timeout=timeout_s + 5.0,
     )
@@ -182,7 +205,7 @@ def wait_for_perception_pose(timeout_s=15.0):
     """
     probe_path = REPO / "scripts/perception/posestamped_readiness_probe.py"
     output, returncode = run_cmd(
-        "source /opt/ros/jazzy/setup.bash && source install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         f"python3 {probe_path} --timeout {timeout_s}",
         timeout=timeout_s + 5.0,
     )
@@ -333,7 +356,7 @@ def build_m3_command(
     use_position = bool_launch_value(use_perceived_position)
     use_yaw = bool_launch_value(use_perceived_yaw)
     return (
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         f"ros2 launch ur5e_pick_place m3_grasp.launch.py "
         f"scene_file:=\"{case_scene_path}\" "
         f"gripper_model:=parallel_jaw use_perceived_position:={use_position} "
@@ -578,7 +601,7 @@ def run_case(
     if p_gain_override is not None:
         p_gain_arg = f" parallel_jaw_p_gain_override:={p_gain_override}"
     sim_cmd = (
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         f"ros2 launch ur5e_robotiq_description ur5e_robotiq_sim_control.launch.py "
         f"gripper_model:=parallel_jaw enable_camera:=true gazebo_gui:={gui_flag}"
         f"{p_gain_arg}"
@@ -589,7 +612,7 @@ def run_case(
     active = False
     for _ in range(60):
         out, _ = run_cmd(
-            f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+            f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
             "ros2 control list_controllers",
             timeout=10,
         )
@@ -609,7 +632,7 @@ def run_case(
 
     # Check joint states and camera topics
     joint_state_out, joint_state_rc = run_cmd(
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         "ros2 topic echo /joint_states --once",
         timeout=10,
     )
@@ -668,14 +691,14 @@ def run_case(
             )
         diag_procs.append(
             start_process(
-                f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+                f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
                 f"python3 {REPO}/scripts/joint_trajectory_recorder.py "
                 f"--out {case_dir}/gripper_joint_trace.csv --joint gripper_jaw_joint"
             )
         )
         diag_procs.append(
             start_process(
-                f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+                f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
                 f"python3 {REPO}/scripts/perception/pointstamped_recorder.py "
                 f"--out {case_dir}/perceived_points.csv"
             )
@@ -685,14 +708,14 @@ def run_case(
     # 6. Launch move_group
     print("Launching move_group...", flush=True)
     mg_cmd = (
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         "ros2 launch ur5e_robotiq_moveit_config move_group.launch.py gripper_model:=parallel_jaw"
     )
     mg_proc = start_process(mg_cmd)
     move_group_ready = False
     for _ in range(60):
         out, _ = run_cmd(
-            f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+            f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
             "ros2 node list",
             timeout=10,
         )
@@ -764,12 +787,12 @@ def run_case(
     # it is captured rather than discarded.
     object_detector_log = case_dir / "object_detector.log"
     det_proc = start_process(
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         "ros2 run ur5e_pick_place object_detector --ros-args -p use_sim_time:=true "
         f"> {object_detector_log} 2>&1",
     )
     pos_proc = start_process(
-        f"source /opt/ros/jazzy/setup.bash && source {REPO}/install/setup.bash && "
+        f"source /opt/ros/jazzy/setup.bash && source {ROS_WORKSPACE_SETUP} && "
         "ros2 run ur5e_pick_place object_position_world --ros-args -p use_sim_time:=true",
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
