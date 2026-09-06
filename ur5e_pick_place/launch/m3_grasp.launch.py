@@ -358,7 +358,20 @@ def _setup(context, *args, **kwargs):
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
         )
         .robot_description(
-            mappings={**base_args, **gripper_args, "gripper_model": gripper_model}
+            mappings={
+                **base_args,
+                **gripper_args,
+                "gripper_model": gripper_model,
+                # Stage-3A (2026-09-06): this node's own local RobotModel --
+                # used by PlanningSceneManager's clone-based verification
+                # (checkPickupClearanceClone, checkPlacementPrecontact) and
+                # by move_group.getRobotModel() for local FK/IK -- must see
+                # the planning-only gripper_base_link housing collision box
+                # exactly as move_group.launch.py's independent build does.
+                # ur5e_robotiq_sim_control.launch.py never sets this, so
+                # Gazebo's physical model remains unchanged.
+                "moveit_collision_housing": "true",
+            }
         )
         .robot_description_semantic(
             file_path="config/ur5e_robotiq.srdf.xacro",

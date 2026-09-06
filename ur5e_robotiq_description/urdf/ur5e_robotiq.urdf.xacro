@@ -119,6 +119,17 @@
   <xacro:arg name="gripper_model" default="robotiq_linkage"/>
   <xacro:property name="gripper_model" value="$(arg gripper_model)"/>
 
+  <!-- Stage-3A: planning-only gripper housing collision geometry for
+       gripper_model:=parallel_jaw. Default false reproduces the exact
+       existing (validated) physical model byte-for-byte — Gazebo/simulation
+       launches must never set this true. Only move_group's own independent
+       robot_description build sets it true, so MoveIt's collision-aware
+       planning sees a conservative gripper_base_link housing box while
+       Gazebo's physics stays completely unchanged. See the Stage-3A design
+       audit (2026-09-06) for the geometry derivation and why jaw_fixed_link/
+       jaw_moving_link deliberately receive no collision geometry here. -->
+  <xacro:arg name="moveit_collision_housing" default="false"/>
+
   <!-- Simulation-only arm spawn state.  The sim launch derives these six
        arguments from scene.yaml milestones.m1.goal_positions.  Defaults keep
        direct xacro users on the historical home pose. -->
@@ -243,7 +254,8 @@
       sim_isaac="false"
       use_fake_hardware="false"
       fake_sensor_commands="false"
-      include_ros2_control="true">
+      include_ros2_control="true"
+      moveit_collision_housing="$(arg moveit_collision_housing)">
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </xacro:parallel_jaw_gripper>
   </xacro:if>
