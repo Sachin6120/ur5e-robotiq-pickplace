@@ -24,6 +24,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -87,7 +88,7 @@ ament_target_dependencies(m2_cartesian_approach
 # retreat) rather than folded into m3_grasp.cpp -- see that file's own header
 # for why: m3_grasp.cpp is verified and produced this project's first
 # successful grasp, and is not the file to edit blind.
-add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp)
+add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp src/transport_executor.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -103,6 +104,7 @@ ament_target_dependencies(m3_grasp
   tf2_geometry_msgs
   geometry_msgs
   control_msgs
+  controller_manager_msgs
 )
 
 # --- diagnostic: CLI vs rclcpp_action::Client timing check, see
@@ -162,6 +164,14 @@ if(BUILD_TESTING)
   ament_add_gtest(planning_scene_manager_test test/test_planning_scene_manager.cpp)
   target_link_libraries(planning_scene_manager_test planning_scene_manager)
   ament_target_dependencies(planning_scene_manager_test rclcpp moveit_msgs geometry_msgs)
+  # Stage-3C C0.3: distinct-sample settle-tracking, no ROS node/executor/
+  # action server needed -- see transport_executor.hpp's SettleTracker /
+  # is_new_joint_state_sample.
+  ament_add_gtest(transport_executor_settle_test test/test_transport_executor_settle.cpp)
+  target_include_directories(transport_executor_settle_test PRIVATE include)
+  ament_target_dependencies(transport_executor_settle_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core
+    control_msgs controller_manager_msgs sensor_msgs)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------

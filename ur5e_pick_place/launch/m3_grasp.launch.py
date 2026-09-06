@@ -353,6 +353,75 @@ def _setup(context, *args, **kwargs):
             "CONFIG_ERROR: MoveIt controller config must define "
             "trajectory_execution.allowed_start_tolerance for startup M1 verification."
         ) from exc
+
+    # Stage-3C C0: direct-FJT TRANSPORT execution parameters. Every one of
+    # these six is a genuine, independently-settable launch argument
+    # (transport_fjt_action_name, transport_controller_name,
+    # transport_controller_wait_timeout_s, transport_allowed_start_tolerance_rad,
+    # transport_execution_duration_scaling, transport_goal_duration_margin_s).
+    # Four of them (all but the wait-timeout, which has no existing MoveIt
+    # authority to derive from) default to a value derived from this SAME
+    # controller_config, so an un-overridden launch can never independently
+    # drift from the MoveIt TrajectoryExecutionManager authority values it
+    # reproduces (transport_executor.hpp bypasses TEM for the TRANSPORT leg
+    # only, so these are the values it must reproduce itself) -- see
+    # _resolve_transport_arg() below for exactly how "derive a default from
+    # YAML, but still accept a real CLI override" is implemented; this is
+    # the only way to give a launch argument a dynamically-computed default
+    # in this file's declare-then-substitute structure, not a test-only
+    # mechanism (there is no sentinel name, no "test"/"override"/"debug"
+    # parameter anywhere -- the argument IS transport_execution_duration_scaling,
+    # etc., and `ros2 launch ... transport_execution_duration_scaling:=0.3`
+    # sets it directly).
+    def _resolve_transport_arg(launch_arg_name, derived_value):
+        override = LaunchConfiguration(launch_arg_name).perform(context)
+        return override if override else str(derived_value)
+
+    try:
+        transport_execution_duration_scaling = float(_resolve_transport_arg(
+            "transport_execution_duration_scaling",
+            controller_config["trajectory_execution"]["allowed_execution_duration_scaling"],
+        ))
+        transport_goal_duration_margin_s = float(_resolve_transport_arg(
+            "transport_goal_duration_margin_s",
+            controller_config["trajectory_execution"]["allowed_goal_duration_margin"],
+        ))
+    except KeyError as exc:
+        raise RuntimeError(
+            "CONFIG_ERROR: MoveIt controller config must define "
+            "trajectory_execution.allowed_execution_duration_scaling and "
+            "allowed_goal_duration_margin for the Stage-3C C0 transport watchdog."
+        ) from exc
+    transport_allowed_start_tolerance_rad = float(_resolve_transport_arg(
+        "transport_allowed_start_tolerance_rad", startup_m1_tolerance_rad))
+
+    # The FollowJointTrajectory-typed controller is identified structurally
+    # (by its configured `type`), not by assuming the literal name
+    # "arm_controller" -- this file already supports both gripper_model
+    # controller lists (parallel_jaw's arm_controller/parallel_jaw_gripper_
+    # controller and the vendor path's arm_controller/gripper_controller),
+    # and both name their FollowJointTrajectory-typed entry differently from
+    # their GripperCommand-typed one.
+    try:
+        controller_manager_cfg = controller_config["moveit_simple_controller_manager"]
+        derived_transport_controller_name = next(
+            name for name in controller_manager_cfg["controller_names"]
+            if controller_manager_cfg.get(name, {}).get("type") == "FollowJointTrajectory"
+        )
+        derived_transport_fjt_action_name = "/{}/{}".format(
+            derived_transport_controller_name,
+            controller_manager_cfg[derived_transport_controller_name]["action_ns"],
+        )
+    except (KeyError, StopIteration) as exc:
+        raise RuntimeError(
+            "CONFIG_ERROR: MoveIt controller config must define exactly one "
+            "FollowJointTrajectory-typed controller under "
+            "moveit_simple_controller_manager for Stage-3C C0 transport execution."
+        ) from exc
+    transport_controller_name = _resolve_transport_arg(
+        "transport_controller_name", derived_transport_controller_name)
+    transport_fjt_action_name = _resolve_transport_arg(
+        "transport_fjt_action_name", derived_transport_fjt_action_name)
     moveit_config = (
         MoveItConfigsBuilder(
             "ur5e_robotiq", package_name="ur5e_robotiq_moveit_config"
@@ -459,6 +528,14 @@ def _setup(context, *args, **kwargs):
         "pregrasp_pose_error_max_m": float(
             LaunchConfiguration("pregrasp_pose_error_max_m").perform(context)
         ),
+        "transport_fjt_action_name": transport_fjt_action_name,
+        "transport_controller_name": transport_controller_name,
+        "transport_controller_wait_timeout_s": float(
+            LaunchConfiguration("transport_controller_wait_timeout_s").perform(context)
+        ),
+        "transport_allowed_start_tolerance_rad": transport_allowed_start_tolerance_rad,
+        "transport_execution_duration_scaling": transport_execution_duration_scaling,
+        "transport_goal_duration_margin_s": transport_goal_duration_margin_s,
     }
     if pregrasp_joint_target:
         node_params["pregrasp_joint_target"] = pregrasp_joint_target
@@ -640,6 +717,61 @@ def generate_launch_description():
                 default_value="0.010",
                 description="Max ground-truth TCP error against the commanded "
                 "pre-grasp pose in pregrasp_only mode.",
+            ),
+            DeclareLaunchArgument(
+                "transport_controller_wait_timeout_s",
+                default_value="5.0",
+                description="Stage-3C C0: bounded wait for arm_controller's ACTIVE "
+                "state (controller_manager/list_controllers) and for its direct "
+                "FollowJointTrajectory action server to become available, before "
+                "the TRANSPORT leg's direct-FJT send. See "
+                "transport_executor.hpp.",
+            ),
+            DeclareLaunchArgument(
+                "transport_fjt_action_name",
+                default_value="",
+                description="Stage-3C C0: direct FollowJointTrajectory action endpoint "
+                "for the TRANSPORT leg. Empty (default) derives it structurally from "
+                "moveit_simple_controller_manager's own FollowJointTrajectory-typed "
+                "controller entry (production: /arm_controller/follow_joint_trajectory) "
+                "-- set explicitly to override.",
+            ),
+            DeclareLaunchArgument(
+                "transport_controller_name",
+                default_value="",
+                description="Stage-3C C0: controller_manager/list_controllers name "
+                "checked for ACTIVE state before the TRANSPORT leg's direct-FJT send. "
+                "Empty (default) derives it the same way as "
+                "transport_fjt_action_name (production: arm_controller) -- set "
+                "explicitly to override.",
+            ),
+            DeclareLaunchArgument(
+                "transport_allowed_start_tolerance_rad",
+                default_value="",
+                description="Stage-3C C0: reproduces MoveIt TrajectoryExecutionManager's "
+                "allowed_start_tolerance for the TRANSPORT leg's direct-FJT send, which "
+                "bypasses TEM. Empty (default) derives it from "
+                "trajectory_execution.allowed_start_tolerance (production: 0.01 rad, "
+                "same source as startup_m1_tolerance_rad) -- set explicitly to override.",
+            ),
+            DeclareLaunchArgument(
+                "transport_execution_duration_scaling",
+                default_value="",
+                description="Stage-3C C0: reproduces MoveIt TrajectoryExecutionManager's "
+                "allowed_execution_duration_scaling for the TRANSPORT leg's execution "
+                "watchdog (watchdog_limit_s = planned_duration_s * this + "
+                "transport_goal_duration_margin_s). Empty (default) derives it from "
+                "trajectory_execution.allowed_execution_duration_scaling (production: "
+                "1.2) -- set explicitly to override.",
+            ),
+            DeclareLaunchArgument(
+                "transport_goal_duration_margin_s",
+                default_value="",
+                description="Stage-3C C0: reproduces MoveIt TrajectoryExecutionManager's "
+                "allowed_goal_duration_margin for the TRANSPORT leg's execution "
+                "watchdog. Empty (default) derives it from "
+                "trajectory_execution.allowed_goal_duration_margin (production: 1.5 s) "
+                "-- set explicitly to override.",
             ),
             DeclareLaunchArgument(
                 "perceived_position_timeout_s",

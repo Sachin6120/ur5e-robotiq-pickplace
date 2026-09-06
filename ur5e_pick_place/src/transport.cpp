@@ -41,6 +41,7 @@
 #include "ur5e_pick_place/transport.hpp"
 #include "ur5e_pick_place/gz_topic_utils.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
+#include "ur5e_pick_place/transport_executor.hpp"
 
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
@@ -376,11 +377,42 @@ Result lift_transport_place(
       "released.", p.standoff);
     return Result::PLAN_FAILURE;
   }
-  if (arm.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-    RCLCPP_ERROR(
-      node->get_logger(),
-      "EXECUTE_FAILURE: transport plan existed but execution failed.");
-    return Result::EXECUTE_FAILURE;
+  // Stage-3C C0: TRANSPORT execution goes through a dedicated direct
+  // FollowJointTrajectory client, not MoveGroupInterface::execute() --
+  // see transport_executor.hpp's header for the empirical reason
+  // (Stage-3C Phase 0.1-0.3 proof evidence). Every other leg in this file
+  // (lift, place, retreat, via cartesian_translate) is unaffected and
+  // still calls arm.execute() exactly as before.
+  {
+    TransportExecutionParams exec_params;
+    exec_params.fjt_action_name = p.transport_fjt_action_name;
+    exec_params.controller_name = p.transport_controller_name;
+    exec_params.controller_wait_timeout_s = p.transport_controller_wait_timeout_s;
+    exec_params.allowed_start_tolerance_rad = p.transport_allowed_start_tolerance_rad;
+    exec_params.execution_duration_scaling = p.transport_execution_duration_scaling;
+    exec_params.goal_duration_margin_s = p.transport_goal_duration_margin_s;
+    exec_params.joint_states_topic = p.joint_states_topic;
+    exec_params.stationary_velocity_eps_rad_s = p.stationary_velocity_eps_rad_s;
+    exec_params.stationary_consecutive_samples = p.stationary_consecutive_samples;
+    exec_params.stationary_timeout_s = p.stationary_timeout_s;
+    TransportExecutor executor(node, exec_params);
+
+    double max_start_error_rad = 0.0;
+    const Result validate_result = executor.preSendValidate(
+      plan.trajectory.joint_trajectory, arm, max_start_error_rad);
+    if (!ok(validate_result)) {
+      return validate_result;
+    }
+
+    const Result exec_result = executor.executeAndWait(plan.trajectory.joint_trajectory);
+    if (!ok(exec_result)) {
+      RCLCPP_ERROR(
+        node->get_logger(),
+        "%s: direct-FJT transport execution failed (fjt_error_code=%d fjt_error_string=\"%s\").",
+        to_string(exec_result), executor.lastFjtErrorCode(),
+        executor.lastFjtErrorString().c_str());
+      return exec_result;
+    }
   }
   mark(
     node, 4, "TRANSPORT_DONE", p,

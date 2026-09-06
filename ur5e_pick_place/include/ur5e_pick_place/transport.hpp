@@ -187,6 +187,30 @@ struct TransportParams
   // "<prefix>.transportdone_ready" -- the harness polls for file existence
   // instead of parsing a live stream.
   std::string marker_file_prefix;
+
+  // Stage-3C C0: direct FollowJointTrajectory execution parameters for the
+  // TRANSPORT leg only (see transport_executor.hpp for why). Defaults
+  // reproduce this project's existing MoveIt/controller authority values
+  // (ur5e_robotiq_moveit_config/config/moveit_controllers_parallel_jaw.yaml)
+  // so an unset caller gets byte-identical semantics to today's
+  // TrajectoryExecutionManager-mediated execution.
+  std::string transport_fjt_action_name = "/arm_controller/follow_joint_trajectory";
+  std::string transport_controller_name = "arm_controller";
+  double transport_controller_wait_timeout_s = 5.0;
+  double transport_allowed_start_tolerance_rad = 0.01;
+  double transport_execution_duration_scaling = 1.2;
+  double transport_goal_duration_margin_s = 1.5;
+
+  // Stage-3C C0.1: watchdog-cleanup-path physical-settle confirmation.
+  // These four are NOT new thresholds -- they reuse this project's
+  // existing, already-validated m3_grasp.cpp startup-stationarity
+  // parameters (joint_states_topic, stationary_velocity_eps,
+  // stationary_consecutive_samples, stationary_timeout_s) verbatim. See
+  // transport_executor.hpp's C0.1 class header note.
+  std::string joint_states_topic = "/joint_states";
+  double stationary_velocity_eps_rad_s = 1.0e-3;
+  int stationary_consecutive_samples = 6;
+  double stationary_timeout_s = 25.0;
 };
 
 // Runs lift -> transport -> place -> release -> retreat.
