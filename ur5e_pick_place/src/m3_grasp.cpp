@@ -818,6 +818,20 @@ int main(int argc, char ** argv)
   double vel_scale = 0.1;
   double acc_scale = 0.1;
   double eef_step = 0.01;
+  // --- Stage-3C C0: direct-FJT TRANSPORT execution (transport_executor.hpp).
+  // Defaults reproduce this project's existing MoveIt/controller authority
+  // values (ur5e_robotiq_moveit_config/config/
+  // moveit_controllers_parallel_jaw.yaml) -- see that file's
+  // trajectory_execution and moveit_simple_controller_manager.arm_controller
+  // entries. The launch file passes these explicitly from the same YAML it
+  // already loads for startup_m1_tolerance_rad, so these are never a second,
+  // independently-drifting copy of the authority value.
+  std::string transport_fjt_action_name = "/arm_controller/follow_joint_trajectory";
+  std::string transport_controller_name = "arm_controller";
+  double transport_controller_wait_timeout_s = 5.0;
+  double transport_allowed_start_tolerance_rad = 0.01;
+  double transport_execution_duration_scaling = 1.2;
+  double transport_goal_duration_margin_s = 1.5;
   std::string csv_path = "m3_grasp.csv";
   std::string grasp_mode = "friction";
   std::string gt_wrist3_link_name = "wrist_3_link";
@@ -993,6 +1007,22 @@ int main(int argc, char ** argv)
   node->get_parameter_or("velocity_scaling", vel_scale, vel_scale);
   node->get_parameter_or("acceleration_scaling", acc_scale, acc_scale);
   node->get_parameter_or("eef_step", eef_step, eef_step);
+  node->get_parameter_or(
+    "transport_fjt_action_name", transport_fjt_action_name, transport_fjt_action_name);
+  node->get_parameter_or(
+    "transport_controller_name", transport_controller_name, transport_controller_name);
+  node->get_parameter_or(
+    "transport_controller_wait_timeout_s", transport_controller_wait_timeout_s,
+    transport_controller_wait_timeout_s);
+  node->get_parameter_or(
+    "transport_allowed_start_tolerance_rad", transport_allowed_start_tolerance_rad,
+    transport_allowed_start_tolerance_rad);
+  node->get_parameter_or(
+    "transport_execution_duration_scaling", transport_execution_duration_scaling,
+    transport_execution_duration_scaling);
+  node->get_parameter_or(
+    "transport_goal_duration_margin_s", transport_goal_duration_margin_s,
+    transport_goal_duration_margin_s);
   node->get_parameter_or("csv_path", csv_path, csv_path);
   node->get_parameter_or("grasp_mode", grasp_mode, grasp_mode);
   node->get_parameter_or("gt_wrist3_link_name", gt_wrist3_link_name, gt_wrist3_link_name);
@@ -2696,6 +2726,19 @@ int main(int argc, char ** argv)
         tp.planning_scene_manager = psm;
         tp.pickup_clearance_m = 0.005;
         tp.terminal_stroke_m = 0.005;
+        tp.transport_fjt_action_name = transport_fjt_action_name;
+        tp.transport_controller_name = transport_controller_name;
+        tp.transport_controller_wait_timeout_s = transport_controller_wait_timeout_s;
+        tp.transport_allowed_start_tolerance_rad = transport_allowed_start_tolerance_rad;
+        tp.transport_execution_duration_scaling = transport_execution_duration_scaling;
+        tp.transport_goal_duration_margin_s = transport_goal_duration_margin_s;
+        // C0.1: watchdog-cleanup physical-settle confirmation reuses these
+        // existing, already-parsed startup-stationarity parameters verbatim
+        // -- see transport_executor.hpp's C0.1 class header note.
+        tp.joint_states_topic = joint_states_topic;
+        tp.stationary_velocity_eps_rad_s = stationary_velocity_eps;
+        tp.stationary_consecutive_samples = stationary_consecutive_samples;
+        tp.stationary_timeout_s = stationary_timeout_s;
         // Grasp-loss check (transport.hpp's Stage 3 note). Left at
         // TransportParams' own defaults (expected_grip_angle=0.0, disabling
         // the check) when the grasp table didn't resolve an expected angle
