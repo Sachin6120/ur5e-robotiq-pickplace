@@ -1,15 +1,109 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The section immediately below, "2026-09-06 Stage-3A
-> Gripper Collision-Fidelity Architecture & Full Regression — CURRENT AUTHORITY", is the sole
-> current-authority statement of repository state.
+> READ THIS SECTION FIRST. The section immediately below, "2026-09-06 Stage-3B
+> Dynamic Scene Awareness — CURRENT AUTHORITY", is the sole current-authority
+> statement of repository state.
 > Every other authority label anywhere else in this file is superseded and
 > has been relabelled
 > accordingly; their content is retained as historical evidence, not current
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-### 2026-09-06 Stage-3A Gripper Collision-Fidelity Architecture & Full Regression — CURRENT AUTHORITY
+### 2026-09-06 Stage-3B Dynamic Scene Awareness — CURRENT AUTHORITY
+
+**Read `PROJECT_STATE.md`'s matching current-authority section first for exact
+numbers, gates, and evidence paths — this section is operational (what to do
+next, what not to redo, what's still WIP), not a metrics restatement.**
+
+#### Repository state right now
+
+- Branch: `stage3b-dynamic-scene-awareness`. Baseline HEAD: `2c7b5c4` (`Merge
+  pull request #8 from Sachin6120/stage3a-gripper-collision-fidelity`).
+- Working tree is **EXPECTED STAGE-3B WIP**, not clean: `ur5e_pick_place/CMakeLists.txt`,
+  `ur5e_pick_place/package.xml`, `ur5e_robotiq_description/CMakeLists.txt`
+  modified (pure additive build registration for the new node/plugin); several
+  new untracked Stage-3B production and qualification-tooling files (see
+  `git status --short`). Nothing has been committed or pushed. Do not treat
+  the untracked-file list as drift to clean up — it is the entire Stage-3B
+  deliverable, staged for a future commit that has not been authorized yet.
+
+#### What is accepted and must NOT be re-derived or re-run
+
+Step 1 (motion-source selection), Step 2 (scene-bridging runtime
+qualification), B0 (stationary baseline), B1 (production moving-obstacle
+qualification), and B2 (corrected qualification, one pre-declared no-retry
+run) are all **FULLY ACCEPTED**. Do not rerun any of them, do not retune the
+harnesses, and do not treat a fresh run as necessary "for confirmation" unless
+you have a *specific, stated* reason (e.g., a later change to
+`dynamic_obstacle_scene_node.cpp`, `deterministic_motion_system.cpp`, or the
+launch files that could plausibly invalidate the recorded evidence) or you
+find repository evidence that contradicts what's recorded in `PROJECT_STATE.md`
+— in which case stop and reconcile before proceeding, per `AGENTS.md`.
+
+Evidence paths (all under `evidence/`, gitignored, local-only — see
+"Evidence handling" below):
+- Step 1 / Step 2: no persisted `evidence/` directory exists for either; their
+  acceptance rests on the architectural facts recorded in `PROJECT_STATE.md`
+  (TrajectoryFollower rejection reasoning, subscriber-before-ADD fix), not on
+  a citable raw-data directory. Do not assume one exists if you go looking.
+- B0: `stage3b_b0_20260906_115648/`, `stage3b_b0_20260906_115834/` (the two
+  actual manipulation attempts); `stage3b_b0_20260906_{115446,115556}/` are
+  pre-manipulation infrastructure runs, not manipulation failures.
+- B1: `stage3b_b1_20260906_120433/`.
+- B2 historical (defective harness, preserved not deleted):
+  `stage3b_b2_20260906_{120824,121026,121156,121304,121506,121648,121748}/`,
+  indexed in `stage3b_b2_HISTORICAL_PRE_CORRECTION/README.md`.
+- B2 corrected (the one qualifying run): `stage3b_b2_20260906_123734/`
+  (`harness_version: "b2-corrected-v2"` in its `b2_qualification_results.json`
+  is the field that distinguishes it from every historical directory).
+
+#### Known, accepted limitations (do not silently "fix" without a new authorized task)
+
+- `dynamic_obstacle_scene_node`'s ADD-once state is not reset if `move_group`
+  restarts independently of it; a restarted `move_group` will not see
+  `dynamic_obstacle_0` recreated unless the scene node itself is also
+  restarted. Accepted for the current co-launched lifecycle.
+- The obstacle pose source is deterministic simulation ground truth
+  (Gazebo `PosePublisher`), not real RGB-D perception. Any future claim that
+  Stage-3B validates *sensed* moving-obstacle perception is false; it validates
+  the `PlanningScene`-representation and collision-awareness architecture only.
+- B2's "15.0 mm" and "14.93 mm" figures are sampling-resolution quantities, not
+  FCL distances or collision-boundary precision claims — see `PROJECT_STATE.md`'s
+  "Tracking semantics" subsection before citing either number for anything.
+- B1's own qualification JSON contains a field named `apparent_sampling_lag_mm`
+  with a value that happens to equal the derived nominal interval (10.0 mm) —
+  this is a legacy field name from before the B2 harness audit; read it as the
+  same derived (not independently measured) sampling-resolution quantity B2
+  now labels explicitly, not as an independent lag measurement.
+
+#### Explicit non-scope (do not implement without a new authorized task)
+
+Trajectory monitoring, execution interruption/cancellation, stop-and-replan,
+prediction, continuous adaptation, multi-object tracking, full SO(3) target
+generalization. None of these exist anywhere in the current Stage-3B code.
+
+#### Next authorized milestone
+
+**Stage-3C — Collision-Triggered Stop-and-Replan During Execution.** Boundary
+only, not designed here: Stage-3C consumes the validated Stage-3B
+`PlanningScene` dynamic-obstacle representation and must be separately
+designed and qualified — do not start implementing it from this handoff alone.
+
+#### Evidence handling
+
+`evidence/` is gitignored per the repository's existing evidence policy (see
+`docs/evidence/README.md` and `AGENTS.md`'s "Preserve Validated Baselines and
+Evidence"). Nothing under `evidence/stage3b_*` is proposed for `git add`;
+only the production/tooling source files and `PROJECT_STATE.md`/`HANDOFF.md`
+are commit candidates. Do not blanket-add `evidence/`.
+
+---
+
+### 2026-09-06 Stage-3A Gripper Collision-Fidelity Architecture & Full Regression — SUPERSEDED
+
+> Superseded by the Stage-3B section above for "current authority" purposes.
+> Stage-3A itself remains CLOSED / VERIFIED / MERGED and untouched by Stage-3B
+> — nothing below describes a reverted or invalidated result.
 
 ### Milestone Summary & Objective
 

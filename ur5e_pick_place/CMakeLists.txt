@@ -19,6 +19,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(shape_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -175,6 +176,15 @@ ament_target_dependencies(object_position_world
   tf2_geometry_msgs
 )
 
+# --- Stage-3B: dynamic obstacle scene node ---------------------------------
+add_executable(dynamic_obstacle_scene_node src/dynamic_obstacle_scene_node.cpp)
+ament_target_dependencies(dynamic_obstacle_scene_node
+  rclcpp
+  geometry_msgs
+  moveit_msgs
+  shape_msgs
+)
+
 install(TARGETS
   m1_joint_goal
   static_scene_tf
@@ -185,6 +195,7 @@ install(TARGETS
   object_position_world
   planning_scene_manager
   planning_scene_manager_smoke
+  dynamic_obstacle_scene_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
