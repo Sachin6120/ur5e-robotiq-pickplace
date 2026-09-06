@@ -21,7 +21,72 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-01 Stage-2D PlanningSceneManager Regression & Full Generalization Closeout — CURRENT AUTHORITY
+## 2026-09-06 Stage-3A Gripper Collision-Fidelity Architecture & Full Regression — CURRENT AUTHORITY
+
+- **Milestone Outcome**: Stage-3A gripper collision-fidelity architecture is **100% COMPLETE & VERIFIED** across the complete 4-case regression suite.
+  - **Scene-A Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS**
+  - **D1 Case** ($+30\text{ mm}, +30\text{ mm}, +30^\circ$): **PASS**
+  - **D2 Case** ($-30\text{ mm}, -30\text{ mm}, -30^\circ$): **PASS**
+  - **D3 Case** ($+30\text{ mm}, -30\text{ mm}, +45^\circ$): **PASS**
+
+- **Validated Stage-3A Architecture**:
+  - **Physics Preservation**: Gazebo/physics keeps the original gripper collision model (`moveit_collision_housing:=false` default).
+  - **Planning-Only Collider**: The new housing collider is MoveIt planning-only (`moveit_collision_housing:=true` set in `/move_group` and `/m3_grasp` local `robot_description` builds). Gazebo `/robot_state_publisher` does not load it.
+  - **Housing Geometry**: `gripper_base_link` receives exactly one planning-side collision box:
+    - Size: $0.020 \times 0.060 \times 0.020\text{ m}$
+    - Origin: `0 0 0`
+    - RPY: `0 0 0`
+    - Geometry is trimmed from the $0.030 \times 0.060 \times 0.030\text{ m}$ visual placeholder box per design audit to maintain positive clearance ($+2.5\text{ mm}$ X, $+5.5\text{ mm}$ Z) to `pick_target` during grasp.
+  - **Fingers and Pads**: `jaw_fixed_link` and `jaw_moving_link` remain collision-free; existing pad collision geometry is unchanged.
+  - **Collision Matrix**: No SRDF or ACM changes were needed.
+
+- **Production Implementation Files**:
+  - Four-file Stage-3A implementation diff SHA-256 during regression: `c6f9afe09d88122ed34c57f58d0f148fa866f59c414e6ee3c214642461f4aedb` (identifies the code/URDF/launch changes under which regression qualified; distinct from subsequent working-tree documentation edits).
+  - Modified files:
+    - `ur5e_pick_place/launch/m3_grasp.launch.py`
+    - `ur5e_robotiq_description/urdf/parallel_jaw_gripper.urdf.xacro`
+    - `ur5e_robotiq_description/urdf/ur5e_robotiq.urdf.xacro`
+    - `ur5e_robotiq_moveit_config/launch/move_group.launch.py`
+
+- **Verified Regression Metrics Summary**:
+  - **Descent Fraction**: Cartesian descent fraction is $\mathbf{1.0000}$ for all four cases.
+  - **Collision Fidelity**: No unintended `gripper_base_link` collision observed. Runtime collision inventories matched the intended architecture.
+  - **Lifecycle Integrity**: `PlanningSceneManager` collision lifecycle remained correct across all phases.
+  - **Execution Rigor**: No retries or tuning were used.
+  - **Quantitative Gates**: Existing Stage-2D quantitative gates remained fully satisfied.
+  - **Scene-A Baseline**: Placement error $2.3095\text{ mm}$, lift slip $0.0063\text{ mm}$, transport slip $0.0037\text{ mm}$.
+  - **D1 Case**: Placement error $2.0791\text{ mm}$, lift slip $0.0155\text{ mm}$, transport slip $0.0042\text{ mm}$.
+  - **D2 Case**: Placement error $2.3472\text{ mm}$, lift slip $0.0043\text{ mm}$, transport slip $0.0046\text{ mm}$.
+  - **D3 Case**: Full cycle `SUCCESS`, pickup-clearance separation $+4.960\text{ mm}$.
+
+- **Tooling Observations (Cleanly Separated from Stage-3A Correctness)**:
+  1. Existing clean-state/cleanup tooling has a broad process match that can match GNOME GVFS processes (`gvfsd`, etc.).
+  2. Gazebo produced shutdown-time SIGSEGV observations after successful cycles in some runs; independent process census was verified clean before subsequent cases.
+  *(These are tooling/teardown findings only and must NOT be classified as Stage-3A manipulation or collision regressions).*
+
+- **Current Project Status**:
+  - Stage-1 perceived XYZ/D10: **COMPLETE / VERIFIED**
+  - Stage-2A configured yaw: **COMPLETE / VERIFIED**
+  - Stage-2B yaw perception: **COMPLETE / VERIFIED**
+  - Stage-2C perceived yaw manipulation: **COMPLETE / VERIFIED**
+  - Stage-2D planar XY+yaw generalization: **COMPLETE / VERIFIED**
+  - 2.0 mm production clearance correction: **COMPLETE / VERIFIED**
+  - MoveIt/FCL model-margin audit: **COMPLETE / VERIFIED**
+  - PlanningSceneManager infrastructure & integration: **COMPLETE / VERIFIED**
+  - Stage-3A Gripper Collision-Fidelity Architecture: **COMPLETE / VERIFIED**
+
+- **Next Development Boundary**:
+  - Stage-3A is **CLOSED**.
+  - No further manipulation experiments or reruns are authorized for Stage-3A.
+  - **Agreed Next Development Direction**:
+    - First: dynamic scene awareness / moving-obstacle representation in the `PlanningScene`
+    - Then: collision-triggered stop-and-replan during execution
+    - Later: prediction / continuous adaptation
+    - Full SO(3) roll/pitch orientation handling and multi-object scenes remain future extensions, not the immediate next milestone.
+
+## 2026-09-01 Stage-2D PlanningSceneManager Regression & Full Generalization Closeout — SUPERSEDED
+
+Superseded by the 2026-09-06 Stage-3A section above: Stage-3A introduces planning-only gripper collision geometry verified across Scene-A, D1, D2, and D3. The Stage-2D results below are retained as historical qualification of the PlanningSceneManager collision lifecycle prior to Stage-3A.
 
 - **Release-preparation lineage**: branch `stage2-orientation-generalization`
   includes `2557aa6` (startup state-monitor race fix), `19ae062` (one-command

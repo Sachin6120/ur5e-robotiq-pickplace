@@ -22,14 +22,25 @@
   no closed loop, no protruding collision geometry, no object-dependent
   xacro argument of any kind.
 
-  KINEMATIC TREE (exactly two collision bodies in the whole gripper):
+  KINEMATIC TREE (exactly two PHYSICAL collision bodies in the whole gripper;
+  see moveit_collision_housing below for the one MoveIt-only planning body):
 
     parent (gripper_mount_link)
-     └─ (fixed)      gripper_base_link      [NO collision]
+     └─ (fixed)      gripper_base_link      [NO collision, unless
+                                              moveit_collision_housing:=true —
+                                              see that link's own comment]
          ├─ (fixed)      jaw_fixed_link      [NO collision]
          │   └─ (fixed)  pad_fixed_link      [BOX collision + contact sensor]
          └─ (PRISMATIC)  jaw_moving_link     [NO collision]  <- gripper_jaw_joint
              └─ (fixed)  pad_moving_link     [BOX collision + contact sensor]
+
+  STAGE-3A ADDITION (2026-09-06, design-audited, planning-only): a
+  `moveit_collision_housing` xacro arg, default false, gates ONE additional
+  collision box on gripper_base_link — set true ONLY by move_group's own
+  independent robot_description build, never by the Gazebo/simulation launch,
+  so this changes what MoveIt plans against without changing what Gazebo
+  simulates. See gripper_base_link's own link-level comment for the geometry
+  and its derivation.
 
   CLOSING AXIS: local +X of gripper_base_link. gripper_jaw_joint's own axis is
   "-1 0 0" (i.e. increasing q moves jaw_moving_link toward -X, toward the
@@ -110,6 +121,7 @@
         use_fake_hardware:=false
         fake_sensor_commands:=false
         include_ros2_control:=true
+        moveit_collision_housing:=false
         aperture_m:=0.085
         pad_thickness_m:=0.004
         pad_width_m:=0.022
@@ -167,9 +179,26 @@
         <!-- Links and joints                                                  -->
         <!-- ================================================================= -->
         <link name="${prefix}gripper_base_link">
-            <!-- Visual-only placeholder box. No <collision>: this link must
-                 never be able to touch anything (that is what removes defect 1,
-                 the protruding-collider first-contact problem). -->
+            <!-- Visual-only placeholder box by default (moveit_collision_housing
+                 default false): no <collision>, so this link cannot touch
+                 anything — that is what removes defect 1, the
+                 protruding-collider first-contact problem. When
+                 moveit_collision_housing is true (set ONLY by move_group's own
+                 independent robot_description build, never by the
+                 Gazebo/simulation launch), a single conservative collision box
+                 is added below for MoveIt-side planning/obstacle-awareness
+                 only. Its dimensions are deliberately trimmed from this link's
+                 own 0.030x0.060x0.030 visual box (to 0.020x0.060x0.020) per
+                 the Stage-3A design audit (2026-09-06): the unmodified visual
+                 box was found to leave under 1mm of Z clearance to
+                 PlanningSceneManager's attached pick_target at the validated
+                 30mm-object grasp depth, too thin to certify; the trimmed box
+                 restores a real, derived margin (+2.5mm X / +5.5mm Z) without
+                 touching pad geometry, Gazebo physics, grasp constants, ACM,
+                 or touch_links. jaw_fixed_link/jaw_moving_link deliberately
+                 receive no equivalent geometry — the audit found no
+                 non-degenerate box on either link that stays clear of
+                 pick_target's own volume at that same grasp depth. -->
             <visual>
                 <geometry>
                     <box size="0.030 0.060 0.030"/>
@@ -178,6 +207,14 @@
                     <color rgba="0.10 0.35 0.90 1.0"/>
                 </material>
             </visual>
+            <xacro:if value="${moveit_collision_housing}">
+                <collision>
+                    <origin xyz="0 0 0" rpy="0 0 0"/>
+                    <geometry>
+                        <box size="0.020 0.060 0.020"/>
+                    </geometry>
+                </collision>
+            </xacro:if>
             <inertial>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
                 <mass value="0.663"/>
