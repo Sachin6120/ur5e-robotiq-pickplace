@@ -21,7 +21,294 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-06 Stage-3A Gripper Collision-Fidelity Architecture & Full Regression — CURRENT AUTHORITY
+## 2026-09-06 Stage-3B Dynamic Scene Awareness — CURRENT AUTHORITY
+
+Branch `stage3b-dynamic-scene-awareness`, HEAD `2c7b5c4` (baseline; Stage-3B work
+is currently uncommitted WIP on top of it — see "Working tree" below). Supersedes
+the Stage-3A section immediately below, which remains the previously validated
+milestone (closed, verified, merged, untouched by Stage-3B).
+
+**Milestone Outcome**: Stage-3B is **CLOSED / VALIDATED**. It adds a deterministic
+moving-obstacle representation to the MoveIt `PlanningScene` and qualifies that
+MoveIt/FCL collision awareness correctly tracks it, without adding any reactive
+behavior (no stop, replan, cancellation, prediction, or adaptation — none of
+that is in scope; see "What Stage-3B does NOT provide" below).
+
+### Architecture
+
+```
+Gazebo deterministic moving obstacle (ur5e_robotiq_sim::DeterministicMotion)
+    -> gz-sim-pose-publisher-system (PosePublisher)
+    -> ros_gz_bridge (parameter_bridge)
+    -> dynamic_obstacle_scene_node (new ur5e_pick_place node)
+    -> moveit_msgs/CollisionObject (/collision_object, reliable QoS)
+    -> MoveIt PlanningScene
+```
+
+Dynamic obstacle: ID `dynamic_obstacle_0`, box geometry `0.050 x 0.050 x 0.100 m`.
+
+Production (B1-qualified) motion: `X=0.70 m, Z=0.85 m, Y=[0.25, 0.45] m,
+period=4.0 s, speed=0.10 m/s` — a symmetric triangular ping-pong sweep
+implemented via `Model::SetWorldPoseCmd` in `PreUpdate()`, not any force/wrench
+controller. This production model
+(`ur5e_robotiq_description/models/dynamic_obstacle/model.sdf`) is unchanged by
+every subsequent B2 case-specific experiment.
+
+**Scene ownership** (kept strictly separate from the existing grasp-lifecycle
+ownership, which is unchanged):
+- `dynamic_obstacle_scene_node` is the sole owner of `dynamic_obstacle_0`.
+- `PlanningSceneManager` remains the sole owner of the table, `pick_target`,
+  the full grasp lifecycle, attachment/detachment, and the $P/C_1/C_2/S$
+  collision-matrix semantics documented in the Stage-2D/Stage-3A sections
+  below — none of that was touched by Stage-3B.
+- `dynamic_obstacle_0` remains a world `CollisionObject` for its entire
+  lifetime: exactly one `ADD`, `MOVE` thereafter, **never attached**, **no ACM
+  exemption**, **no touch_links mutation**.
+
+### Step 1 — Motion source selection (accepted)
+
+The installed Gazebo `TrajectoryFollower` system was evaluated first and
+empirically rejected for this specific use: it is force/wrench-based and
+produced overshoot/drift unsuitable for a deterministic kinematic
+qualification target. This is not a claim that `TrajectoryFollower` is broken
+in general — only that it was the wrong tool for a bounded, exactly-repeating
+ping-pong sweep. The accepted replacement is a new, project-authored Gazebo
+system plugin, `ur5e_robotiq_sim::DeterministicMotion`
+(`ur5e_robotiq_description/src/deterministic_motion_system.cpp`), which
+computes an analytical triangular position directly from simulation time each
+`PreUpdate()` tick and commands it via `Model::SetWorldPoseCmd` — demonstrated
+deterministic, bounded motion with no observed drift.
+*(No dedicated `evidence/` directory was persisted for this step's console-run
+verification — recorded here from direct session evidence at the time, not
+from a saved artifact; treat the architectural conclusion as accepted, but do
+not cite a specific evidence path for it.)*
+
+### Step 2 — Scene bridging runtime qualification (accepted)
+
+`dynamic_obstacle_scene_node` (`ur5e_pick_place/src/dynamic_obstacle_scene_node.cpp`)
+subscribes to the bridged Gazebo pose topic and republishes
+`moveit_msgs/CollisionObject` on `/collision_object`: `ADD` once, `MOVE`
+thereafter, nominal ~10 Hz `PlanningScene` update rate, 250 ms stale threshold.
+On a stale input the node **retains** the obstacle at its last known pose —
+no extrapolation, no auto-removal.
+
+**Startup-race correction (accepted)**: the node waits for a `/collision_object`
+subscriber to exist before publishing its one-shot initial `ADD`. Without this
+gate, `move_group` could still be starting up when the `ADD` fired, miss it
+entirely, and then have no way to create the object from geometry-free `MOVE`
+messages alone.
+
+**Known, accepted limitation — not hidden**: if `move_group` restarts while
+`dynamic_obstacle_scene_node` keeps running, the node's own internal "have I
+ADDed yet" state stays satisfied and it continues sending `MOVE` only. A
+restarted `move_group` will therefore **not** see `dynamic_obstacle_0`
+recreated unless `dynamic_obstacle_scene_node` itself is also
+restarted/reinitialized. This is accepted for the current co-launched Stage-3B
+lifecycle (both processes are brought up together per qualification run); it
+is a real limitation of the present architecture, not a resolved edge case.
+*(Same evidence-provenance note as Step 1: no dedicated persisted `evidence/`
+directory for this step alone.)*
+
+### Tracking semantics — three distinct concepts, not to be conflated
+
+1. **Gazebo -> ROS bridge fidelity**: whether the bridged ROS `PoseStamped`
+   matches the obstacle's true (here, analytically known) Gazebo position.
+2. **Accepted ROS pose -> PlanningScene stored-pose/copy fidelity**: whether
+   the `CollisionObject` the scene stores matches the ROS pose that produced
+   it. Step 2/B1 evidence established this exactly, time-aligned, well inside
+   the <=5 mm gate (0.0 mm min/median/mean/p95/max in both B1 and B2-corrected
+   evidence).
+3. **Continuous obstacle motion -> discrete PlanningScene sampling lag**: a
+   *sampling-resolution* quantity (obstacle speed / update rate), not an FCL
+   distance or physical clearance error, and not to be described as either:
+   - B1: 100 mm/s at ~10 Hz -> derived nominal spatial update interval **~10 mm**.
+   - B2 (corrected): 150 mm/s at 10.05 Hz -> derived nominal spatial update
+     interval **~14.93 mm**.
+
+B2's corrected qualification additionally measured the deterministic Gazebo
+**analytical** trajectory (the same closed-form formula the production plugin
+itself evaluates) against the bridged ROS poses and found effectively zero
+numerical error (max ~2.8e-13 mm over 1250 samples). **This confirms the
+bridge introduces no measurable error against the plugin's own commanded
+trajectory — it is not, and must not be cited as, a validation of real RGB-D
+moving-obstacle perception.** No independent sensor was in the loop.
+
+### B0 — Stationary obstacle baseline (accepted)
+
+Obstacle isolated in a case-specific stationary SDF at a fixed pose; the
+production B1 motion model was not touched. Full Scene-A manipulation
+succeeded end-to-end with the obstacle present but static. Two manipulation
+attempts completed (`evidence/stage3b_b0_20260906_115648`,
+`evidence/stage3b_b0_20260906_115834`); two earlier attempts in the same
+session
+(`evidence/stage3b_b0_20260906_{115446,115556}`) were **pre-manipulation
+infrastructure runs** (the Step-2 subscriber-before-ADD race, before that fix
+landed, plus an obsolete harness/reporting path) — they never reached
+`m3_grasp` and are not manipulation failures.
+
+Canonical result (`evidence/stage3b_b0_20260906_115834/b0_qualification_results.json`,
+verdict `PASS`, all 12 gates true):
+- descent fraction (`cartesian_fraction`) = **1.0000**
+- perception error = **1.6134 mm**
+- Stage-2 TCP error = **0.0007 mm**
+- achieved aperture = **29.9995 mm**
+- max grasp/upright tilt = **0.0622 deg**
+- lift slip = **0.0051 mm**
+- transport slip = **0.0044 mm**
+- placement position error = **2.2694 mm**
+- placement yaw error = **0.0221 deg**
+- final upright tilt = **0.0001 deg**
+- pickup-clone support separation = **+4.954 mm** (`m3_grasp.log`
+  `PICKUP_CLONE_VALID`; not +4.980 mm — corrected against the actual logged
+  value), placement pre-contact separation = **+4.944 mm**
+- `dynamic_obstacle_collisions = 0`, `housing_collisions = 0`,
+  `replan_occurred = false`, `aborts = 0` — zero unintended contacts
+
+The unauthorized "clearance to pick >= 250 mm" figure that appeared in early
+B0 harness output is **not** an acceptance gate here and is not carried
+forward as one; obstacle-vs-target clearance for B0 is whatever the stationary
+placement's own geometry produces (`clearance_to_pick_m = 0.5644` in this run),
+not a pass/fail threshold.
+
+### B1 — Production moving-obstacle qualification (accepted)
+
+Production trajectory, unchanged: `X=0.70 m, Z=0.85 m, Y=[0.25, 0.45] m,
+period=4.0 s, speed=0.10 m/s`. Evidence:
+`evidence/stage3b_b1_20260906_120433/b1_qualification_results.json`, verdict
+`PASS`.
+
+- Gazebo pose stream ~50 Hz; PlanningScene updates measured at **10.02 Hz**.
+- `ADD` exactly 1, `MOVE` thereafter (282 in this run); no stale violation.
+- Time-aligned stored-pose error: **0.0 mm** (min/median/mean/p95/max).
+- Zero `dynamic_obstacle_collisions`, zero `housing_collisions`, zero
+  `replan_occurred`/`trajectory_stops`/`execution_cancellations`.
+
+Stage-3A manipulation parity, full cycle `SUCCESS`, all 12 gates true:
+- descent fraction = 1.0000; pickup-clone support separation = **+4.959 mm**
+  (`m3_grasp.log`; corrected against +4.980 mm quoted informally elsewhere)
+- perception error = 1.6134 mm; Stage-2 TCP error = 0.0003 mm
+- achieved aperture = 29.9995 mm; max grasp tilt = 0.0571 deg
+- lift slip = 0.0073 mm; transport slip = 0.0044 mm
+- placement position error = 2.2962 mm; placement yaw error = 0.0011 deg
+- final upright tilt = 0.00001 deg
+
+No Stage-3C behavior (stop/replan/cancel/predict/adapt) occurred or was
+exercised at any point in B1.
+
+### B2 — Workspace-adjacent proximity-awareness qualification (corrected, accepted)
+
+**Purpose**: prove the moving `PlanningScene` geometry actually changes
+MoveIt/FCL collision awareness as the obstacle approaches and recedes from a
+*fixed* robot reference state (not a moving one — B2 does not exercise
+manipulation).
+
+B2 case-specific trajectory (production B1 model untouched): `X=0.450 m,
+Z=0.850 m, Y approximately [-0.450, -0.150] m, period=4.0 s, speed=0.150 m/s`,
+evaluated against the fixed Scene-A pregrasp `RobotState`.
+
+**Harness correction history (do not omit when citing B2)**: the first B2
+qualification attempt was independently audited and found to contain real
+measurement/reporting defects: an undisclosed sequence of 7 back-to-back
+attempts (5 failed the harness's own gate, 1 crashed, 1 passed only through a
+missing-data artifact, 1 passed and was the one originally reported);
+the derived ~15 mm sampling resolution was miscast as a hard binary
+repeatability gate; missing transition data could silently read as a
+suspiciously-perfect 0.0 mm repeatability; retreat-transition extraction could
+pick the wrong sample (start of a phase window rather than the true
+post-collision recovery sample); an axis-coordinate arithmetic residual was
+mislabeled as an FCL/MoveIt distance; an "apparent sampling lag" value was a
+hardcoded literal, not measured; the obstacle position used to label a
+collision sample came from the raw high-rate ROS pose topic rather than the
+PlanningScene's own (slower) stored pose, causing incoherent
+transition-position variation across repeats (0-131.6 mm); and Gazebo->ROS
+fidelity was implied but never actually measured. All 7 original attempts
+were **preserved, not deleted or rewritten**
+(`evidence/stage3b_b2_20260906_{120824,121026,121156,121304,121506,121648,121748}/`,
+indexed and explained in
+`evidence/stage3b_b2_HISTORICAL_PRE_CORRECTION/README.md`).
+
+The harness (`scripts/test_stage3b_b2.py`) was then corrected: chronological
+(non-phase-binned) transition extraction; incomplete cycles rejected outright
+rather than padded; PlanningScene-stored obstacle pose used to label every
+collision-transition sample (with the scene-query-to-validity-query timing gap
+recorded per sample as the documented synchronization-uncertainty bound,
+median 0.30 ms / max 2.3 ms in the corrected run); derived sampling resolution
+kept strictly informational; collision authority taken exclusively from
+`GetStateValidity` + contact pairs; a genuine B2-parameterized Gazebo
+analytical-trajectory -> ROS fidelity measurement added; unexpected collision
+pairs surfaced rather than assumed impossible.
+
+**Exactly one pre-declared corrected qualification run was then executed, with
+no retry, and it PASSED**
+(`evidence/stage3b_b2_20260906_123734/b2_qualification_results.json`,
+`harness_version: "b2-corrected-v2"`):
+- 6 complete cycles (chronological definition: approach last-separated,
+  approach first-collision, retreat last-collision, retreat first-separated,
+  all four required or the cycle is excluded).
+- PlanningScene update rate = **10.05 Hz**; max observed stale gap = **0.007 s**.
+- `ADD` = 1; `MOVE` (full-run tally) = 249.
+- Stored ROS -> PlanningScene copy error: 0.0 mm (min/median/mean/p95/max).
+- Deterministic analytical Gazebo trajectory -> ROS: effectively zero
+  numerical error (see "Tracking semantics" above for the caveat that this is
+  analytical ground truth, not sensed perception).
+- Derived nominal spatial sampling resolution = **14.93 mm** — descriptive
+  only, never a PASS/FAIL gate.
+- Collision pairs, and only these: `dynamic_obstacle_0<->pad_fixed_link`,
+  `dynamic_obstacle_0<->pad_moving_link`. No unexpected pairs.
+- Observed geometric state SEPARATED -> COLLISION -> SEPARATED, repeated
+  across all 6 complete cycles.
+- Approach collision-entry transition variation between the first two complete
+  cycles = **15.0 mm** — read this as approximately one discrete scene-update
+  interval relative to the 14.93 mm derived resolution, **not** as
+  millimeter-precision collision-boundary repeatability.
+
+The historical pre-correction evidence's `299.7 mm` / `0.30 mm` figures were
+axis-coordinate residuals from a hardcoded reference constant, **not** an
+FCL/MoveIt geometric distance, and are superseded by this corrected run. No
+signed FCL penetration-depth value has ever been produced by any B2 harness
+version; none should be quoted as one.
+
+### What Stage-3B DOES provide
+
+- Deterministic dynamic obstacle generation and pose streaming.
+- `PlanningScene` dynamic world-object updates (ADD-once/MOVE-thereafter).
+- Moving-obstacle collision/proximity awareness: real, repeated, MoveIt/FCL-
+  verified geometric collision-state changes as the obstacle approaches and
+  recedes from a robot reference state.
+
+### What Stage-3B DOES NOT provide
+
+- Execution-time trajectory monitoring.
+- Trajectory cancellation or emergency-stop logic.
+- Collision-triggered stop.
+- Reactive replanning.
+- Prediction or future-obstacle-trajectory forecasting.
+- Continuous adaptation.
+- Dynamic multi-object tracking (only ever one `dynamic_obstacle_0`).
+- Full SO(3) target generalization (unrelated to, and not advanced by, this
+  milestone).
+
+The obstacle pose source throughout Stage-3B is deterministic simulation
+ground truth via the Gazebo `PosePublisher` bridge, used for architecture and
+qualification purposes. **It is not, and must not be cited as, real RGB-D
+moving-obstacle perception.**
+
+### Next Development Boundary
+
+- Stage-3B is **CLOSED**. No further B0/B1/B2 reruns are authorized absent a
+  stated reason or evidence contradiction.
+- **Next authorized milestone: Stage-3C — Collision-Triggered Stop-and-Replan
+  During Execution.** High-level boundary only (not designed or implemented
+  as part of Stage-3B closeout): Stage-3C will consume the validated Stage-3B
+  `PlanningScene` dynamic-obstacle representation and must be separately
+  designed and qualified before any implementation begins.
+
+## 2026-09-06 Stage-3A Gripper Collision-Fidelity Architecture & Full Regression — SUPERSEDED
+
+Superseded by the Stage-3B section above for "current authority" purposes.
+Stage-3A itself remains **CLOSED / VERIFIED / MERGED**; nothing in Stage-3B
+modified any Stage-3A file, constant, or collision geometry. Retained in full
+below as the previously validated milestone.
 
 - **Milestone Outcome**: Stage-3A gripper collision-fidelity architecture is **100% COMPLETE & VERIFIED** across the complete 4-case regression suite.
   - **Scene-A Baseline** ($0\text{ mm}, 0\text{ mm}, 0^\circ$): **PASS**
