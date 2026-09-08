@@ -536,6 +536,18 @@ def _setup(context, *args, **kwargs):
         "transport_allowed_start_tolerance_rad": transport_allowed_start_tolerance_rad,
         "transport_execution_duration_scaling": transport_execution_duration_scaling,
         "transport_goal_duration_margin_s": transport_goal_duration_margin_s,
+        "transport_monitor_enabled": (
+            LaunchConfiguration("transport_monitor_enabled").perform(context).lower() == "true"
+        ),
+        "transport_monitor_rate_hz": float(
+            LaunchConfiguration("transport_monitor_rate_hz").perform(context)
+        ),
+        "transport_monitor_future_sample_dt_s": float(
+            LaunchConfiguration("transport_monitor_future_sample_dt_s").perform(context)
+        ),
+        "transport_monitor_scene_service_name": LaunchConfiguration(
+            "transport_monitor_scene_service_name"
+        ).perform(context),
     }
     if pregrasp_joint_target:
         node_params["pregrasp_joint_target"] = pregrasp_joint_target
@@ -772,6 +784,36 @@ def generate_launch_description():
                 "watchdog. Empty (default) derives it from "
                 "trajectory_execution.allowed_goal_duration_margin (production: 1.5 s) "
                 "-- set explicitly to override.",
+            ),
+            DeclareLaunchArgument(
+                "transport_monitor_enabled",
+                default_value="true",
+                description="Stage-3C C1: enables OBSERVE-ONLY future-path collision "
+                "monitoring during the TRANSPORT leg (transport_path_monitor.hpp). Never "
+                "cancels, stops, or replans -- it only records whether the current state "
+                "and the remaining planned path are collision-valid against the live "
+                "Stage-3B PlanningScene. Default true for C1 runtime qualification.",
+            ),
+            DeclareLaunchArgument(
+                "transport_monitor_rate_hz",
+                default_value="10.0",
+                description="Stage-3C C1: target monitor tick rate, matching Stage-3B's "
+                "own ~10 Hz PlanningScene obstacle-update rate. An engineering "
+                "observation rate, not a certified safety frequency.",
+            ),
+            DeclareLaunchArgument(
+                "transport_monitor_future_sample_dt_s",
+                default_value="0.05",
+                description="Stage-3C C1: time-interpolation interval used to sample the "
+                "remaining planned trajectory for future collision validity each monitor "
+                "tick. Chosen from the Stage-3C C1 trajectory-resolution audit recorded "
+                "in PROJECT_STATE.md -- no coarser than the observed waypoint spacing.",
+            ),
+            DeclareLaunchArgument(
+                "transport_monitor_scene_service_name",
+                default_value="/get_planning_scene",
+                description="Stage-3C C1: the MoveIt GetPlanningScene service the monitor "
+                "queries once per tick for a single, consistent scene snapshot.",
             ),
             DeclareLaunchArgument(
                 "perceived_position_timeout_s",

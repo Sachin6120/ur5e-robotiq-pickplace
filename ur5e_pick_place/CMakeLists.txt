@@ -88,7 +88,8 @@ ament_target_dependencies(m2_cartesian_approach
 # retreat) rather than folded into m3_grasp.cpp -- see that file's own header
 # for why: m3_grasp.cpp is verified and produced this project's first
 # successful grasp, and is not the file to edit blind.
-add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp src/transport_executor.cpp)
+add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp src/transport_executor.cpp
+  src/transport_path_monitor.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -171,6 +172,14 @@ if(BUILD_TESTING)
   target_include_directories(transport_executor_settle_test PRIVATE include)
   ament_target_dependencies(transport_executor_settle_test
     rclcpp rclcpp_action moveit_ros_planning_interface moveit_core
+    control_msgs controller_manager_msgs sensor_msgs)
+  # Stage-3C C1: pure progress-projection/monotonicity/sampling/first-
+  # invalid-indexing logic, no ROS node/executor/service needed -- see
+  # transport_path_monitor.hpp's free functions and MonotonicProgressTracker.
+  ament_add_gtest(transport_path_monitor_logic_test test/test_transport_path_monitor_logic.cpp)
+  target_include_directories(transport_path_monitor_logic_test PRIVATE include)
+  ament_target_dependencies(transport_path_monitor_logic_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
     control_msgs controller_manager_msgs sensor_msgs)
 endif()
 
