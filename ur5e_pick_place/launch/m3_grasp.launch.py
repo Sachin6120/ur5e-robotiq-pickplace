@@ -539,6 +539,9 @@ def _setup(context, *args, **kwargs):
         "transport_monitor_enabled": (
             LaunchConfiguration("transport_monitor_enabled").perform(context).lower() == "true"
         ),
+        "transport_reactive_stop_enabled": (
+            LaunchConfiguration("transport_reactive_stop_enabled").perform(context).lower() == "true"
+        ),
         "transport_monitor_rate_hz": float(
             LaunchConfiguration("transport_monitor_rate_hz").perform(context)
         ),
@@ -793,6 +796,12 @@ def generate_launch_description():
                 "cancels, stops, or replans -- it only records whether the current state "
                 "and the remaining planned path are collision-valid against the live "
                 "Stage-3B PlanningScene. Default true for C1 runtime qualification.",
+            ),
+            DeclareLaunchArgument(
+                "transport_reactive_stop_enabled",
+                default_value="true",
+                description="Stage-3C C2: executor cancels the exact direct-FJT goal on a fresh "
+                "future collision and confirms physical settle. Terminates before place.",
             ),
             DeclareLaunchArgument(
                 "transport_monitor_rate_hz",

@@ -39,8 +39,9 @@ std::string format_collision_pairs(const collision_detection::CollisionResult & 
 
 TransportPathMonitor::TransportPathMonitor(
   rclcpp::Node::SharedPtr node, moveit::core::RobotModelConstPtr robot_model,
-  TransportMonitorParams params)
-: node_(std::move(node)), robot_model_(std::move(robot_model)), params_(std::move(params))
+  TransportMonitorParams params, std::shared_ptr<TransportReactiveStopSignal> stop_signal)
+: node_(std::move(node)), robot_model_(std::move(robot_model)), params_(std::move(params)),
+  stop_signal_(std::move(stop_signal))
 {
   scene_client_ = node_->create_client<moveit_msgs::srv::GetPlanningScene>(
     params_.scene_service_name);
@@ -238,6 +239,15 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
     }
 
     // 2. ONE PlanningScene snapshot for this entire tick (design lock).
+    // C2 conservative freshness bound captured BEFORE requesting this snapshot.
+    // Later /collision_object updates must not freshen an older scene response.
+    double obstacle_stamp_before_request = -1.0;
+    {
+      std::lock_guard<std::mutex> lock(obstacle_state_->mutex);
+      if (obstacle_state_->has_sample) {
+        obstacle_stamp_before_request = obstacle_state_->last_stamp_s;
+      }
+    }
     const auto t_scene_req = std::chrono::steady_clock::now();
     moveit_msgs::msg::PlanningScene scene_msg;
     const bool scene_ok = fetchScene(scene_msg);
@@ -315,6 +325,7 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
     const auto sample_times =
       generate_future_sample_times(future_start_s, params_.future_sample_dt_s, total_duration_s);
 
+    TransportClock::time_point invalidity_detected;
     bool future_path_valid = true;
     std::optional<std::size_t> first_invalid_sample;
     double first_invalid_time_s = 0.0;
@@ -336,6 +347,7 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
       collision_detection::CollisionResult res;
       local_scene->checkCollision(req, res, future_state);
       if (res.collision) {
+        invalidity_detected = TransportClock::now();
         future_path_valid = false;
         first_invalid_sample = k;
         first_invalid_time_s = sample_times[k];
@@ -346,6 +358,7 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
 
     // 8. dynamic_obstacle_0 pose telemetry, best-effort.
     std::string obstacle_pose_str = "UNKNOWN";
+    TransportCollisionEvidence evidence;
     const auto obstacle_it = std::find_if(
       scene_msg.world.collision_objects.begin(), scene_msg.world.collision_objects.end(),
       [](const auto & co) { return co.id == kDynamicObstacleId; });
@@ -353,9 +366,61 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
       !obstacle_it->primitive_poses.empty())
     {
       const auto pose = PlanningSceneManager::effectivePrimitivePose(*obstacle_it, 0);
+      evidence.obstacle_pose_known = true;
+      evidence.obstacle_pose = {pose.position.x, pose.position.y, pose.position.z,
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
       std::ostringstream ss;
       ss << "[" << pose.position.x << "," << pose.position.y << "," << pose.position.z << "]";
       obstacle_pose_str = ss.str();
+    }
+
+    // C2 adds no scene query or second collision checker: these booleans,
+    // contact pairs, progress and pose all belong to this same local_scene.
+    const double conservative_age_ms = obstacle_stamp_before_request >= 0.0 ?
+      (node_->now().seconds() - obstacle_stamp_before_request) * 1000.0 :
+      std::numeric_limits<double>::infinity();
+    const double snapshot_elapsed_ms =
+      std::chrono::duration<double, std::milli>(TransportClock::now() - t_scene_req).count();
+    const bool trigger_fresh = !scene_stale &&
+      !is_obstacle_data_stale(conservative_age_ms, kObstacleStaleThresholdMs) &&
+      snapshot_elapsed_ms <= kObstacleStaleThresholdMs;
+    if (stop_signal_ && collision_stop_eligible(!stop_requested_.load(), trigger_fresh,
+        current_state_valid, future_path_valid, !collision_pairs.empty()))
+    {
+      evidence.detected = invalidity_detected;
+      evidence.tick = tick_count;
+      evidence.scene_age_ms = scene_age_ms;
+      evidence.segment = accepted_segment;
+      evidence.fraction = accepted_fraction;
+      evidence.progress_time_s = progress_time_s;
+      evidence.nearest_joint_error_rad = raw.nearest_joint_error;
+      evidence.first_invalid_time_s = first_invalid_time_s;
+      evidence.first_invalid_sample = *first_invalid_sample;
+      evidence.collision_pairs = collision_pairs;
+      if (stop_signal_->request(evidence)) {
+        const auto first = *stop_signal_->evidence();
+        RCLCPP_INFO(logger,
+          "M3 C2 COLLISION_TRIGGER collision_triggered=1 collision_trigger_count=1 "
+          "reason=%s t_invalidity_detect=%.9f t_stop_signal_latched=%.9f "
+          "invalidity_to_signal_ms=%.6f tick=%d scene_age_ms=%.6f "
+          "conservative_age_ms=%.6f snapshot_elapsed_ms=%.6f current_state_valid=1 "
+          "future_path_valid=0 progress_segment=%zu progress_fraction=%.9f "
+          "progress_time_s=%.9f nearest_joint_error_rad=%.9f "
+          "first_invalid_time_s=%.9f first_invalid_sample=%zu temporal_lead_s=%.9f "
+          "collision_pairs=\"%s\" dynamic_obstacle_pose=[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]",
+          first.reason.c_str(), transport_stamp(first.detected), transport_stamp(first.latched),
+          std::chrono::duration<double, std::milli>(first.latched - first.detected).count(),
+          tick_count, scene_age_ms, conservative_age_ms, snapshot_elapsed_ms,
+          accepted_segment, accepted_fraction, progress_time_s, raw.nearest_joint_error,
+          first_invalid_time_s, *first_invalid_sample, first_invalid_time_s - progress_time_s,
+          collision_pairs.c_str(), first.obstacle_pose[0], first.obstacle_pose[1],
+          first.obstacle_pose[2], first.obstacle_pose[3], first.obstacle_pose[4],
+          first.obstacle_pose[5], first.obstacle_pose[6]);
+      }
+    } else if (!future_path_valid && stop_signal_) {
+      RCLCPP_INFO(logger,
+        "M3 C2 TRIGGER_INELIGIBLE tick=%d fresh=%d current_state_valid=%d has_pairs=%d",
+        tick_count, trigger_fresh, current_state_valid, !collision_pairs.empty());
     }
 
     const auto tick_end = std::chrono::steady_clock::now();
@@ -396,15 +461,14 @@ void TransportPathMonitor::run(trajectory_msgs::msg::JointTrajectory trajectory)
       RCLCPP_WARN(
         logger,
         "M3 C1 TRANSPORT_MONITOR_CURRENT_STATE_INVALID tick=%d collision_pairs=\"%s\" -- "
-        "observe-only: TRANSPORT execution continues unchanged.",
+        "current-state invalidity is not a C2 future-path trigger.",
         tick_count, format_collision_pairs(current_res).c_str());
     }
     if (!future_path_valid) {
       RCLCPP_WARN(
         logger,
         "M3 C1 TRANSPORT_MONITOR_FUTURE_PATH_INVALID tick=%d first_invalid_time_s=%.4f "
-        "collision_pairs=\"%s\" -- observe-only: TRANSPORT execution continues unchanged, "
-        "no cancellation/replan issued.",
+        "collision_pairs=\"%s\" -- observation recorded; C2 eligibility and latch reported separately.",
         tick_count, first_invalid_time_s, collision_pairs.c_str());
     }
 

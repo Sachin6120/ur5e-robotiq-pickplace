@@ -417,11 +417,21 @@ Result lift_transport_place(
     monitor_params.rate_hz = p.transport_monitor_rate_hz;
     monitor_params.future_sample_dt_s = p.transport_monitor_future_sample_dt_s;
     monitor_params.scene_service_name = p.transport_monitor_scene_service_name;
-    TransportPathMonitor monitor(node, arm.getRobotModel(), monitor_params);
+    auto stop_signal = std::make_shared<TransportReactiveStopSignal>(
+      p.transport_reactive_stop_enabled);
+    TransportPathMonitor monitor(node, arm.getRobotModel(), monitor_params, stop_signal);
     monitor.start(plan.trajectory.joint_trajectory);
 
-    const Result exec_result = executor.executeAndWait(plan.trajectory.joint_trajectory);
+    const Result exec_result = executor.executeAndWait(plan.trajectory.joint_trajectory, stop_signal);
     monitor.stop();
+    if (exec_result == Result::TRANSPORT_COLLISION_STOPPED) {
+      RCLCPP_INFO(
+        node->get_logger(),
+        "M3 C2 TRANSPORT_COLLISION_STOPPED: monitor_joined=1 place_planning=0 "
+        "place_execution=0 release=0 detach=0 retreat=0 replan_count=0; "
+        "returning at Stage 4 with payload attachment retained.");
+      return exec_result;
+    }
     if (!ok(exec_result)) {
       RCLCPP_ERROR(
         node->get_logger(),

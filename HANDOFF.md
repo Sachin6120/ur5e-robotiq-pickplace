@@ -1,15 +1,167 @@
 # HANDOFF.md
 
 > READ THIS SECTION FIRST. The section immediately below, "2026-09-08 Stage-3C
-> Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY",
-> is the sole current-authority statement of repository state.
+> C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT
+> AUTHORITY", is the sole current-authority statement of repository state.
 > Every other authority label anywhere else in this file is superseded and
 > has been relabelled
 > accordingly; their content is retained as historical evidence, not current
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-### 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY
+### 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT AUTHORITY
+
+**Read `PROJECT_STATE.md`'s matching current-authority section first for the
+full architecture, exact numbers, and evidence-path detail — this section is
+operational (what to do next, what's published vs. WIP, what remains) and
+does not restate every metric.**
+
+#### Repository state right now
+
+- **Published (on `main`)**: Stage-3C C0 (direct-FJT TRANSPORT execution)
+  and Stage-3C C1 (observe-only future-path monitoring). Baseline HEAD
+  `3ff3f68bde3d7e379ec561fd1e32e07a1da6a554` (`main`, "Merge pull request
+  #11 from Sachin6120/stage3c-c1-observe-only-monitor"). Both closed,
+  validated, merged — do not re-litigate their design.
+- **Qualified on its feature branch, not yet published**: Stage-3C C2 —
+  collision-triggered reactive stop. Branch `stage3c-c2-collision-stop`.
+  C2 must not be cited as published until this branch is merged into
+  `main` through its own Stage-3C C2 publication PR — identified here by
+  branch/PR rather than by exact commit SHA, since the branch's own
+  commit(s) are not a stable identifier for this durable document; read
+  the exact commit identity live from the C2 publication PR's current
+  head if needed. Once that PR's merge commit is present on `main`, that
+  merge commit itself becomes the published Stage-3C C2 baseline. Until
+  then: **C2 is qualified but unpublished.**
+
+#### C2 architecture (summary — see PROJECT_STATE.md for full detail)
+
+C1 future-path invalidity -> one-shot shared stop latch
+(`TransportReactiveStopSignal`, `transport_reactive_stop.hpp`) ->
+`TransportExecutor` (sole FJT goal owner, sole `async_cancel_goal()` caller
+in the package) exact-goal-UUID cancellation -> FJT terminal `CANCELED` ->
+six-distinct-live-`/joint_states`-sample physical settle -> settled "state
+E" captured -> `Result::TRANSPORT_COLLISION_STOPPED`. **No replanning.**
+`TransportPathMonitor` remains detect-only: it copies collision evidence
+into the shared signal and holds no goal handle or cancellation API.
+
+#### Arbitration correction (found and fixed during C2 closeout)
+
+A pre-fix defect let a later collision `request()` win after a `NATURAL`
+terminal result had already been made observable to `wait()`, because the
+terminal callback published its result before committing the arbitration
+cause under the shared mutex. This was a **logical ordering/linearization
+defect, not an unsynchronized-memory data race** — both sides always held
+the same mutex; the bug was where the critical-section boundary sat.
+Corrected: `publishTerminal()` now captures the callback's entry timestamp,
+commits the terminal cause under the arbiter mutex, marks the execution
+inactive, publishes the result while STILL holding the mutex, then
+releases and notifies. The linearization point is the terminal-cause
+commitment under that mutex, strictly before the result becomes
+observable. Ties at the watchdog deadline still belong to WATCHDOG in both
+`request()` and `publishTerminal()`. Proof:
+`evidence/stage3c_c2_arbitration_20260908_111153/` (`post_fix_probe.log`:
+`terminal_result_already_published=1 request_excluded_during_publication=1
+later_collision_accepted=0 final_cause=NATURAL`); 8 new regression unit
+tests added. Test count: **178/178 PASS** (0 errors, 0 failures, 0
+skipped) — up from C1's 145.
+
+#### Final post-fix evidence (supersedes all earlier C2A/C2B/watchdog attempts)
+
+- **C2A** (non-trigger parity, production B1 obstacle):
+  `evidence/stage3c_c2a_20260908_111153/`. Terminal cause NATURAL, full
+  cycle SUCCESS, 0 future-invalid ticks, 0 collision triggers, 0 reactive
+  cancels, 0 watchdog, 0 replan, full post-manipulation flow (place/
+  release/detach/retreat all completed), 0 genuine Gazebo physical
+  contacts, observer liveness proven (6184 positive-control messages),
+  clean teardown.
+- **C2B** (collision-triggered stop, qualification-only transient obstacle,
+  same scenario as C1B): `evidence/stage3c_c2b_20260908_111350/`. Terminal
+  cause COLLISION_STOP, scene age 88 ms at trigger, collision pair
+  `dynamic_obstacle_0<->ur_to_robotiq_link`, exactly 1 trigger and 1
+  cancel request, cancel confirmed (`return_code=0`,
+  `this_goal_confirmed=1`, goal UUID
+  `556028fca6c3d372e6132307398cf192`), FJT `CANCELED`, original target NOT
+  reached (max error 0.662421409475 rad), physical settle confirmed (6
+  distinct samples, final velocity 5.323311482e-04 rad/s — an earlier,
+  not-yet-settled sample in the same window peaked at
+  3.191973068e-03 rad/s, which does **not** violate the settle criterion),
+  state E captured (see PROJECT_STATE.md for the six joint values),
+  post-stop flow correctly suppressed (place/release/detach/retreat all
+  0), payload still attached to `gripper_base_link` with its touch links
+  intact, 0 genuine Gazebo physical contacts before cutoff, observer
+  liveness proven (2408 positive-control messages).
+- **WATCHDOG** (unrelated-cause regression, forced via duration-scaling
+  overrides): `evidence/stage3c_watchdog_20260908_111527/`. Terminal cause
+  WATCHDOG_CLEANUP, result `TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT`, 0
+  collision triggers, 0 replan, exactly 1 cancel request (confirmed, goal
+  UUID `23d3b4c479042e9b721e2146d81e85f1`), FJT `CANCELED`, physical
+  settle confirmed (6 distinct samples, final velocity
+  5.809828155e-04 rad/s, an earlier in-window peak of
+  2.088901521e-02 rad/s — same non-violation caveat as C2B), no crash, no
+  deadlock, clean teardown. Confirms the shared cancellation code path did
+  not regress C0's pre-existing watchdog behavior.
+- **Double-cancellation**: C2B and WATCHDOG each show exactly 1
+  cancellation request for their entire run; production has exactly one
+  `async_cancel_goal()` call path. No double cancellation observed or
+  architecturally possible.
+
+#### ANSI-parser qualification-tooling history (narrow — do not overstate)
+
+The pre-fix C2B run (`evidence/stage3c_c2b_20260908_103817/`) returned
+`NEEDS_CORRECTION` only because the harness's field parser did not strip a
+trailing ANSI reset sequence from a log field
+(`this_goal_confirmed` read as `"1\x1b[0m"` instead of `"1"`) — production
+telemetry itself was correct throughout. `scripts/test_stage3c_c2.py` now
+strips ANSI escapes before parsing. The original result file is preserved
+unmodified; a separate `qualification_results_reanalysis.json` records the
+corrected `PASS` verdict with `runtime_rerun: false` (re-parsed from the
+same preserved raw logs, no new simulation run). This is a qualification-
+tooling defect, never a production C2 failure.
+
+#### Protected-asset audit (this closeout)
+
+Zero diff to Stage-3A/3B production assets, the production
+`dynamic_obstacle` `model.sdf`, `dynamic_obstacle_scene_node.cpp`,
+`PlanningSceneManager`, `controllers.yaml` (no `.srdf` file exists in this
+repository to diff). No `C3`, replan, prediction,
+`MoveGroupInterface::stop()`, `MoveGroupInterface::asyncExecute()`, or
+`/execute_trajectory` execution anywhere in the diff.
+
+#### Explicit non-scope
+
+**Stage-3C C3** (settled measured state E -> fresh `PlanningScene` -> fresh
+start state -> fresh plan to the original `above_place` target -> validate
+replacement -> direct-FJT execute; initial policy: maximum one reactive
+replan, clean failure on a second invalidity) remains future scope: not
+designed, not started, not implemented by this closeout. The small
+immediate-to-state-E delta measured in the one C2B run
+(0.000009581961 rad) does **not** authorize C3 to substitute a predicted
+start state for the measured, settled one.
+
+#### Exact next step
+
+**If the Stage-3C C2 publication PR has not yet merged**: review the PR;
+merge only after approval; then sync local `main`
+(`git checkout main && git pull`).
+
+**If the Stage-3C C2 publication PR is already present on `main`**: C2 is
+published — treat that merge commit as the new baseline for any further
+work, and only then consider authorizing Stage-3C C3 (which remains NOT
+implemented either way — see "Explicit non-scope" above).
+
+Do not recreate, reopen, or re-push the C2 publication PR regardless of its
+current merge state.
+
+**No production correction remains outstanding.** C3 is NOT STARTED.
+
+---
+
+### 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — SUPERSEDED
+
+Superseded by the Stage-3C C2 section above for "current authority"
+purposes. Nothing in this section's own C0/C1 content is invalidated; C0
+and C1 remain exactly as validated and published below.
 
 **Read `PROJECT_STATE.md`'s matching current-authority section first for the
 full architecture, exact numbers, and evidence-path detail — this section is

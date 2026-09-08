@@ -1,18 +1,11 @@
 // transport_path_monitor.hpp — Stage-3C C1: OBSERVE-ONLY future-path
 // collision monitoring for the direct-FJT TRANSPORT leg.
 //
-// C1 SCOPE — READ THIS BEFORE EXTENDING
-//   This class watches the remaining TRANSPORT trajectory against the live
-//   Stage-3B PlanningScene while TransportExecutor::executeAndWait() is in
-//   flight, and RECORDS whether the robot's current state and its remaining
-//   planned path are collision-valid. It NEVER cancels, stops, replans, or
-//   otherwise reacts to what it observes -- see PROJECT_STATE.md/HANDOFF.md
-//   Stage-3C C1 authority and transport_executor.hpp's own C0 scope note.
-//   The only cancellation path that exists anywhere in the TRANSPORT leg
-//   remains TransportExecutor's own watchdog cleanup (unrelated to
-//   collision, unmodified by C1). Adding a cancel-on-demand method here, or
-//   having this class call anything on TransportExecutor/MoveGroupInterface,
-//   is Stage-3C C2/C3 and does not belong in this file.
+// C2 EXTENSION
+//   C1 observation remains intact. Eligible fresh future-path collisions may
+//   now latch copied evidence in a shared TransportReactiveStopSignal. The
+//   monitor has no action handle or cancellation API; TransportExecutor alone
+//   controls the exact goal. Disabling reactive stop retains observe-only use.
 //
 // ARCHITECTURE — ONE SCENE SNAPSHOT PER TICK
 //   Each monitor tick fetches exactly ONE /get_planning_scene snapshot and
@@ -403,7 +396,8 @@ public:
   TransportPathMonitor(
     rclcpp::Node::SharedPtr node,
     moveit::core::RobotModelConstPtr robot_model,
-    TransportMonitorParams params);
+    TransportMonitorParams params,
+    std::shared_ptr<TransportReactiveStopSignal> stop_signal = nullptr);
 
   // Joins the worker thread if start() was called and stop() was not
   // (defensive -- normal callers always call stop() explicitly before this
@@ -445,6 +439,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   moveit::core::RobotModelConstPtr robot_model_;
   TransportMonitorParams params_;
+  std::shared_ptr<TransportReactiveStopSignal> stop_signal_;
 
   rclcpp::Client<moveit_msgs::srv::GetPlanningScene>::SharedPtr scene_client_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;

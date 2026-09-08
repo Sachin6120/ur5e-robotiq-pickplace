@@ -24,21 +24,12 @@
 //   pickup-clearance, lift, place, retreat) keeps using
 //   MoveGroupInterface::execute() unchanged.
 //
-// C0 SCOPE — READ THIS BEFORE EXTENDING
-//   This class implements ONLY: trajectory structural validation,
-//   start-tolerance validation (reproducing MoveIt TrajectoryExecution-
-//   Manager's allowed_start_tolerance, since direct FJT execution
-//   bypasses TEM entirely), controller-liveness validation, a direct FJT
-//   send, and an execution-duration watchdog (reproducing TEM's
-//   allowed_execution_duration_scaling / allowed_goal_duration_margin).
-//   There is no collision monitor, no future-trajectory validity check,
-//   no on-demand cancellation API, and no replanning here. The ONLY
-//   cancellation this class ever issues is the watchdog's own cleanup
-//   path when execution overruns its computed limit — that is a
-//   failure-cleanup mechanism (do not leave a runaway controller goal
-//   active forever), not Stage-3C collision-triggered behavior. Adding a
-//   public cancel-on-demand method, a scene-validity check, or a replan
-//   path is Stage-3C C1/C2/C3 and does not belong in this file yet.
+// C2 EXTENSION
+//   TransportExecutor remains the sole owner of the direct-FJT goal and its
+//   cancellation. A shared TransportReactiveStopSignal arbitrates natural
+//   completion, the original C0 watchdog deadline, and a monitor collision
+//   request. Both cancellation causes share exact-goal confirmation, terminal
+//   observation and the C0 physical-settle primitive. No replanning is present.
 //
 // C0.1 CORRECTION — WATCHDOG CLEANUP MUST WAIT FOR PHYSICAL SETTLE
 //   Stage-3C Phase 0.3's own proof evidence measured, for the direct-FJT
@@ -148,6 +139,7 @@
 #include <vector>
 
 #include "ur5e_pick_place/failure.hpp"
+#include "ur5e_pick_place/transport_reactive_stop.hpp"
 
 namespace ur5e_pick_place
 {
@@ -305,7 +297,9 @@ public:
   // execution-duration watchdog armed, and returns a typed Result. Must
   // be called only after preSendValidate() returned Result::SUCCESS.
   // Blocks the calling thread; see the class header for the thread model.
-  Result executeAndWait(const trajectory_msgs::msg::JointTrajectory & trajectory);
+  Result executeAndWait(
+    const trajectory_msgs::msg::JointTrajectory & trajectory,
+    std::shared_ptr<TransportReactiveStopSignal> stop_signal = nullptr);
 
   TransportExecutionState state() const { return state_; }
   int32_t lastFjtErrorCode() const { return last_fjt_error_code_; }
@@ -350,7 +344,8 @@ private:
     double & max_velocity_observed_out,
     double & last_velocity_observed_out,
     int & consecutive_achieved_out,
-    double & settle_elapsed_s_out);
+    double & settle_elapsed_s_out,
+    sensor_msgs::msg::JointState::ConstSharedPtr & settled_sample_out);
 
   rclcpp::Node::SharedPtr node_;
   TransportExecutionParams params_;
