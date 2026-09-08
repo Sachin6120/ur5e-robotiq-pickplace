@@ -211,6 +211,16 @@ struct TransportParams
   double stationary_velocity_eps_rad_s = 1.0e-3;
   int stationary_consecutive_samples = 6;
   double stationary_timeout_s = 25.0;
+
+  // Stage-3C C1: OBSERVE-ONLY future-path monitoring during the TRANSPORT
+  // leg only (see transport_path_monitor.hpp). Never cancels, stops, or
+  // replans -- see that header's C1 SCOPE note. transport_monitor_enabled
+  // defaults true so an un-overridden launch always monitors; the other
+  // three mirror TransportMonitorParams' own defaults exactly.
+  bool transport_monitor_enabled = true;
+  double transport_monitor_rate_hz = 10.0;
+  double transport_monitor_future_sample_dt_s = 0.05;
+  std::string transport_monitor_scene_service_name = "/get_planning_scene";
 };
 
 // Runs lift -> transport -> place -> release -> retreat.

@@ -21,7 +21,316 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-06 Stage-3B Dynamic Scene Awareness — CURRENT AUTHORITY
+## 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY
+
+Supersedes the Stage-3B section below for "current authority" purposes.
+Stage-3B itself remains **CLOSED / VALIDATED**; nothing in Stage-3C C0 or C1
+modified any Stage-3B file, node, model, or lifecycle semantics — see each
+subsection's own integrity note.
+
+This section covers TWO distinct Stage-3C milestones with different
+publication status. Do not conflate them:
+
+### Stage-3C C0 — CLOSED / VALIDATED / PUBLISHED
+
+Published merge commit: `a6a16adc186bbac4400748df640b67cf43b608e1`
+(`main`, "Merge pull request #10 from Sachin6120/stage3c-c0-direct-fjt-transport").
+
+**What C0 changed**: for the TRANSPORT leg only, execution moved from
+`MoveGroupInterface::execute()` (TrajectoryExecutionManager-mediated) to a
+dedicated direct `/arm_controller/follow_joint_trajectory` client
+(`TransportExecutor`, `ur5e_pick_place/{include,src}/transport_executor.{hpp,cpp}`).
+Every other leg (pregrasp, descent, pickup-clearance, lift, place, retreat)
+is unchanged and still calls `MoveGroupInterface::execute()`.
+`MoveGroupInterface` itself is still used for TRANSPORT planning and
+`getCurrentState()`/`getRobotModel()` — only the actual send-and-wait-for-
+result step was replaced.
+
+**Why**: Stage-3C's own proof phases established, on this exact installed
+Jazzy/MoveIt 2.12.4 runtime, that `MoveGroupInterface::asyncExecute()` +
+`MoveGroupInterface::stop()` from a second thread reproducibly (2/2)
+segfaults inside `libmoveit_move_group_interface.so`, and that a dedicated
+`FollowJointTrajectory` client cancels cleanly (2/2: accepted <1 ms,
+terminal CANCELED ~45 ms, physical settle ~219 ms after the cancel
+request). See `transport_executor.hpp`'s own header for the full
+investigation.
+
+**Validated C0 behavior** (unchanged by C1 — see the C1 subsection's own
+regression note):
+- Structural + start-tolerance validation before send:
+  `allowed_start_tolerance_rad = 0.01` (reproduces MoveIt TEM's
+  `allowed_start_tolerance`, since direct FJT execution bypasses TEM).
+- Controller-liveness validation: `controller_manager/list_controllers`
+  reports `arm_controller` ACTIVE, and the FJT action server is available,
+  before sending.
+- Execution watchdog: `watchdog_limit_s = planned_duration_s *
+  execution_duration_scaling(1.2) + goal_duration_margin_s(1.5)` — this is
+  cleanup-only machinery (a runaway-goal safety net), **not** Stage-3C
+  collision-triggered behavior; it is the only cancellation path C0 has,
+  and C1 (below) never uses it and never adds a second one.
+- Goal-specific cancellation confirmation: the watchdog's cancel is only
+  counted confirmed if the exact goal UUID appears in the
+  `CancelResponse`'s `goals_canceling` list with `return_code ERROR_NONE`.
+- FJT `CANCELED` is proven **not** physical stop: physical settle is
+  confirmed only from `stationary_consecutive_samples` (6) consecutive,
+  provably **distinct** live `/joint_states` samples below
+  `stationary_velocity_eps_rad_s` (1.0e-3), never inferred from the
+  terminal action status, a fixed sleep, or `getCurrentState()` alone.
+- Async callback lifetimes: all FJT action callbacks and the
+  `/joint_states` subscription callback capture heap-owned,
+  `shared_ptr`-by-value state, never `this` and never a stack reference —
+  correcting defects found and fixed during C0.1/C0.3/C0.4 (see
+  `transport_executor.hpp`'s own class header for the full defect history).
+- Non-TRANSPORT stages remain entirely on the existing MoveIt execution
+  path — zero diff to `m1_joint_goal.cpp`, `m2_cartesian_approach.cpp`, or
+  the pregrasp/descent/lift/place/retreat legs in `transport.cpp` beyond
+  wiring C0's own parameters through.
+
+### Stage-3C C1 — QUALIFIED (implementation committed; publication via PR #11)
+
+Baseline HEAD `a6a16adc186bbac4400748df640b67cf43b608e1` (the published C0
+commit above). C1 is fully committed and pushed on branch
+`stage3c-c1-observe-only-monitor`. PR #11 (`stage3c-c1-observe-only-monitor`
+-> `main`) is the publication vehicle and carries the single qualified C1
+implementation commit (`feat: add observe-only future path monitoring`) —
+deliberately identified by branch/PR rather than by exact commit SHA here,
+since that commit may still be amended (as it already has been once) and a
+hardcoded SHA would go stale on every rewrite. If a specific commit
+identity is ever needed, read it live from PR #11's current head, not from
+this document.
+
+**Durable publication rule (keep this true regardless of when it is
+read)**: before PR #11 is merged into `main`, C1 must not be cited as
+published, no matter how long it has been committed, pushed, or open as a
+PR. Once PR #11's merge commit is present on `main`, treat that merge
+itself as C1's publication and establish it as the new baseline for any
+subsequent work (including authorizing Stage-3C C2) — do not reopen,
+recreate, or re-push PR #11 to achieve this.
+
+**Architecture** (`TransportPathMonitor`,
+`ur5e_pick_place/{include,src}/transport_path_monitor.{hpp,cpp}`): a single
+worker thread, owned and joined by the TRANSPORT leg's own local scope in
+`transport.cpp`, running concurrently with `TransportExecutor::executeAndWait()`
+for the TRANSPORT leg only.
+
+- One `/get_planning_scene` snapshot per monitor tick (own client, not
+  reusing `PlanningSceneManager`); every current-state and future-sample
+  check within that tick is evaluated against that SAME snapshot.
+  Requested components: `ROBOT_STATE`, `ROBOT_STATE_ATTACHED_OBJECTS`,
+  `WORLD_OBJECT_GEOMETRY`, `ALLOWED_COLLISION_MATRIX`, `TRANSFORMS`.
+- The reconstructed local `planning_scene::PlanningScene` uses the SAME
+  `RobotModelConstPtr` as the `arm` `MoveGroupInterface`
+  (`arm.getRobotModel()`), so the attached `pick_target`, its touch links,
+  the live ACM, Stage-3A's planning-only `gripper_base_link` housing
+  geometry, and `dynamic_obstacle_0` are all present through the identical
+  model — confirmed directly by C1B evidence (below), not merely assumed.
+- Progress along the planned trajectory is estimated every tick from the
+  ACTUAL measured `/joint_states` sample (not elapsed time), projected onto
+  the nearest CLAMPED piecewise-linear joint-space trajectory SEGMENT
+  (`project_to_nearest_segment()`), with a `MonotonicProgressTracker` floor
+  so measurement noise cannot walk progress backward within one monitor run.
+- Future sampling uses direct, self-implemented linear joint-space
+  interpolation (`find_time_segment()` + `interpolate_joint_positions()`)
+  at `future_sample_dt_s = 0.05 s` — see the MoveIt interpolation finding
+  below for why this is direct rather than via
+  `RobotTrajectory::getStateAtDurationFromStart()`. 0.05 s was chosen from
+  a per-run trajectory-resolution audit (logged every monitor run) showing
+  measured waypoint `dt` min ≈0.0585–0.0595 s, median/p95/max ≈0.100 s, and
+  max adjacent joint-space step ≈0.0445 rad — i.e. no coarser than the
+  observed resolution. This is an engineering sampling choice, **not** a
+  safety-certified resolution.
+- Monitor target rate: 10.0 Hz, matching Stage-3B's own ~10 Hz
+  `PlanningScene` obstacle-update rate (also an engineering choice, not a
+  certified safety frequency).
+- `dynamic_obstacle_0` freshness: the monitor independently subscribes
+  (read-only) to `/collision_object` and applies Stage-3B's own documented
+  `stale_threshold_s = 0.250 s` value to its own observation — it never
+  reads or modifies `dynamic_obstacle_scene_node`'s own stale handling.
+  Staleness is telemetry only in C1: a stale tick is recorded, never acted
+  on.
+- `current_state_valid` (from the actual measured joint state) and
+  `future_path_valid` (from the interpolated remaining path) are computed
+  and reported as two DISTINCT booleans every tick — the monitor never
+  reports a colliding future sample from a trajectory segment the robot
+  has already passed.
+- **C1 invalidity is observe-only, unconditionally**: no cancellation, no
+  stop, no replanning. The only cancellation path anywhere in the
+  TRANSPORT leg remains C0's own watchdog cleanup, unmodified and
+  unrelated to collision.
+
+**C0 regression check**: `transport_executor.{hpp,cpp}` have **zero diff**
+against the published C0 commit — byte-identical. C1's own
+`monitor.stop()` call is placed after `executeAndWait()`'s return value is
+already captured, so nothing the monitor does can influence C0's result.
+
+#### C1A — non-interfering observe-only qualification (final, superseding all earlier C1A attempts)
+
+Evidence: `evidence/stage3c_c1a_20260908_093345/` (an earlier attempt,
+`evidence/stage3c_c1a_20260908_092956/`, is preserved as a disclosed
+infrastructure failure — its contact observer produced no messages because
+this Gazebo build's contact sensor does not publish empty/no-contact
+messages, not because a contact occurred or the manipulation failed; not a
+manipulation-qualification run).
+
+Scenario: the unmodified, production Stage-3B B1 non-interfering moving
+obstacle (`X=0.70 m, Z=0.85 m, Y=[0.25,0.45] m, period=4.0 s,
+speed=0.10 m/s`).
+
+- Full cycle `SUCCESS`; direct-FJT TRANSPORT `SUCCESS`; FJT terminal
+  `SUCCEEDED`.
+- Monitor active during TRANSPORT: 34 ticks, achieved rate ≈10.133 Hz
+  (target 10.0 Hz).
+- Future-path invalid ticks: **0** (the non-interfering obstacle never
+  entered the transport corridor, as expected — investigated, not
+  suppressed, per the qualification's own acceptance rule).
+- MoveIt current-state collision count (from `/check_state_validity`
+  sampling; **not** physical-contact evidence — see the methodology note
+  below): **0**.
+- Gazebo physical contacts involving `dynamic_obstacle_0` (from a real
+  `gz::sim::systems::Contact` sensor / DART contact stream — genuine
+  physics evidence, measured independently of MoveIt): **0**.
+- Cancellation = 0, stop = 0 (no stop path exists anywhere in C1), replan
+  = 0, C0 watchdog = 0.
+- Stage-3A/Stage-3B gates and lifecycle preserved (descent fraction
+  1.0000, zero housing collisions, correct final placement).
+
+#### C1B — transient future-path-invalidity qualification (final, superseding the earlier C1B run)
+
+Evidence: `evidence/stage3c_c1b_20260908_093514/` (the earlier run,
+`evidence/stage3c_c1b_20260908_090204/`, is preserved; it passed on every
+criterion available at the time but predates the genuine Gazebo
+physical-contact instrumentation, so it is superseded rather than cited as
+the final physical-contact record).
+
+Scenario (qualification-only; production `dynamic_obstacle` model.sdf
+untouched): a qualification-only obstacle, absent until TRANSPORT_BEGIN,
+spawned with `center_x=0.45 m, center_z=0.86 m, y=[0.15, 0.35] m,
+period=1.0 s`, active for exactly one measured sim-time period-and-change
+(`1.2 s`) after spawn, then removed (Gazebo model deleted and a
+`/collision_object` REMOVE published — see the qualification-only
+ownership note below).
+
+- Full cycle `SUCCESS`; FJT terminal `SUCCEEDED`.
+- Future-path invalid ticks: **14**; max consecutive invalid ticks: **6**.
+- Current-state-invalid ticks: **0** (the robot's own actual state was
+  valid throughout; only the interpolated remaining path was flagged).
+- First invalidity at monitor-elapsed **≈0.4065 s**, flagging a future
+  trajectory time roughly **2 s ahead** of the robot's real progress at
+  that moment (the qualification-only obstacle was already removed by the
+  time the robot's real position could reach that region).
+- Observed `PlanningScene` collision pairs:
+  `dynamic_obstacle_0<->pick_target` and
+  `dynamic_obstacle_0<->ur_to_robotiq_link` — proving the attached
+  payload, not just bare-arm geometry, is included in the check.
+- Eventual valid-again: **true** (the monitor later reports both booleans
+  valid again after the obstacle clears).
+- MoveIt current-state collision count: **0** (again, not physical-contact
+  evidence). Gazebo physical contacts involving `dynamic_obstacle_0`
+  (genuine DART physics stream): **0**.
+- Cancellation = 0, stop = 0, replan = 0, C0 watchdog = 0.
+
+**C1B demonstrates online observation of a transient future-path
+collision condition. It does NOT demonstrate reactive avoidance** — C1
+deliberately takes no action on what it observes; that is Stage-3C C2's
+scope (see below).
+
+#### Physical-contact qualification methodology
+
+The Stage-3C C1 closeout audit found that all earlier "physical contacts"
+figures (Stage-3B B0/B1/B2 and the first C1A/C1B attempts alike) were
+actually derived from MoveIt's `/check_state_validity` — a PlanningScene
+model check, not Gazebo physics. C1A/C1B above were **re-qualified** with
+genuine physics evidence:
+
+- The production `ur5e_robotiq_description/models/dynamic_obstacle/model.sdf`
+  and `ur5e_pick_place/src/dynamic_obstacle_scene_node.cpp` were **not**
+  changed.
+- Qualification used a production-derived temporary obstacle SDF (written
+  to the run's own `evidence/` directory) differing from production by
+  exactly one added `gz::sim::systems::Contact` sensor — geometry, pose,
+  inertia, and both the `DeterministicMotion` and `PosePublisher` plugin
+  parameters are the production values by construction; the line-level
+  diff is recorded in each run's evidence.
+- The resulting contact stream (collision-pair names, positions, normals,
+  depths, wrenches) comes directly from Gazebo/DART physics via the
+  project's existing `scripts/perception/gz_contact_observer.py`.
+- A positive control was run BEFORE trusting any zero-contact result:
+  first an ordinary dynamic body dropped onto the ground plane, then —
+  because that alone would not prove detection for the obstacle's actual
+  body type — the same production-derived, `kinematic`/gravity-off,
+  `DeterministicMotion`-driven obstacle swept through a static blocker.
+  Both produced real, fully-scoped contact events
+  (`<model>::<link>::<collision>` pairs) with sim timestamps.
+- Because this Gazebo build's contact sensor publishes only while a
+  contact exists (an empty CSV is indistinguishable, by message count
+  alone, from a sensor that never worked), each C1A/C1B run additionally
+  ran an in-session liveness probe AFTER its own qualification evidence
+  was captured — deliberately causing one real contact with the same
+  observer instance, excluded from the qualification window by arrival
+  time, before accepting that run's own zero-contact result.
+- **MoveIt current-state collision validity and Gazebo physical contact
+  are recorded as two distinct, separately-named fields in every result.
+  `/check_state_validity` output is never presented as physical-contact
+  evidence.**
+
+**Historical Stage-3B methodology note** (not a reinterpretation of
+Stage-3B's closed results): the B0/B1/B2 fields named
+`dynamic_obstacle_collisions`/`housing_collisions` were derived from
+MoveIt state-validity checking, the same way the first C1A/C1B attempts
+were, not from the physical-contact-sensor methodology above. Their
+recorded numbers are unchanged and are not retroactively described as
+physically contact-qualified.
+
+#### Staleness clock-domain correction (found and fixed during C1 closeout)
+
+During C1 closeout, the C1B qualification harness's own obstacle-removal
+publisher used an un-configured (wall-clock) node clock while the C1
+monitor uses sim time — a clock-domain mismatch that produced a large
+negative computed obstacle age, which the original `age_ms > threshold`
+comparison let through as "not stale". This was a **qualification-harness-
+specific** defect: Stage-3B's own production publishers all share one
+sim-time clock domain and cannot produce it (confirmed: the C1A evidence
+that never triggers the harness's own REMOVE path shows zero negative
+ages). Corrected two ways: the qualification publisher now uses sim time,
+and the monitor's own `is_obstacle_data_stale()` defensively treats any
+negative or non-finite age as stale, never as fresh. Four regression unit
+tests were added using the exact observed bad value. The final C1A/C1B
+runtime qualification (above) shows zero negative ages in either run.
+
+#### MoveIt interpolation finding (state narrowly — do not generalize)
+
+In this project's installed MoveIt 2.12.4 environment,
+`robot_trajectory::RobotTrajectory::getStateAtDurationFromStart()`
+produced a reproduced (2/2) SIGSEGV inside
+`moveit::core::RobotState::interpolate()` in the specific C1 construction/
+usage path tested: `RobotTrajectory(robot_model, "arm")` +
+`setRobotTrajectoryMsg()` + `getStateAtDurationFromStart()`. This is not a
+claim that the API is universally broken — only that this exact usage
+pattern was observed to crash on this installed build. C1 therefore uses
+directly unit-tested linear interpolation of the planned joint trajectory
+(`find_time_segment()`/`interpolate_joint_positions()`) instead.
+
+### Stage-3C C2 — NOT IMPLEMENTED
+
+Next intended scope: future-path invalidity detected by C1 →
+goal-specific direct FJT cancellation (the same exact-goal-UUID
+confirmation pattern C0's own watchdog already uses) → independent
+physical-settle confirmation (the same distinct-live-`/joint_states`-
+sample pattern C0 already uses). C2 does **not** replan.
+
+### Stage-3C C3 — future scope
+
+Settled actual state → fresh `PlanningScene` → fresh plan to the original
+`above_place` target → candidate validation → re-execution. Not designed,
+not started. No prediction or safety-certification claim is made anywhere
+in C0, C1, or this C2/C3 boundary statement.
+
+## 2026-09-06 Stage-3B Dynamic Scene Awareness — SUPERSEDED
+
+Superseded by the Stage-3C section above for "current authority" purposes.
+Stage-3B itself remains **CLOSED / VALIDATED**; nothing in Stage-3C C0 or C1
+modified any Stage-3B file, node, model, or lifecycle semantics. Retained in
+full below as the previously validated milestone.
 
 Branch `stage3b-dynamic-scene-awareness`, HEAD `2c7b5c4` (baseline; Stage-3B work
 is currently uncommitted WIP on top of it — see "Working tree" below). Supersedes

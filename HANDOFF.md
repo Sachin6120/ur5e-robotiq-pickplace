@@ -1,15 +1,143 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The section immediately below, "2026-09-06 Stage-3B
-> Dynamic Scene Awareness — CURRENT AUTHORITY", is the sole current-authority
-> statement of repository state.
+> READ THIS SECTION FIRST. The section immediately below, "2026-09-08 Stage-3C
+> Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY",
+> is the sole current-authority statement of repository state.
 > Every other authority label anywhere else in this file is superseded and
 > has been relabelled
 > accordingly; their content is retained as historical evidence, not current
 > state — do not act on any instruction inside a superseded section without
 > checking it against the section below first.
 
-### 2026-09-06 Stage-3B Dynamic Scene Awareness — CURRENT AUTHORITY
+### 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY
+
+**Read `PROJECT_STATE.md`'s matching current-authority section first for the
+full architecture, exact numbers, and evidence-path detail — this section is
+operational (what to do next, what's published vs. WIP, what remains) and
+does not restate every metric.**
+
+#### Repository state right now
+
+- **Published (on `main`)**: Stage-3C C0 — direct-FJT TRANSPORT execution.
+  HEAD `a6a16adc186bbac4400748df640b67cf43b608e1` ("Merge pull request #10
+  from Sachin6120/stage3c-c0-direct-fjt-transport"). C0 is closed, validated,
+  merged — do not re-litigate its design.
+- **Qualified — publication vehicle is PR #11**: Stage-3C C1 — observe-only
+  future-path monitoring, baseline HEAD is the same published C0 commit
+  above. C1 is fully committed and pushed on branch
+  `stage3c-c1-observe-only-monitor`. PR #11
+  (`stage3c-c1-observe-only-monitor` -> `main`) is the publication vehicle
+  and carries the single qualified C1 implementation commit
+  (`feat: add observe-only future path monitoring`) — identified here by
+  branch/PR rather than by exact commit SHA, since that commit may still be
+  amended and a hardcoded SHA in this document would go stale on every
+  rewrite; read the exact commit identity live from PR #11's current head
+  if needed. The PR contains exactly 14 changed files total (7 modified
+  production/doc files, 7 new files — the complete C1 deliverable, not
+  drift).
+  **Durable rule**: before PR #11 is merged into `main`, C1 must not be
+  cited as published, regardless of how long it has been committed, pushed,
+  or open. Once PR #11's merge commit is present on `main`, that merge
+  itself is C1's publication — see "Exact next step" below.
+
+#### Validated C1 architecture (summary — see PROJECT_STATE.md for full detail)
+
+`TransportPathMonitor` runs one worker thread, owned/joined by the
+TRANSPORT leg's own local scope, concurrently with C0's
+`TransportExecutor::executeAndWait()`. Per tick: one `/get_planning_scene`
+snapshot; actual-`/joint_states`-driven nearest-clamped-segment progress
+with a monotonic floor; direct linear joint-space interpolation of the
+remaining path at 0.05 s intervals; current-state and future-path validity
+reported as two distinct booleans; 10 Hz target. **Strictly observe-only**:
+no cancellation, no stop, no replan — the only cancellation path anywhere
+in TRANSPORT remains C0's own unrelated watchdog cleanup.
+
+#### C1A/C1B final evidence (supersedes earlier attempts of both)
+
+- **C1A** (non-interfering, production Stage-3B B1 obstacle):
+  `evidence/stage3c_c1a_20260908_093345/`. Full cycle SUCCESS, FJT
+  SUCCEEDED, 34 ticks @ ≈10.133 Hz, 0 future-invalid ticks, 0 MoveIt
+  current-state collisions, **0 genuine Gazebo physical contacts**, 0
+  cancel/stop/replan/watchdog.
+- **C1B** (qualification-only transient future-path invalidity):
+  `evidence/stage3c_c1b_20260908_093514/`. Full cycle SUCCESS, FJT
+  SUCCEEDED, 14 future-invalid ticks (max 6 consecutive), 0
+  current-state-invalid ticks, first invalidity at monitor-elapsed
+  ≈0.4065 s flagging a trajectory point ≈2 s ahead of real progress,
+  collision pairs `dynamic_obstacle_0<->pick_target` and
+  `dynamic_obstacle_0<->ur_to_robotiq_link`, eventual valid-again
+  confirmed, **0 genuine Gazebo physical contacts**, 0
+  cancel/stop/replan/watchdog. Demonstrates online observation only — no
+  reactive avoidance is implemented or claimed.
+- Earlier attempts (`evidence/stage3c_c1a_20260908_{084222,084839,085551,092956}/`,
+  `evidence/stage3c_c1b_20260908_090204/`) are preserved, not deleted, and
+  are superseded for the reasons recorded in PROJECT_STATE.md (a MoveIt
+  interpolation crash later fixed, a disclosed contact-observer
+  infrastructure failure, and the pre-Gazebo-contact-sensor methodology).
+
+#### Physical-contact qualification methodology (do not regress this)
+
+Physical contact for `dynamic_obstacle_0` is measured by a real
+`gz::sim::systems::Contact` sensor (genuine DART physics), added only to a
+qualification-only, production-derived copy of the obstacle SDF — the
+production `model.sdf` and `dynamic_obstacle_scene_node.cpp` are untouched.
+A positive control (including the exact kinematic/gravity-off obstacle body
+type swept through a static blocker) proved the pipeline can detect a real
+contact before any zero-contact result was trusted, and each qualification
+run additionally proved its own observer instance was alive via an
+in-session liveness probe run after that run's evidence was captured. MoveIt
+`/check_state_validity` output is recorded separately
+(`moveit_current_state_collision_count`) and is never presented as physical-
+contact evidence — keep these two fields distinct in any future work.
+
+#### Current test count
+
+**145/145** (`colcon test --packages-select ur5e_pick_place`), including 33
+in `transport_path_monitor_logic_test` (pure-logic coverage: segment
+projection/clamping/degeneracy, monotonic progress, linear time
+interpolation, future-sample generation, first-invalid indexing, joint
+extraction, staleness sanity, statistics).
+
+#### Zero production correction remaining
+
+The C1 closeout audit found and fixed two real defects during development
+(a MoveIt API crash, worked around with direct interpolation; a
+qualification-harness clock-domain bug, fixed in both the harness and via
+defensive monitor hardening) — both are closed, tested, and reflected in
+the current diff. No further production correction is outstanding.
+
+#### Explicit non-scope
+
+**Stage-3C C2 is NOT implemented**: future-path invalidity → goal-specific
+direct FJT cancellation (reusing C0's own exact-goal-UUID confirmation
+pattern) → independent physical-settle confirmation (reusing C0's own
+distinct-live-sample pattern). No replanning in C2. **Stage-3C C3** (replan
+from settled actual state, fresh scene, fresh plan to the original
+`above_place` target, candidate validation, re-execution) is future scope,
+not designed, not started. No prediction or safety-certification claim is
+made anywhere in C0, C1, or this boundary statement.
+
+#### Exact next step
+
+C1's implementation commit is already pushed to
+`stage3c-c1-observe-only-monitor` and PR #11 already exists as its
+publication vehicle — do not recreate, reopen, or re-push it regardless of
+its current merge state.
+
+- **If PR #11 has not yet merged**: review PR #11; merge only after
+  approval; then sync local `main` (`git checkout main && git pull`).
+- **If PR #11 is already present on `main`**: C1 is published — establish
+  the C1 merge commit on `main` as the new baseline for any further work,
+  and only then consider authorizing Stage-3C C2 (which remains NOT
+  implemented either way — see "Explicit non-scope" above).
+
+---
+
+### 2026-09-06 Stage-3B Dynamic Scene Awareness — SUPERSEDED
+
+Superseded by the Stage-3C section above for "current authority" purposes.
+Stage-3B itself remains **CLOSED / VALIDATED**; nothing in Stage-3C C0 or C1
+modified any Stage-3B file, node, model, or lifecycle semantics.
 
 **Read `PROJECT_STATE.md`'s matching current-authority section first for exact
 numbers, gates, and evidence paths — this section is operational (what to do

@@ -42,6 +42,7 @@
 #include "ur5e_pick_place/gz_topic_utils.hpp"
 #include "ur5e_pick_place/moveit_compat.hpp"
 #include "ur5e_pick_place/transport_executor.hpp"
+#include "ur5e_pick_place/transport_path_monitor.hpp"
 
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
@@ -404,7 +405,23 @@ Result lift_transport_place(
       return validate_result;
     }
 
+    // Stage-3C C1: OBSERVE-ONLY future-path monitoring runs concurrently
+    // with executeAndWait() below, watching the SAME planned trajectory
+    // against the live Stage-3B PlanningScene. It never cancels, stops, or
+    // replans -- see transport_path_monitor.hpp's C1 SCOPE note. It is a
+    // local object with the same lifetime discipline as `executor` above:
+    // stop() is called (joining its worker thread) before this block ends,
+    // on every path, so no monitor thread or callback can ever outlive it.
+    TransportMonitorParams monitor_params;
+    monitor_params.enabled = p.transport_monitor_enabled;
+    monitor_params.rate_hz = p.transport_monitor_rate_hz;
+    monitor_params.future_sample_dt_s = p.transport_monitor_future_sample_dt_s;
+    monitor_params.scene_service_name = p.transport_monitor_scene_service_name;
+    TransportPathMonitor monitor(node, arm.getRobotModel(), monitor_params);
+    monitor.start(plan.trajectory.joint_trajectory);
+
     const Result exec_result = executor.executeAndWait(plan.trajectory.joint_trajectory);
+    monitor.stop();
     if (!ok(exec_result)) {
       RCLCPP_ERROR(
         node->get_logger(),

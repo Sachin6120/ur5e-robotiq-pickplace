@@ -832,6 +832,13 @@ int main(int argc, char ** argv)
   double transport_allowed_start_tolerance_rad = 0.01;
   double transport_execution_duration_scaling = 1.2;
   double transport_goal_duration_margin_s = 1.5;
+  // --- Stage-3C C1: OBSERVE-ONLY future-path monitoring during TRANSPORT
+  // (transport_path_monitor.hpp). Never cancels/stops/replans -- see that
+  // header's C1 SCOPE note. Defaults match TransportMonitorParams' own.
+  bool transport_monitor_enabled = true;
+  double transport_monitor_rate_hz = 10.0;
+  double transport_monitor_future_sample_dt_s = 0.05;
+  std::string transport_monitor_scene_service_name = "/get_planning_scene";
   std::string csv_path = "m3_grasp.csv";
   std::string grasp_mode = "friction";
   std::string gt_wrist3_link_name = "wrist_3_link";
@@ -1023,6 +1030,16 @@ int main(int argc, char ** argv)
   node->get_parameter_or(
     "transport_goal_duration_margin_s", transport_goal_duration_margin_s,
     transport_goal_duration_margin_s);
+  node->get_parameter_or(
+    "transport_monitor_enabled", transport_monitor_enabled, transport_monitor_enabled);
+  node->get_parameter_or(
+    "transport_monitor_rate_hz", transport_monitor_rate_hz, transport_monitor_rate_hz);
+  node->get_parameter_or(
+    "transport_monitor_future_sample_dt_s", transport_monitor_future_sample_dt_s,
+    transport_monitor_future_sample_dt_s);
+  node->get_parameter_or(
+    "transport_monitor_scene_service_name", transport_monitor_scene_service_name,
+    transport_monitor_scene_service_name);
   node->get_parameter_or("csv_path", csv_path, csv_path);
   node->get_parameter_or("grasp_mode", grasp_mode, grasp_mode);
   node->get_parameter_or("gt_wrist3_link_name", gt_wrist3_link_name, gt_wrist3_link_name);
@@ -2732,6 +2749,10 @@ int main(int argc, char ** argv)
         tp.transport_allowed_start_tolerance_rad = transport_allowed_start_tolerance_rad;
         tp.transport_execution_duration_scaling = transport_execution_duration_scaling;
         tp.transport_goal_duration_margin_s = transport_goal_duration_margin_s;
+        tp.transport_monitor_enabled = transport_monitor_enabled;
+        tp.transport_monitor_rate_hz = transport_monitor_rate_hz;
+        tp.transport_monitor_future_sample_dt_s = transport_monitor_future_sample_dt_s;
+        tp.transport_monitor_scene_service_name = transport_monitor_scene_service_name;
         // C0.1: watchdog-cleanup physical-settle confirmation reuses these
         // existing, already-parsed startup-stationarity parameters verbatim
         // -- see transport_executor.hpp's C0.1 class header note.
