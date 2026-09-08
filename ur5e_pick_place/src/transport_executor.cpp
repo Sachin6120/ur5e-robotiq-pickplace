@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <iomanip>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -58,6 +59,8 @@ struct GoalCallbackState
   std::atomic<bool> goal_accepted{false};
 
   std::atomic<bool> result_done{false};
+  std::atomic<double> terminal_stamp_s{0.0};
+  std::shared_ptr<TransportReactiveStopSignal> stop_signal;
   std::mutex result_mutex;
   rclcpp_action::ResultCode terminal_code{rclcpp_action::ResultCode::UNKNOWN};
   int32_t terminal_error_code{0};
@@ -124,7 +127,8 @@ bool TransportExecutor::waitForPhysicalSettle(
   double & max_velocity_observed_out,
   double & last_velocity_observed_out,
   int & consecutive_achieved_out,
-  double & settle_elapsed_s_out)
+  double & settle_elapsed_s_out,
+  sensor_msgs::msg::JointState::ConstSharedPtr & settled_sample_out)
 {
   // Dereferencing joint_state_state_ here is safe: this method runs
   // synchronously on the calling thread while TransportExecutor (and
@@ -176,6 +180,9 @@ bool TransportExecutor::waitForPhysicalSettle(
   consecutive_achieved_out = tracker.consecutiveAchieved();
   settle_elapsed_s_out =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - settle_begin).count();
+  if (tracker.settled()) {
+    settled_sample_out = jstate.latest;  // same locked sample that completed the C0 settle proof
+  }
   return tracker.settled();
 }
 
@@ -341,7 +348,9 @@ Result TransportExecutor::preSendValidate(
   return Result::SUCCESS;
 }
 
-Result TransportExecutor::executeAndWait(const trajectory_msgs::msg::JointTrajectory & trajectory)
+Result TransportExecutor::executeAndWait(
+  const trajectory_msgs::msg::JointTrajectory & trajectory,
+  std::shared_ptr<TransportReactiveStopSignal> stop_signal)
 {
   const auto logger = node_->get_logger();
   if (state_ != TransportExecutionState::PRE_SEND_VALIDATED) {
@@ -361,6 +370,8 @@ Result TransportExecutor::executeAndWait(const trajectory_msgs::msg::JointTrajec
   // above: heap-owned, captured by value everywhere below.
   auto state = std::make_shared<GoalCallbackState>();
   state->node = node_;
+  if (!stop_signal) {stop_signal = std::make_shared<TransportReactiveStopSignal>(false);}
+  state->stop_signal = stop_signal;
 
   rclcpp_action::Client<FollowJointTrajectory>::SendGoalOptions send_opts;
   send_opts.goal_response_callback =
@@ -373,28 +384,36 @@ Result TransportExecutor::executeAndWait(const trajectory_msgs::msg::JointTrajec
     };
   send_opts.result_callback =
     [state](const FjtGoalHandle::WrappedResult & wr) {
-      {
-        std::lock_guard<std::mutex> lock(state->result_mutex);
-        state->terminal_code = wr.code;
-        if (wr.result) {
-          state->terminal_error_code = wr.result->error_code;
-          state->terminal_error_string = wr.result->error_string;
+      const auto observed_at = TransportClock::now();
+      // Synchronous publication under the arbiter lock; the wr reference
+      // never escapes this callback. Lock order is arbiter -> result_mutex.
+      state->stop_signal->publishTerminal(observed_at, [state, &wr, observed_at] {
+        state->terminal_stamp_s = transport_stamp(observed_at);
+        {
+          std::lock_guard<std::mutex> lock(state->result_mutex);
+          state->terminal_code = wr.code;
+          if (wr.result) {
+            state->terminal_error_code = wr.result->error_code;
+            state->terminal_error_string = wr.result->error_string;
+          }
         }
-      }
+        state->result_done = true;
+      });
       RCLCPP_INFO(
         state->node->get_logger(), "M3 C0 TRANSPORT_EXECUTOR t_fjt_result=%.6f "
         "terminal_action_status=%s fjt_error_code=%d fjt_error_string=\"%s\"",
         state->node->now().seconds(), result_code_to_string(wr.code).c_str(),
         wr.result ? wr.result->error_code : 0,
         wr.result ? wr.result->error_string.c_str() : "");
-      // Set LAST: a reader that observes result_done==true is then
-      // guaranteed (mutex release above happened-before this store, and
-      // this store happens-before any subsequent atomic load of
-      // result_done by another thread) to see the fully-written group.
-      state->result_done = true;
+
     };
 
-  const auto t_execution_begin = std::chrono::steady_clock::now();
+  const auto t_execution_begin = TransportClock::now();
+  last_watchdog_limit_s_ =
+    last_planned_duration_s_ * params_.execution_duration_scaling + params_.goal_duration_margin_s;
+  stop_signal->arm(t_execution_begin +
+    std::chrono::duration_cast<TransportClock::duration>(
+      std::chrono::duration<double>(last_watchdog_limit_s_)));
   RCLCPP_INFO(logger, "M3 C0 TRANSPORT_EXECUTOR t_fjt_goal_send=%.6f", node_->now().seconds());
   auto send_goal_future = fjt_client_->async_send_goal(goal, send_opts);
   state_ = TransportExecutionState::EXECUTING;
@@ -422,148 +441,176 @@ Result TransportExecutor::executeAndWait(const trajectory_msgs::msg::JointTrajec
   auto goal_handle = send_goal_future.get();
   const auto goal_uuid = goal_handle->get_goal_id();
 
-  last_watchdog_limit_s_ =
-    last_planned_duration_s_ * params_.execution_duration_scaling + params_.goal_duration_margin_s;
-  const auto watchdog_deadline =
-    t_execution_begin + std::chrono::duration<double>(last_watchdog_limit_s_);
+  stop_signal->goalAccepted();
   RCLCPP_INFO(
     logger, "M3 C0 TRANSPORT_EXECUTOR watchdog_limit_s=%.6f (planned_duration_s=%.6f "
     "scaling=%.3f margin_s=%.3f)", last_watchdog_limit_s_, last_planned_duration_s_,
     params_.execution_duration_scaling, params_.goal_duration_margin_s);
 
-  bool watchdog_fired = false;
-  while (!state->result_done) {
-    if (std::chrono::steady_clock::now() >= watchdog_deadline) {
-      watchdog_fired = true;
-      break;
-    }
-    std::this_thread::sleep_for(5ms);
+  const auto cause = stop_signal->wait();
+  const bool collision = cause == TransportTerminalCause::COLLISION;
+  const bool watchdog_fired = cause == TransportTerminalCause::WATCHDOG;
+  const auto trigger = stop_signal->evidence();
+  const double t_observed = transport_stamp(TransportClock::now());
+  if (collision) {
+    RCLCPP_INFO(logger,
+      "M3 C2 EXECUTOR_REACTION t_executor_observed_signal=%.9f signal_to_executor_ms=%.6f",
+      t_observed, (t_observed - transport_stamp(trigger->latched)) * 1000.0);
   }
-
-  if (watchdog_fired) {
-    // Watchdog cleanup ONLY -- not Stage-3C collision-triggered
-    // cancellation. Distinguished explicitly in the log lines below so
-    // evidence can never conflate the two. C0.1: cancelling the goal and
-    // observing its terminal action status is NOT physical stop (Stage-3C
-    // Phase 0.3 evidence: FJT CANCELED arrives before the arm actually
-    // settles) -- this path additionally waits for live joint-velocity
-    // confirmation before returning anything to the caller. C0.3: cancel
-    // confirmation is now actually evaluated (not merely logged), and
-    // settle observation runs regardless of whether cancellation itself
-    // was confirmed (fail-safe: never skip observing the arm just
-    // because the cancel acknowledgment was inconclusive).
-    RCLCPP_ERROR(
-      logger, "TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT: t_watchdog_trigger=%.6f execution exceeded "
-      "watchdog_limit_s=%.6f with no terminal result. Issuing WATCHDOG_CLEANUP cancellation "
-      "(not a collision trigger).", node_->now().seconds(), last_watchdog_limit_s_);
-
-    RCLCPP_INFO(
-      logger, "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP t_watchdog_cancel_request=%.6f",
-      node_->now().seconds());
+  if (watchdog_fired || collision) {
+    // Single cancellation owner and a single cleanup primitive for both causes.
+    // Every callback owns its state by value, including late timeout responses.
+    const std::string label = collision ? "COLLISION_STOP" : "WATCHDOG_CLEANUP";
+    if (watchdog_fired) {
+      RCLCPP_ERROR(logger,
+        "TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT: t_watchdog_trigger=%.6f "
+        "watchdog_limit_s=%.6f; WATCHDOG_CLEANUP cancellation (not a collision trigger).",
+        node_->now().seconds(), last_watchdog_limit_s_);
+    }
+    std::ostringstream uuid;
+    uuid << std::hex << std::setfill('0');
+    for (auto byte : goal_uuid) {uuid << std::setw(2) << static_cast<unsigned>(byte);}
+    const std::string uuid_string = uuid.str();
+    sensor_msgs::msg::JointState::ConstSharedPtr immediate_sample;
+    {
+      std::lock_guard<std::mutex> lock(joint_state_state_->mutex);
+      immediate_sample = joint_state_state_->latest;
+    }
+    const double t_cancel = transport_stamp(TransportClock::now());
+    RCLCPP_INFO(logger,
+      "M3 C2 CANCEL_REQUEST cause=%s t_cancel_request=%.9f goal_uuid=%s "
+      "cancel_request_count_for_collision=%d invalidity_to_cancel_ms=%.6f",
+      label.c_str(), t_cancel, uuid_string.c_str(), collision ? 1 : 0,
+      trigger ? (t_cancel - transport_stamp(trigger->detected)) * 1000.0 : -1.0);
+    if (watchdog_fired) {
+      RCLCPP_INFO(logger,
+        "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP t_watchdog_cancel_request=%.6f",
+        node_->now().seconds());
+    }
     auto cancel_future = fjt_client_->async_cancel_goal(
       goal_handle,
-      [state, goal_uuid](rclcpp_action::Client<FollowJointTrajectory>::CancelResponse::SharedPtr resp) {
+      [state, goal_uuid, uuid_string, label, t_cancel](
+        rclcpp_action::Client<FollowJointTrajectory>::CancelResponse::SharedPtr resp) {
+        const double t_response = transport_stamp(TransportClock::now());
         const bool this_goal_present = std::any_of(
           resp->goals_canceling.begin(), resp->goals_canceling.end(),
-          [&goal_uuid](const auto & gi) { return gi.goal_id.uuid == goal_uuid; });
-        // action_msgs/srv/CancelGoal.srv: return_code 0 == ERROR_NONE
-        // ("one or more goals have transitioned to CANCELING").
+          [&goal_uuid](const auto & gi) {return gi.goal_id.uuid == goal_uuid;});
         const bool confirmed = (resp->return_code == 0) && this_goal_present;
         state->cancel_return_code = static_cast<int32_t>(resp->return_code);
         state->cancel_goal_confirmed = confirmed;
-        RCLCPP_INFO(
-          state->node->get_logger(),
-          "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP t_watchdog_cancel_response=%.6f "
-          "return_code=%d n_goals_canceling=%zu this_goal_confirmed=%d",
-          state->node->now().seconds(), static_cast<int>(resp->return_code),
-          resp->goals_canceling.size(), confirmed);
+        RCLCPP_INFO(state->node->get_logger(),
+          "M3 C2 CANCEL_RESPONSE cause=%s t_cancel_response=%.9f goal_uuid=%s "
+          "cancel_response_latency_ms=%.6f return_code=%d n_goals_canceling=%zu this_goal_confirmed=%d",
+          label.c_str(), t_response, uuid_string.c_str(), (t_response - t_cancel) * 1000.0,
+          static_cast<int>(resp->return_code), resp->goals_canceling.size(), confirmed);
         state->cancel_response_done = true;
       });
-
-    const auto cancel_deadline = std::chrono::steady_clock::now() +
+    const auto cancel_deadline = TransportClock::now() +
       std::chrono::duration<double>(params_.controller_wait_timeout_s);
-    while (!state->cancel_response_done && std::chrono::steady_clock::now() < cancel_deadline) {
+    while (!state->cancel_response_done && TransportClock::now() < cancel_deadline) {
       std::this_thread::sleep_for(5ms);
-    }
-    if (!state->cancel_response_done) {
-      RCLCPP_WARN(
-        logger, "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP no cancel_response within %.1fs; "
-        "proceeding to observe terminal result and physical settle regardless (fail-safe) -- "
-        "cancellation itself will be reported UNCONFIRMED.", params_.controller_wait_timeout_s);
     }
     last_cancel_confirmed_ = state->cancel_goal_confirmed.load();
-    const int32_t cancel_return_code = state->cancel_return_code.load();
-
-    const auto result_deadline = std::chrono::steady_clock::now() +
+    if (!state->cancel_response_done) {
+      RCLCPP_WARN(logger, "M3 C2 CANCEL_RESPONSE_TIMEOUT cause=%s; observing terminal/settle",
+        label.c_str());
+    }
+    const auto result_deadline = TransportClock::now() +
       std::chrono::duration<double>(params_.controller_wait_timeout_s);
-    while (!state->result_done && std::chrono::steady_clock::now() < result_deadline) {
+    while (!state->result_done && TransportClock::now() < result_deadline) {
       std::this_thread::sleep_for(5ms);
     }
+    const bool terminal_observed = state->result_done.load();
     const auto terminal = snapshot_terminal_result(*state);
     last_fjt_error_code_ = terminal.error_code;
     last_fjt_error_string_ = terminal.error_string;
-    RCLCPP_INFO(
-      logger, "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP t_watchdog_fjt_result=%.6f "
-      "terminal_action_status=%s fjt_error_code=%d fjt_error_string=\"%s\"",
-      node_->now().seconds(), result_code_to_string(terminal.code).c_str(),
-      terminal.error_code, terminal.error_string.c_str());
+    const double t_terminal = state->terminal_stamp_s.load();
+    RCLCPP_INFO(logger,
+      "M3 C2 TERMINAL cause=%s observed=%d t_fjt_terminal=%.9f "
+      "terminal_action_status=%s fjt_error_code=%d fjt_error_string=\"%s\" "
+      "cancel_to_terminal_ms=%.6f",
+      label.c_str(), terminal_observed, t_terminal, result_code_to_string(terminal.code).c_str(),
+      terminal.error_code, terminal.error_string.c_str(),
+      terminal_observed ? (t_terminal - t_cancel) * 1000.0 : -1.0);
 
-    // Physical settle confirmation -- distinct from, and reported after,
-    // the FJT terminal result above. Never inferred from CANCELED status,
-    // cancel response, a fixed sleep, planned trajectory time, or
-    // getCurrentState() position alone: driven exclusively by live,
-    // provably-distinct /joint_states samples (C0.3).
-    RCLCPP_INFO(
-      logger, "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP t_watchdog_settle_begin=%.6f",
-      node_->now().seconds());
-    double max_velocity_observed = -1.0;
-    double last_velocity_observed = -1.0;
-    int consecutive_achieved = 0;
-    double settle_elapsed_s = 0.0;
-    const bool settled = waitForPhysicalSettle(
-      trajectory.joint_names, max_velocity_observed, last_velocity_observed,
-      consecutive_achieved, settle_elapsed_s);
-    last_settle_confirmed_ = settled;
-    last_settle_max_velocity_rad_s_ = max_velocity_observed;
-    last_settle_last_velocity_rad_s_ = last_velocity_observed;
-    last_settle_elapsed_s_ = settle_elapsed_s;
-    last_settle_consecutive_achieved_ = consecutive_achieved;
-    last_execution_elapsed_s_ =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_execution_begin).count();
+    // C0 authority is unchanged: six DISTINCT messages, true running maximum,
+    // velocity epsilon 1e-3. Observe even on unconfirmed cancel/terminal timeout,
+    // but those paths can NEVER report a successful C2 stop.
+    const double t_settle_begin = transport_stamp(TransportClock::now());
+    RCLCPP_INFO(logger, "M3 C2 SETTLE_BEGIN cause=%s t_settle_start=%.9f velocity_eps=%.9f",
+      label.c_str(), t_settle_begin, params_.stationary_velocity_eps_rad_s);
+    sensor_msgs::msg::JointState::ConstSharedPtr settled_sample;
+    last_settle_confirmed_ = waitForPhysicalSettle(
+      trajectory.joint_names, last_settle_max_velocity_rad_s_, last_settle_last_velocity_rad_s_,
+      last_settle_consecutive_achieved_, last_settle_elapsed_s_, settled_sample);
+    const double t_settle = transport_stamp(TransportClock::now());
+    last_execution_elapsed_s_ = t_settle - transport_stamp(t_execution_begin);
+    RCLCPP_INFO(logger,
+      "M3 C2 %s cause=%s t_physical_settle=%.9f distinct_samples=%d "
+      "max_velocity_observed_rad_s=%.9e final_velocity_rad_s=%.9e "
+      "cancel_to_settle_ms=%.6f terminal_to_settle_ms=%.6f invalidity_to_settle_ms=%.6f",
+      last_settle_confirmed_ ? "PHYSICAL_SETTLE_CONFIRMED" : "PHYSICAL_SETTLE_UNCONFIRMED",
+      label.c_str(), t_settle, last_settle_consecutive_achieved_,
+      last_settle_max_velocity_rad_s_, last_settle_last_velocity_rad_s_,
+      (t_settle - t_cancel) * 1000.0,
+      terminal_observed ? (t_settle - t_terminal) * 1000.0 : -1.0,
+      trigger ? (t_settle - transport_stamp(trigger->detected)) * 1000.0 : -1.0);
 
-    if (!settled) {
-      RCLCPP_ERROR(
-        logger, "TRANSPORT_PHYSICAL_SETTLE_TIMEOUT: t_watchdog_physical_settle=UNCONFIRMED "
-        "consecutive_achieved=%d/%d max_velocity_observed_rad_s=%.6e "
-        "last_velocity_observed_rad_s=%.6e settle_elapsed_s=%.6f (stationary_timeout_s=%.3f). "
-        "FJT reached a terminal state but physical stop could NOT be confirmed from live "
-        "joint velocity.",
-        consecutive_achieved, params_.stationary_consecutive_samples, max_velocity_observed,
-        last_velocity_observed, settle_elapsed_s, params_.stationary_timeout_s);
-      state_ = TransportExecutionState::FAILED;
-      return Result::TRANSPORT_PHYSICAL_SETTLE_TIMEOUT;
+    // Capture positions ONLY after the physical-settle predicate completed,
+    // from that exact locked final message, rather than a trajectory estimate
+    // or a possibly older MoveGroup current-state cache.
+    bool captured = last_settle_confirmed_ && settled_sample &&
+      trajectory.joint_names.size() == 6;
+    double max_delta = 0.0;
+    double target_error = 0.0;
+    for (std::size_t i = 0; captured && i < trajectory.joint_names.size(); ++i) {
+      const auto & name = trajectory.joint_names[i];
+      const auto it = std::find(settled_sample->name.begin(), settled_sample->name.end(), name);
+      const auto idx = static_cast<std::size_t>(std::distance(settled_sample->name.begin(), it));
+      if (it == settled_sample->name.end() || idx >= settled_sample->position.size() ||
+        !std::isfinite(settled_sample->position[idx]))
+      {
+        captured = false;
+        break;
+      }
+      const double e = settled_sample->position[idx];
+      double immediate = std::numeric_limits<double>::quiet_NaN();
+      if (immediate_sample) {
+        const auto before = std::find(immediate_sample->name.begin(), immediate_sample->name.end(), name);
+        const auto j = static_cast<std::size_t>(std::distance(immediate_sample->name.begin(), before));
+        if (before != immediate_sample->name.end() && j < immediate_sample->position.size()) {
+          immediate = immediate_sample->position[j];
+        }
+      }
+      max_delta = std::max(max_delta, std::abs(e - immediate));
+      target_error = std::max(target_error, std::abs(e - trajectory.points.back().positions[i]));
+      RCLCPP_INFO(logger,
+        "M3 C2 STATE_E_JOINT joint=%s state_e_rad=%.12f immediate_cancel_rad=%.12f delta_rad=%.12f",
+        name.c_str(), e, immediate, e - immediate);
     }
-
-    RCLCPP_INFO(
-      logger, "M3 C0 TRANSPORT_EXECUTOR WATCHDOG_CLEANUP PHYSICAL_SETTLE_CONFIRMED "
-      "t_watchdog_physical_settle=%.6f consecutive_achieved=%d/%d "
-      "max_velocity_observed_rad_s=%.6e last_velocity_observed_rad_s=%.6e settle_elapsed_s=%.6f",
-      node_->now().seconds(), consecutive_achieved, params_.stationary_consecutive_samples,
-      max_velocity_observed, last_velocity_observed, settle_elapsed_s);
-
-    if (!last_cancel_confirmed_) {
-      RCLCPP_ERROR(
-        logger, "TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED: physical settle was confirmed (the arm "
-        "is stopped), but the controller never confirmed accepting this exact goal for "
-        "cancellation (cancel_return_code=%d). This stop cannot be attributed to the "
-        "watchdog's own cancel request with certainty.", cancel_return_code);
-      state_ = TransportExecutionState::FAILED;
-      return Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED;
+    RCLCPP_INFO(logger,
+      "M3 C2 STATE_E captured=%d immediate_to_e_max_delta_rad=%.12f "
+      "original_target_max_error_rad=%.12f state_e_sample_stamp=%.9f",
+      captured, max_delta, target_error,
+      settled_sample ? rclcpp::Time(settled_sample->header.stamp).seconds() : -1.0);
+    state_ = TransportExecutionState::FAILED;  // deliberate stop is not manipulation SUCCESS
+    if (collision) {
+      const auto result = collision_stop_result(last_cancel_confirmed_,
+        terminal_observed && terminal.code == rclcpp_action::ResultCode::CANCELED,
+        last_settle_confirmed_, captured);
+      RCLCPP_INFO(logger,
+        "M3 C2 STOP_RESULT result=%s collision_triggered=1 collision_trigger_count=1 "
+        "cancel_request_count_for_collision=1 stop_count=%d replan_count=0 watchdog_count=0",
+        to_string(result), result == Result::TRANSPORT_COLLISION_STOPPED ? 1 : 0);
+      return result;
     }
-
-    state_ = TransportExecutionState::FAILED;
+    if (!last_settle_confirmed_) {return Result::TRANSPORT_PHYSICAL_SETTLE_TIMEOUT;}
+    if (!last_cancel_confirmed_) {return Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED;}
     return Result::TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT;
   }
+  RCLCPP_INFO(logger,
+    "M3 C2 NATURAL_RESULT collision_triggered=0 collision_trigger_count=0 "
+    "cancel_request_count_for_collision=0 stop_count=0 replan_count=0 watchdog_count=0");
 
   last_execution_elapsed_s_ =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_execution_begin).count();

@@ -836,6 +836,7 @@ int main(int argc, char ** argv)
   // (transport_path_monitor.hpp). Never cancels/stops/replans -- see that
   // header's C1 SCOPE note. Defaults match TransportMonitorParams' own.
   bool transport_monitor_enabled = true;
+  bool transport_reactive_stop_enabled = true;
   double transport_monitor_rate_hz = 10.0;
   double transport_monitor_future_sample_dt_s = 0.05;
   std::string transport_monitor_scene_service_name = "/get_planning_scene";
@@ -1032,6 +1033,9 @@ int main(int argc, char ** argv)
     transport_goal_duration_margin_s);
   node->get_parameter_or(
     "transport_monitor_enabled", transport_monitor_enabled, transport_monitor_enabled);
+  node->get_parameter_or(
+    "transport_reactive_stop_enabled", transport_reactive_stop_enabled,
+    transport_reactive_stop_enabled);
   node->get_parameter_or(
     "transport_monitor_rate_hz", transport_monitor_rate_hz, transport_monitor_rate_hz);
   node->get_parameter_or(
@@ -2750,6 +2754,7 @@ int main(int argc, char ** argv)
         tp.transport_execution_duration_scaling = transport_execution_duration_scaling;
         tp.transport_goal_duration_margin_s = transport_goal_duration_margin_s;
         tp.transport_monitor_enabled = transport_monitor_enabled;
+        tp.transport_reactive_stop_enabled = transport_reactive_stop_enabled;
         tp.transport_monitor_rate_hz = transport_monitor_rate_hz;
         tp.transport_monitor_future_sample_dt_s = transport_monitor_future_sample_dt_s;
         tp.transport_monitor_scene_service_name = transport_monitor_scene_service_name;
@@ -2887,6 +2892,15 @@ int main(int argc, char ** argv)
           lift_attempted = true;
           transport_result = ur5e_pick_place::lift_transport_place(
             node, move_group, tp, release_gripper);
+          if (transport_result == Result::TRANSPORT_COLLISION_STOPPED ||
+            transport_result == Result::TRANSPORT_COLLISION_CANCEL_UNCONFIRMED ||
+            transport_result == Result::TRANSPORT_PHYSICAL_SETTLE_TIMEOUT ||
+            transport_result == Result::TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT ||
+            transport_result == Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED ||
+            transport_result == Result::TRANSPORT_FJT_EXECUTION_FAILED)
+          {
+            place_release_attempted = false;
+          }
           if (ur5e_pick_place::ok(result)) { result = transport_result; }
           lift_only_stop_reached = lift_only && ur5e_pick_place::ok(transport_result);
         }

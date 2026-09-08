@@ -21,7 +21,311 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — CURRENT AUTHORITY
+## 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT AUTHORITY
+
+Supersedes the Stage-3C C0/C1 section immediately below for "current
+authority" purposes. That section's own content (C0/C1 architecture,
+evidence, and closed status) is unchanged and not restated in full here —
+read it for C0/C1 detail. Stage-3B and Stage-3A remain **CLOSED /
+VALIDATED**; nothing in C2 modified any Stage-3A/3B file, node, model, or
+lifecycle semantics — confirmed by a zero-diff audit against the production
+`dynamic_obstacle` model.sdf, `dynamic_obstacle_scene_node.cpp`,
+`PlanningSceneManager`, `controllers.yaml`, and the SRDF during this
+closeout (no `.srdf` file is even tracked in this repository; nothing under
+Stage-3A/3B changed).
+
+### Repository state
+
+Branch `stage3c-c2-collision-stop`, baseline HEAD
+`3ff3f68bde3d7e379ec561fd1e32e07a1da6a554` (`main`, "Merge pull request #11
+from Sachin6120/stage3c-c1-observe-only-monitor" — i.e. C1's published
+merge). **Stage-3C C2 is QUALIFIED on branch `stage3c-c2-collision-stop`.**
+C2 must not be cited as published until that branch is merged into `main`
+through its own Stage-3C C2 publication PR (deliberately identified here by
+branch/PR rather than by exact commit SHA, since the branch's own commit(s)
+are not immutable identifiers to embed in this durable document — read the
+exact commit identity live from the C2 publication PR's current head if
+needed). Once that PR's merge commit is present on `main`, treat that merge
+commit itself as the published Stage-3C C2 baseline. Until then: **C2 is
+qualified but unpublished.**
+
+### C2 architecture
+
+`TransportPathMonitor`'s C1 future-path-invalidity observation now drives a
+reactive stop, via a new shared arbiter
+(`ur5e_pick_place/include/ur5e_pick_place/transport_reactive_stop.hpp`,
+`TransportReactiveStopSignal`):
+
+```
+C1 future-path invalidity (fresh, current-state-valid, has collision pairs)
+  -> TransportPathMonitor copies collision evidence and calls
+     TransportReactiveStopSignal::request() (one-shot; no goal/cancel API)
+  -> TransportExecutor (sole FJT goal owner) observes the arbitrated cause
+     via TransportReactiveStopSignal::wait()
+  -> TransportExecutor issues the sole production async_cancel_goal() call,
+     with exact-goal-UUID confirmation (reusing C0's own pattern)
+  -> FJT terminal CANCELED observed
+  -> six-distinct-live-/joint_states-sample physical settle confirmed
+     (reusing C0's own distinct-sample predicate, same velocity epsilon)
+  -> settled joint state captured as "state E"
+  -> Result::TRANSPORT_COLLISION_STOPPED
+```
+
+**No replanning anywhere in C2.** `lift_transport_place()` in
+`transport.cpp` returns immediately on
+`Result::TRANSPORT_COLLISION_STOPPED`, before place planning, place
+execution, gripper release, detachment, or retreat — the payload remains
+attached to `gripper_base_link` (touch links `pad_fixed_link`/
+`pad_moving_link` unchanged) and the world scene is untouched. This is a
+qualification-run teardown state, not a production "detach" — no detach
+code path executes.
+
+**Ownership split, confirmed by direct source read during this closeout**:
+- `TransportPathMonitor`: detect only. Copies trigger evidence into a
+  `TransportCollisionEvidence`, calls `stop_signal_->request(evidence)`.
+  Holds no FJT goal handle, no action client, and — confirmed by a
+  whole-package grep — contains zero calls to `async_cancel_goal()`.
+- `TransportExecutor`: sole FJT goal owner. Exactly one
+  `async_cancel_goal()` call site in the entire `ur5e_pick_place` package
+  (`transport_executor.cpp`, one call, shared by both the COLLISION and
+  WATCHDOG causes via one `label`-parameterized cancellation block — "a
+  single cancellation owner and a single cleanup primitive for both
+  causes", per the code's own comment). Owns exact-goal UUID confirmation,
+  terminal-result handling, physical settle, and state-E capture.
+
+### Arbitration correction (found and fixed during C2 closeout)
+
+**Defect (pre-fix)**: the terminal FJT callback made `result_done`
+(and the published terminal payload) visible to `wait()` **before** the
+terminal cause was committed under the arbiter's mutex. A collision
+`request()` arriving in that window could still observe `cause_ ==
+NONE`/`active_ == true` and win, racing a `NATURAL` completion that had
+already been reported to the caller as done. This is a **logical
+ordering/linearization defect in when arbitration is committed relative to
+when the result becomes observable — not an unsynchronized-memory data
+race** (both sides always held the same mutex; the bug was where the
+critical section boundary was drawn).
+
+**Correction** (`transport_reactive_stop.hpp`, `publishTerminal()`):
+1. Capture the callback's steady-clock entry timestamp (`observed_at`)
+   once, before any bookkeeping.
+2. Acquire the arbiter mutex.
+3. If no cause is yet selected, select it now (`observed_at >= deadline_`
+   -> WATCHDOG, else NATURAL) — ties at the deadline go to WATCHDOG,
+   matching `request()`'s own tie rule.
+4. Mark the execution inactive (`active_ = false`).
+5. Call `publish()` — the terminal-result-visible side effect — **while
+   still holding the mutex**.
+6. Release the mutex, then notify waiters.
+
+The **linearization point is the terminal-cause commitment under the
+arbiter mutex**, at step 3, strictly before step 5 makes the result
+observable. Because `request()` also takes the same mutex and checks
+`active_`/`cause_` before acting, a collision request arriving after step 3
+sees a terminal cause already selected and is excluded — it can no longer
+be accepted after the terminal result has been (or is about to be) made
+visible. Deterministic rule preserved: a collision observed strictly before
+the watchdog deadline may win as NATURAL's replacement is not possible once
+committed; a callback observed at/after the deadline always yields WATCHDOG;
+equality belongs to WATCHDOG in both `request()` and `publishTerminal()`.
+
+**Proof** (`evidence/stage3c_c2_arbitration_20260908_111153/`):
+`c2_closeout_arbitration_probe_fixed.cpp` deliberately holds the terminal
+callback inside `publishTerminal()` after `result_done` would historically
+have been set, releases a concurrent collision `request()` during that
+window, and confirms it is excluded. Recorded result
+(`post_fix_probe.log`): `terminal_result_already_published=1
+request_excluded_during_publication=1 later_collision_accepted=0
+final_cause=NATURAL` — all four expected values. Eight regression unit
+tests were added to `test_transport_reactive_stop.cpp` covering publication
+suspension, the reverse-gap (request-after-publish-begins) case, exact
+deadline-boundary equality, and competing terminal causes.
+
+**Test authority**: build `PASS`; **178 tests, 0 errors, 0 failures, 0
+skipped** (`evidence/stage3c_c2_arbitration_20260908_111153/validation.json`)
+— up from C1's 145, i.e. 33 new tests (arbitration regressions plus the new
+`transport_reactive_stop`/executor unit coverage), not just the 8 named
+arbitration cases.
+
+### Final post-fix C2A (non-trigger parity) — supersedes all earlier C2A attempts
+
+Evidence: `evidence/stage3c_c2a_20260908_111153/`
+(`qualification_results.json`, verdict `PASS`). Scenario: unmodified
+production Stage-3B B1 obstacle (`X=0.70 m, Z=0.85 m, Y=[0.25,0.45] m,
+period=4.0 s`).
+
+- Terminal cause: NATURAL (`c2.trigger_count=0`). Full cycle `SUCCESS`;
+  `transport_result=SUCCESS`; direct-FJT executor's own C0 result is
+  SUCCEEDED (non-CANCELED, non-error terminal — C2 never engages).
+- Future-path invalid ticks: **0**; collision triggers: **0**; reactive
+  cancel requests: **0**; watchdog: **0**; replan: **0**.
+- Post-manipulation flow completed normally: place `yes`, release `yes`,
+  detach `yes`, retreat `yes` (all four `flow.*` fields `true`).
+- Gazebo physical contacts involving `dynamic_obstacle_0` during the
+  qualification window (real `gz::sim::systems::Contact` stream, not
+  `/check_state_validity`): **0**
+  (`gazebo_physical_contacts.messages_total = 0`). Observer liveness proven
+  by a post-window in-session probe on the same observer instance:
+  6184 positive-control contact messages
+  (`contact_liveness.liveness_proven = true`).
+- Cleanup: clean (`cleanup_after.json` empty; no orphaned processes).
+
+This is the final C2 non-trigger parity authority — C2's new machinery
+introduces zero behavior change when no collision is ever flagged.
+
+### Final post-fix C2B (collision-triggered stop) — supersedes all earlier C2B attempts
+
+Evidence: `evidence/stage3c_c2b_20260908_111350/`
+(`qualification_results.json`, verdict `PASS`). Scenario unchanged from
+C1B/earlier C2B: qualification-only obstacle, `center_x=0.45 m,
+center_z=0.86 m, Y=[0.15,0.35] m, period=1.0 s`, active window `1.2 s`.
+
+- Terminal cause: `COLLISION_STOP`. Scene age at trigger: **88 ms**
+  (`c2.trigger.scene_age_ms = 88.000000`); current actual state: **valid**
+  (`current_state_valid=1`) with future path invalid — the collision was
+  in the interpolated remaining path, not the robot's real position.
+  Collision pair: `dynamic_obstacle_0<->ur_to_robotiq_link`.
+- Collision trigger count: **1**; reactive cancel count: **1**
+  (`c2.trigger_count=1`, `c2.cancel_count=1`).
+- Cancel confirmation: `return_code=0`, `n_goals_canceling=1`,
+  `this_goal_confirmed=1`, goal UUID
+  `556028fca6c3d372e6132307398cf192` (exact match between the requested
+  and confirmed goal).
+- FJT terminal: `CANCELED`, `fjt_error_code=0`.
+- Original target max error at cancellation: **0.662421409475 rad**
+  (target not reached — confirms this is a genuine mid-trajectory stop, not
+  a near-arrival false trigger).
+- Physical settle: **6 distinct live `/joint_states` samples**;
+  `final_velocity_rad_s = 5.323311482e-04`;
+  `max_velocity_observed_rad_s = 3.191973068e-03` **during the settle
+  window** — this maximum occurs among the earlier, not-yet-settled samples
+  in the window and does not violate the settle criterion (six
+  *consecutive* distinct samples below `1.0e-3 rad/s`, evaluated from the
+  end of the window backward — an earlier sample exceeding the epsilon is
+  expected and does not invalidate a later run of six that satisfy it).
+- State E (settled joint positions, `evidence/stage3c_c2b_20260908_111350/qualification_results.json`
+  `c2.events.STATE_E_JOINT`, captured only after settle confirmation):
+
+  | joint | state E (rad) |
+  |---|---:|
+  | shoulder_pan | -0.525642232852 |
+  | shoulder_lift | -0.932491011951 |
+  | elbow | 1.509698367501 |
+  | wrist_1 | 0.993593587241 |
+  | wrist_2 | 1.570730479419 |
+  | wrist_3 | 1.045161804399 |
+
+  Immediate-cancel-sample -> state-E maximum absolute delta:
+  **0.000009581961 rad**. This is a measured post-hoc closeness between two
+  specific samples in this one run, **not** a basis for C3 to substitute a
+  predicted state for a measured one — the architectural rule that C3 must
+  start from the measured settled state E (not a cancel-instant estimate)
+  is unaffected by how small this particular delta happened to be.
+- Post-stop flow: `TRANSPORT_COLLISION_STOPPED` returned; place planning=0,
+  place execution=0, release=0, detach=0, retreat=0 (all four `flow.*`
+  fields `false`); monitor thread joined before the check
+  (`monitor.stop()` called unconditionally, per `transport.cpp`); payload
+  (`pick_target`) still attached to `gripper_base_link` with touch links
+  `pad_fixed_link`/`pad_moving_link` intact
+  (`post_stop_planning_scene.json`). This qualification-run non-flow must
+  not be read as a production "detach" — no detach code executed.
+- Gazebo physical contacts involving `dynamic_obstacle_0` before
+  qualification cutoff: **0**; the same observer instance later recorded
+  **2408** positive-control contact messages, proving liveness. Kept
+  strictly separate from `/check_state_validity`-based current-state
+  validity, which is never cited as physical-contact evidence.
+
+### Final post-fix WATCHDOG (unrelated-cause regression) — supersedes earlier watchdog evidence
+
+Evidence: `evidence/stage3c_watchdog_20260908_111527/`
+(`qualification_results.json`, verdict `PASS`). Same production B1
+obstacle as C2A (non-interfering); watchdog forced via
+`transport_execution_duration_scaling:=0.3 transport_goal_duration_margin_s:=0.0`.
+
+- Terminal cause: `WATCHDOG_CLEANUP`; `result =
+  TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT`. Collision trigger count: **0**;
+  replan: **0**. Cancellation requests: **1**
+  (`return_code=0`, exact-goal UUID confirmed:
+  `23d3b4c479042e9b721e2146d81e85f1`, `this_goal_confirmed=1`).
+- FJT terminal: `CANCELED`. Physical settle: **6 distinct samples**;
+  `final_velocity_rad_s = 5.809828155e-04`;
+  `max_velocity_observed_rad_s = 2.088901521e-02` during the settle window
+  (same "earlier samples may exceed epsilon" caveat as C2B applies here —
+  this is not a settle-criterion violation).
+- No crash, no deadlock; `cleanup_clean = true`.
+- This confirms the arbitration fix and the shared cancellation code path
+  did not regress C0's pre-existing, collision-unrelated watchdog
+  cleanup — the same single `label`-parameterized cancellation block in
+  `TransportExecutor` handles both causes correctly and exclusively.
+
+### Double-cancellation authority
+
+C2B: exactly **1** cancellation request for the entire run. WATCHDOG:
+exactly **1** cancellation request for the entire run. Production has
+exactly one executor-owned `async_cancel_goal()` call path (confirmed by
+whole-package grep during this closeout). No double cancellation was
+observed or is architecturally possible for a single `TransportExecutor`
+instance, since `stop_signal->wait()` returns exactly one terminal cause
+and the cancellation block executes at most once per `executeAndWait()`
+call.
+
+### ANSI-parser qualification-tooling history (narrow — not a production defect)
+
+The pre-fix C2B run (`evidence/stage3c_c2b_20260908_103817/`) initially
+returned `NEEDS_CORRECTION` because `scripts/test_stage3c_c2.py`'s field
+parser read the raw log line including a trailing ANSI reset sequence, so
+`this_goal_confirmed` parsed as the string `"1\x1b[0m"` instead of `"1"`.
+**Production telemetry itself was correct** — this was purely a
+qualification-script string-parsing defect. `scripts/test_stage3c_c2.py`
+now strips ANSI escape sequences (`ANSI_ESCAPE =
+re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')`) before field parsing. The original
+`qualification_results.json` for that run is preserved unmodified
+(verdict still reads `NEEDS_CORRECTION`); a
+`qualification_results_reanalysis.json` was added alongside it recording
+`"runtime_rerun": false` and the corrected `PASS` verdict from
+re-parsing the same preserved raw logs — no new simulation run was
+performed for this fix. Do not describe this history as a production C2
+collision-response failure; it never was one.
+
+### Result taxonomy (existing meanings, unchanged by this closeout)
+
+`TRANSPORT_COLLISION_STOPPED` means: future collision detected + exact
+active-goal cancel confirmed + FJT terminal observed (CANCELED) + physical
+settle confirmed (six distinct samples) + state E captured + no replan
+attempted. Other relevant existing results:
+`TRANSPORT_COLLISION_CANCEL_UNCONFIRMED`,
+`TRANSPORT_PHYSICAL_SETTLE_TIMEOUT`, `TRANSPORT_FJT_EXECUTION_FAILED`,
+`TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT` (all defined in `failure.hpp`,
+unchanged set — no new result types were introduced during this closeout).
+
+### Protected-asset audit (this closeout)
+
+Zero diff confirmed against Stage-3A production assets, Stage-3B production
+assets, the production `dynamic_obstacle` `model.sdf`,
+`dynamic_obstacle_scene_node.cpp`, `PlanningSceneManager`,
+`controllers.yaml`; no `.srdf` file exists in this repository to diff. No
+`C3`, replan, prediction, `MoveGroupInterface::stop()`,
+`MoveGroupInterface::asyncExecute()`, or `/execute_trajectory` execution
+appears anywhere in the current diff (confirmed by pattern grep across the
+full `ur5e_pick_place/` diff — the only matches are comments documenting
+their *absence*).
+
+### Stage-3C C3 — future scope, unchanged boundary, NOT STARTED
+
+Settled measured state E -> fresh `PlanningScene` -> fresh start state ->
+fresh plan to the original `above_place` target -> validate replacement ->
+direct-FJT execute. Initial future C3 policy: maximum one reactive replan;
+a second invalidity fails cleanly on the first attempt. Not designed, not
+started, not implemented by this closeout. The small immediate-to-E delta
+measured in this one C2B run does **not** authorize C3 to use a predicted
+(rather than measured, settled) start state — that architectural rule
+stands regardless of how small any single run's delta happens to be.
+
+## 2026-09-08 Stage-3C Direct-FJT Transport + Observe-Only Future-Path Monitor — SUPERSEDED
+
+Superseded by the Stage-3C C2 section above for "current authority"
+purposes. Nothing in this section's own C0/C1 content is invalidated;
+C0 and C1 remain exactly as validated and published below.
 
 Supersedes the Stage-3B section below for "current authority" purposes.
 Stage-3B itself remains **CLOSED / VALIDATED**; nothing in Stage-3C C0 or C1

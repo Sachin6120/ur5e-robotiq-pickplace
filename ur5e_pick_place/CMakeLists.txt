@@ -134,6 +134,8 @@ target_link_libraries(object_detector ${OpenCV_LIBRARIES})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(transport_reactive_stop_test test/test_transport_reactive_stop.cpp)
+  target_include_directories(transport_reactive_stop_test PRIVATE include)
   ament_add_gtest(object_detector_d10_test test/test_object_detector_d10.cpp)
   target_include_directories(object_detector_d10_test PRIVATE include)
   ament_add_gtest(mask_orientation_test test/test_mask_orientation.cpp)

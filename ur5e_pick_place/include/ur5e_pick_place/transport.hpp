@@ -218,6 +218,7 @@ struct TransportParams
   // defaults true so an un-overridden launch always monitors; the other
   // three mirror TransportMonitorParams' own defaults exactly.
   bool transport_monitor_enabled = true;
+  bool transport_reactive_stop_enabled = true;
   double transport_monitor_rate_hz = 10.0;
   double transport_monitor_future_sample_dt_s = 0.05;
   std::string transport_monitor_scene_service_name = "/get_planning_scene";

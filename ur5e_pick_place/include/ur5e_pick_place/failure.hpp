@@ -104,7 +104,7 @@ enum class Result
                                // so this is deliberately NOT reported as the
                                // ordinary watchdog timeout above: it means physical
                                // stop could not be confirmed at all
-  TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED // C0.3: physical settle WAS confirmed (the
+  TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED, // C0.3: physical settle WAS confirmed (the
                                // arm is stopped), but the controller never confirmed
                                // accepting this exact goal for cancellation (the
                                // CancelResponse either never arrived, was rejected,
@@ -114,6 +114,8 @@ enum class Result
                                // cancellation WAS confirmed in addition to settle;
                                // this value means the stop cannot be attributed to
                                // the watchdog's own cancel request with certainty
+  TRANSPORT_COLLISION_STOPPED, // exact cancel + CANCELED + physical settle + actual state E
+  TRANSPORT_COLLISION_CANCEL_UNCONFIRMED // exact-goal collision cancel proof absent
 };
 
 inline const char * to_string(Result r)
@@ -152,6 +154,8 @@ inline const char * to_string(Result r)
     case Result::TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT: return "TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT";
     case Result::TRANSPORT_PHYSICAL_SETTLE_TIMEOUT: return "TRANSPORT_PHYSICAL_SETTLE_TIMEOUT";
     case Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED: return "TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED";
+    case Result::TRANSPORT_COLLISION_STOPPED: return "TRANSPORT_COLLISION_STOPPED";
+    case Result::TRANSPORT_COLLISION_CANCEL_UNCONFIRMED: return "TRANSPORT_COLLISION_CANCEL_UNCONFIRMED";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the
