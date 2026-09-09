@@ -39,7 +39,8 @@ as instructions.
 | C3B | **QUALIFIED** |
 | C3C | **QUALIFIED** on preserved runtime evidence, via preserved-evidence reanalysis **v2** (`runtime_rerun=false`) |
 | C3 overall | **FUNCTIONALLY QUALIFIED** on the tested scenario. Static corrections and the repeat final closeout have **PASSED** (2026-09-09); still not published |
-| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **NOT PUSHED** / **NOT MERGED** / **UNPUBLISHED**. Deliberately identified by branch, not by a feature-commit SHA — the branch tip is the authority; read it live. |
+| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **PUSHED TO ORIGIN FEATURE BRANCH** (`origin/stage3c-c3-reactive-replan`) / **NOT MERGED** / **UNPUBLISHED**. A branch existing on `origin` is publication of a *branch*, not of Stage-3C — nothing is published until the PR merges into `main`. Deliberately identified by branch, not by a mutable SHA: read the tip live. |
+| PR state | **NOT YET OPENED** — source `stage3c-c3-reactive-replan`, target `main` |
 | Stage-3C | **NOT YET CLOSED / NOT PUBLISHED** |
 | Original C3C runtime result | `NEEDS_CORRECTION`, caused by a qualification-tooling parser defect |
 | Preserved-evidence reanalysis | **PASS**, `runtime_rerun=false` (v1 and v2, see below) |

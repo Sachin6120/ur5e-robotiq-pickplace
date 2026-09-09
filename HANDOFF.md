@@ -27,7 +27,8 @@ must not be done.**
 | C3B | **QUALIFIED** |
 | C3C | **QUALIFIED** on preserved runtime evidence, via preserved-evidence reanalysis **v2** (`runtime_rerun=false`) |
 | C3 overall | **FUNCTIONALLY QUALIFIED** on the tested scenario. Static corrections + repeat final closeout **PASSED** (2026-09-09); still not published |
-| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **NOT PUSHED** / **NOT MERGED** / **UNPUBLISHED** — the feature commit exists on `stage3c-c3-reactive-replan` only; no push, no PR, no merge. Read the SHA live from the branch tip rather than from this document. |
+| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **PUSHED TO ORIGIN FEATURE BRANCH** / **NOT MERGED** / **UNPUBLISHED** — the work exists on `origin/stage3c-c3-reactive-replan`; that is a pushed branch, not a publication. Read the SHA live from the branch tip, not from this document. |
+| PR state | **NOT YET OPENED** — source `stage3c-c3-reactive-replan`, target `main` |
 | Stage-3C | **NOT YET CLOSED / NOT PUBLISHED** |
 | Original C3C runtime result | `NEEDS_CORRECTION`, from a qualification-tooling parser defect |
 | Preserved-evidence reanalysis | **PASS**, `runtime_rerun=false` (v1 and v2) |
@@ -99,16 +100,22 @@ changed. No other defect was found.
 
 #### Exact next step
 
-The Stage-3C C3 feature commit **has been created** on this branch (25 files:
-production + tests + reusable tooling + these two documents; `evidence/` and
-the eight one-off probes deliberately excluded and still untracked). The branch
-is **not pushed** and **no PR is open**.
+The Stage-3C C3 feature commit has been created **and pushed** to
+`origin/stage3c-c3-reactive-replan` (25 files: production + tests + reusable
+tooling + these two documents; `evidence/` and the eight one-off probes
+deliberately excluded and still untracked). The implementation commit is
+`0ae3025794ac657ab6e42258c759abea8dc3bc72` — recorded here as provenance only;
+later docs-only commits move the branch tip, so read the tip live rather than
+trusting that SHA to be current. **No PR is open.**
 
-Next: push `stage3c-c3-reactive-replan` and open the Stage-3C C3 publication
-PR — each requires its own explicit authorization in the turn it happens; a
-prior approval never carries forward. Only when that PR is merged into `main`
-may C3 be cited as published, and only then does Stage-3C close. **No new
-runtime qualification run is authorized**, and none is needed.
+Next: open the Stage-3C C3 publication PR — source `stage3c-c3-reactive-replan`,
+target `main` — then review the CI result and the PR diff. Creating the PR
+requires its own explicit authorization in the turn it happens; a prior approval
+never carries forward. Only after that PR is **merged** may C3 be called
+PUBLISHED, may Stage-3C be marked CLOSED/PUBLISHED, and may the published
+baseline move forward from
+`63871cc44b38e7dbb43933ccf8f39037eabdf162`. **No new runtime qualification run
+is authorized**, and none is needed.
 
 ---
 
