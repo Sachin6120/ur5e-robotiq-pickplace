@@ -340,15 +340,28 @@ bool PlanningSceneManager::updateWorldTarget(const geometry_msgs::msg::Pose & po
   return addWorldTarget(pose, error);
 }
 
-bool PlanningSceneManager::verifyExpectedScene(std::string & error)
+PlanningSceneManager::ExpectedSceneSpec PlanningSceneManager::expectedSceneSpec() const
 {
-  moveit_msgs::msg::PlanningScene scene;
-  if (!fetch(scene, error)) return false;
+  ExpectedSceneSpec spec;
+  spec.world_frame = world_frame_;
+  spec.target_state = target_state_;
+  spec.target_pose = target_pose_;
+  return spec;
+}
 
+// Stage-3C C3 static-closeout CORRECTION D: unchanged checks, now expressed
+// against a snapshot supplied by the caller. This function performs NO service
+// call and does not modify `scene`, so whatever it proves is proven ABOUT THAT
+// SNAPSHOT -- which is what lets a caller that retains a PlanningScene for
+// planning validate the very snapshot it retained.
+bool PlanningSceneManager::verifyExpectedSceneSnapshot(
+  const moveit_msgs::msg::PlanningScene & scene,
+  const ExpectedSceneSpec & spec, std::string & error)
+{
   const auto table = std::find_if(scene.world.collision_objects.begin(), scene.world.collision_objects.end(),
     [](const auto & object) { return object.id == kTable; });
   if (table == scene.world.collision_objects.end() ||
-      table->header.frame_id != world_frame_ ||
+      table->header.frame_id != spec.world_frame ||
       table->primitives.size() != 1 ||
       table->primitive_poses.size() != 1 ||
       table->primitives.front().type != shape_msgs::msg::SolidPrimitive::BOX ||
@@ -372,12 +385,12 @@ bool PlanningSceneManager::verifyExpectedScene(std::string & error)
     [](const auto & object) { return object.id == kTarget; });
   const auto attached_target = std::find_if(scene.robot_state.attached_collision_objects.begin(), scene.robot_state.attached_collision_objects.end(),
     [](const auto & object) { return object.object.id == kTarget; });
-  if ((target_state_ == SceneTargetState::WORLD) != (world_target != scene.world.collision_objects.end()) ||
-      (target_state_ == SceneTargetState::ATTACHED) != (attached_target != scene.robot_state.attached_collision_objects.end())) {
+  if ((spec.target_state == SceneTargetState::WORLD) != (world_target != scene.world.collision_objects.end()) ||
+      (spec.target_state == SceneTargetState::ATTACHED) != (attached_target != scene.robot_state.attached_collision_objects.end())) {
     error = "SCENE_STALE_TARGET_STATE"; return false;
   }
-  if (target_state_ == SceneTargetState::WORLD) {
-    if (world_target->header.frame_id != world_frame_ ||
+  if (spec.target_state == SceneTargetState::WORLD) {
+    if (world_target->header.frame_id != spec.world_frame ||
         world_target->primitives.size() != 1 ||
         world_target->primitive_poses.size() != 1 ||
         world_target->primitives.front().type != shape_msgs::msg::SolidPrimitive::BOX ||
@@ -388,27 +401,39 @@ bool PlanningSceneManager::verifyExpectedScene(std::string & error)
       error = "SCENE_STALE_TARGET_STATE"; return false;
     }
     const auto target_eff_pose = effectivePrimitivePose(*world_target, 0);
-    if (!samePose(target_eff_pose, target_pose_)) {
+    if (!samePose(target_eff_pose, spec.target_pose)) {
       error = "SCENE_STALE_TARGET_POSE"; return false;
     }
   }
-  if (target_state_ == SceneTargetState::ATTACHED &&
+  if (spec.target_state == SceneTargetState::ATTACHED &&
       (attached_target->link_name != kAttachLink || attached_target->touch_links != padTouchLinks())) {
     error = "SCENE_STALE_ATTACHMENT"; return false;
   }
   bool p = false;
   if (!pairValue(scene.allowed_collision_matrix, kTable, kBase, p) || !p) { error = "SCENE_STALE_ACM_P"; return false; }
-  for (const auto & padding : scene.link_padding) {
-    if ((padding.link_name == kFixedPad || padding.link_name == kMovingPad) && !same(padding.padding, 0.0)) {
-      error = "SCENE_PADDING_NOT_ZERO"; return false;
+  if (spec.check_link_padding_and_scaling) {
+    for (const auto & padding : scene.link_padding) {
+      if ((padding.link_name == kFixedPad || padding.link_name == kMovingPad) && !same(padding.padding, 0.0)) {
+        error = "SCENE_PADDING_NOT_ZERO"; return false;
+      }
     }
-  }
-  for (const auto & scale : scene.link_scale) {
-    if ((scale.link_name == kFixedPad || scale.link_name == kMovingPad) && !same(scale.scale, 1.0)) {
-      error = "SCENE_SCALE_NOT_ONE"; return false;
+    for (const auto & scale : scene.link_scale) {
+      if ((scale.link_name == kFixedPad || scale.link_name == kMovingPad) && !same(scale.scale, 1.0)) {
+        error = "SCENE_SCALE_NOT_ONE"; return false;
+      }
     }
   }
   return true;
+}
+
+// Fetches ONE scene and validates it. Byte-for-byte the previous behavior:
+// the same components (fetch() requests LINK_PADDING_AND_SCALING, so the
+// padding/scale checks stay enabled) and the same expectations.
+bool PlanningSceneManager::verifyExpectedScene(std::string & error)
+{
+  moveit_msgs::msg::PlanningScene scene;
+  if (!fetch(scene, error)) return false;
+  return verifyExpectedSceneSnapshot(scene, expectedSceneSpec(), error);
 }
 
 bool PlanningSceneManager::currentAttachedTargetGlobalPose(

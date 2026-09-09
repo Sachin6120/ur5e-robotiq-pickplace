@@ -19,6 +19,25 @@ enum class SceneTargetState { ABSENT, WORLD, ATTACHED };
 class PlanningSceneManager
 {
 public:
+  // --- Stage-3C C3 static-closeout CORRECTION D -----------------------------
+  //
+  // The expectations verifyExpectedScene() enforces, made explicit so that ONE
+  // already-retained PlanningScene snapshot can be validated directly, without
+  // fetching a second scene from the service. Splitting them out is what makes
+  // "these properties hold" a statement about a specific snapshot rather than
+  // about whatever the service happened to return afterwards.
+  struct ExpectedSceneSpec
+  {
+    std::string world_frame{"world"};
+    SceneTargetState target_state{SceneTargetState::ABSENT};
+    geometry_msgs::msg::Pose target_pose{};
+    // The padding/scale assertions are only meaningful on a snapshot that was
+    // requested WITH PlanningSceneComponents::LINK_PADDING_AND_SCALING. A
+    // caller holding a snapshot without that component must set this false, so
+    // the omission is explicit in source instead of passing vacuously.
+    bool check_link_padding_and_scaling{true};
+  };
+
   explicit PlanningSceneManager(const rclcpp::Node::SharedPtr & node, std::string world_frame = "world");
 
   static moveit_msgs::msg::CollisionObject makeTable(const std::string & world_frame);
@@ -55,6 +74,18 @@ public:
   bool updateWorldTarget(const geometry_msgs::msg::Pose & perceived_pose, std::string & error);
   bool verifyExpectedScene(std::string & error);
 
+  // Validates the expectations above against the snapshot PASSED IN and
+  // nothing else -- no service call, no second scene, no mutation of the
+  // argument. verifyExpectedScene() is exactly fetch() + this, so every
+  // existing caller keeps identical behavior.
+  static bool verifyExpectedSceneSnapshot(
+    const moveit_msgs::msg::PlanningScene & scene,
+    const ExpectedSceneSpec & spec, std::string & error);
+
+  // The manager's CURRENT live expectations, for a caller that holds its own
+  // retained snapshot and wants it checked against them.
+  ExpectedSceneSpec expectedSceneSpec() const;
+
   // Evaluates measured robot state on a local cloned planning scene with S removed
   bool checkPickupClearanceClone(
     const moveit::core::RobotState & current_state, double & separation_z, std::string & error);
@@ -65,6 +96,7 @@ public:
 
   SceneTargetState targetState() const { return target_state_; }
   const std::string & fingerprint() const { return fingerprint_; }
+  const std::string & worldFrame() const { return world_frame_; }
   const geometry_msgs::msg::Pose & targetPose() const { return target_pose_; }
 
 private:

@@ -551,6 +551,12 @@ def _setup(context, *args, **kwargs):
         "transport_monitor_scene_service_name": LaunchConfiguration(
             "transport_monitor_scene_service_name"
         ).perform(context),
+        "transport_pre_replan_gate_service_name": LaunchConfiguration(
+            "transport_pre_replan_gate_service_name"
+        ).perform(context),
+        "transport_pre_replan_gate_timeout_s": float(
+            LaunchConfiguration("transport_pre_replan_gate_timeout_s").perform(context)
+        ),
     }
     if pregrasp_joint_target:
         node_params["pregrasp_joint_target"] = pregrasp_joint_target
@@ -823,6 +829,22 @@ def generate_launch_description():
                 default_value="/get_planning_scene",
                 description="Stage-3C C1: the MoveIt GetPlanningScene service the monitor "
                 "queries once per tick for a single, consistent scene snapshot.",
+            ),
+            DeclareLaunchArgument(
+                "transport_pre_replan_gate_service_name",
+                default_value="",
+                description="Stage-3C C3: OPTIONAL std_srvs/srv/Trigger service an external "
+                "environment manager advertises to signal that a world transition required "
+                "before replanning is complete. Empty (the default) disables the gate "
+                "entirely -- no client, no discovery, no wait -- which is the behavior "
+                "Stage-3C C3A and C3B qualified.",
+            ),
+            DeclareLaunchArgument(
+                "transport_pre_replan_gate_timeout_s",
+                default_value="5.0",
+                description="Stage-3C C3: bounded steady-clock timeout for the optional "
+                "pre-replan scene gate handshake. A configurable engineering bound, not a "
+                "certified timing guarantee. Ignored when the gate is disabled.",
             ),
             DeclareLaunchArgument(
                 "perceived_position_timeout_s",

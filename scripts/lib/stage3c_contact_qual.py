@@ -228,6 +228,60 @@ def topic_info(topic: str) -> str:
         f"gz topic -i -t {topic}", shell=True, capture_output=True, text=True).stdout
 
 
+def model_pose(name: str):
+    """Authoritative live Gazebo pose of a model, or None if it does not exist.
+
+    `gz model -m <name> -p` prints the model's pose iff it currently exists.
+    Needed because /world/empty/create's Boolean reply is NOT a reliable
+    success signal: when the name is already taken and allow_renaming is
+    false, gz-sim logs "Entity named [x] already exists ... Entity not
+    spawned." server-side but the client still receives `data: true`
+    (directly observed in evidence/stage3c_c3c_20260909_014313/sim.log).
+    Never infer entity existence from that reply alone.
+    """
+    import re
+    import subprocess
+    import time as _time
+    # `gz model` first resolves the world name via the /gazebo/worlds service,
+    # which is genuinely flaky under simulator load: directly observed timing
+    # out ("Service call to [/gazebo/worlds] timed out") against a healthy,
+    # running sim whose model had already spawned successfully. Retry with a
+    # generous per-call timeout, and never report absence from one failure.
+    out = ""
+    for attempt in range(3):
+        try:
+            r = subprocess.run(["gz", "model", "-m", name, "-p"],
+                               capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            _time.sleep(0.5)
+            continue
+        out = (r.stdout or "") + (r.stderr or "")
+        if r.returncode == 0 and "Pose" in out:
+            break
+        _time.sleep(0.5)
+    else:
+        return None
+    if "Pose" not in out:
+        return None
+    # gz prints the pose as bracketed, pipe-separated triples, e.g.
+    #   Model: [56]
+    #     - Name: dynamic_obstacle
+    #     - Pose [ XYZ (m) ] [ RPY (rad) ]:
+    #         [0.45 | -0.031 | 0.86]
+    #         [0 | 0 | 0]
+    # Match the first such triple. Do NOT scrape bare numbers in document
+    # order: the entity id ("[56]") precedes the pose and would be read as
+    # X, silently shifting every coordinate by one (directly observed --
+    # it staged a positive-control blocker at (56.0, 0.50, -0.031)).
+    m = re.search(
+        r"\[\s*([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*\|"
+        r"\s*([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*\|"
+        r"\s*([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*\]", out)
+    if not m:
+        return None
+    return tuple(float(m.group(i)) for i in (1, 2, 3))
+
+
 def summarize_contact_csv(csv_path: Path, filter_substrings=None,
                           wall_ns_max=None, wall_ns_min=None) -> dict:
     """Summarize a gz_contact_observer.py CSV as PHYSICS evidence.
@@ -360,10 +414,17 @@ def run_liveness_probe(evidence_dir: Path, contact_csv: Path, blocker_xyz,
         "respawned_obstacle": False,
     }
     if respawn_obstacle_sdf is not None:
+        pose_before = model_pose(OBSTACLE_MODEL_NAME)
+        info["obstacle_present_before_respawn"] = pose_before is not None
         r = spawn_model(OBSTACLE_MODEL_NAME, Path(respawn_obstacle_sdf).read_text())
-        info["respawned_obstacle"] = "true" in r.stdout.lower()
         info["obstacle_respawn_reply"] = r.stdout.strip()
         time.sleep(1.0)
+        # Authoritative, not reply-derived: see model_pose()'s docstring for
+        # why the create service's Boolean reply cannot be trusted here.
+        pose_after = model_pose(OBSTACLE_MODEL_NAME)
+        info["obstacle_pose_at_probe"] = list(pose_after) if pose_after else None
+        info["respawned_obstacle"] = pose_after is not None and not pose_before
+        info["obstacle_present_at_probe"] = pose_after is not None
 
     blocker = liveness_blocker_sdf(*blocker_xyz, size=blocker_size)
     (evidence_dir / "liveness_blocker.sdf").write_text(blocker)

@@ -27,6 +27,7 @@ find_package(control_msgs REQUIRED)
 find_package(controller_manager_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)  # Stage-3C C3: optional pre-replan scene gate (Trigger)
 find_package(cv_bridge REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -89,7 +90,7 @@ ament_target_dependencies(m2_cartesian_approach
 # for why: m3_grasp.cpp is verified and produced this project's first
 # successful grasp, and is not the file to edit blind.
 add_executable(m3_grasp src/m3_grasp.cpp src/transport.cpp src/transport_executor.cpp
-  src/transport_path_monitor.cpp)
+  src/transport_path_monitor.cpp src/transport_coordinator.cpp)
 target_include_directories(m3_grasp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -100,6 +101,7 @@ ament_target_dependencies(m3_grasp
   moveit_ros_planning_interface
   moveit_core
   moveit_msgs
+  std_srvs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -183,6 +185,19 @@ if(BUILD_TESTING)
   ament_target_dependencies(transport_path_monitor_logic_test
     rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
     control_msgs controller_manager_msgs sensor_msgs)
+  # Stage-3C C3: pure State E validation, obstacle freshness predicate,
+  # quaternion shortest angle, and pose coherence logic.
+  ament_add_gtest(transport_coordinator_test
+    test/test_transport_coordinator.cpp
+    src/transport_coordinator.cpp
+    src/transport_executor.cpp
+    src/transport_path_monitor.cpp)
+  target_include_directories(transport_coordinator_test PRIVATE include)
+  target_link_libraries(transport_coordinator_test planning_scene_manager)
+  ament_target_dependencies(transport_coordinator_test
+    rclcpp rclcpp_action moveit_ros_planning_interface moveit_core moveit_msgs
+    std_srvs
+    control_msgs controller_manager_msgs sensor_msgs geometry_msgs tf2 tf2_geometry_msgs)
 endif()
 
 # --- Milestone E: camera-frame -> world-frame transform ---------------------

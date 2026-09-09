@@ -21,7 +21,654 @@ UR5e + Robotiq 2F-85 pick-and-place simulation.
 
 Develop and validate a reliable UR5e + Robotiq 2F-85 pick-and-place pipeline in simulation, with evidence-based testing of robot motion, grasping, object transport, placement, and perception.
 
-## 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT AUTHORITY
+## 2026-09-09 Stage-3C C3 Static-Correction Closeout — CURRENT AUTHORITY (READ THIS FIRST)
+
+**This block supersedes every other authority statement in this file,
+including the "2026-09-08 ... — CURRENT AUTHORITY" section immediately below
+it.** That section's evidence and architecture detail remain valid and are not
+restated here; where any statement inside it conflicts with this block, this
+block wins. Individual stale statements inside it have been relabelled
+`HISTORICAL / SUPERSEDED` in place — their content is retained as history, not
+as instructions.
+
+| Item | Current authority |
+| --- | --- |
+| Published baseline (`main`) | `63871cc44b38e7dbb43933ccf8f39037eabdf162` |
+| Branch | `stage3c-c3-reactive-replan` |
+| C3A | **QUALIFIED** |
+| C3B | **QUALIFIED** |
+| C3C | **QUALIFIED** on preserved runtime evidence, via preserved-evidence reanalysis **v2** (`runtime_rerun=false`) |
+| C3 overall | **FUNCTIONALLY QUALIFIED** on the tested scenario. Static corrections and the repeat final closeout have **PASSED** (2026-09-09); still not published |
+| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **PUSHED TO ORIGIN FEATURE BRANCH** (`origin/stage3c-c3-reactive-replan`) / **NOT MERGED** / **UNPUBLISHED**. A branch existing on `origin` is publication of a *branch*, not of Stage-3C — nothing is published until the PR merges into `main`. Deliberately identified by branch, not by a mutable SHA: read the tip live. |
+| PR state | **OPEN — PR #13** ("Stage-3C C3: collision-triggered stop and single reactive replan"), source `stage3c-c3-reactive-replan`, target `main`. Not merged. |
+| Stage-3C | **NOT YET CLOSED / NOT PUBLISHED** |
+| Original C3C runtime result | `NEEDS_CORRECTION`, caused by a qualification-tooling parser defect |
+| Preserved-evidence reanalysis | **PASS**, `runtime_rerun=false` (v1 and v2, see below) |
+
+### Current test authority (2026-09-09 static-correction closeout)
+
+**244** `colcon test-result` entries / **232** true individual gtest cases /
+**12** gtest binaries. 0 errors, 0 failures, 0 skipped. Up from 219/207/12 by
+exactly the 25 new static-correction regression tests (16 in
+`test_transport_coordinator.cpp`, 9 in `test_planning_scene_manager.cpp`).
+The 244 vs 232 gap is the same colcon convention this document has always
+used: 232 gtest cases + 12 CTest-executable-level pass entries.
+
+Offline (non-colcon) analysis/regression scripts, all passing, no simulator:
+`scripts/test_c3c_event_parser.py` (12 cases),
+`scripts/test_perception_readiness_gate.py` (4 cases),
+`scripts/test_c3c_phase2_causal_order.py` (16 cases, new).
+
+### The four bounded production corrections (source-level, offline-tested)
+
+Localized to `transport_coordinator.{hpp,cpp}` and
+`planning_scene_manager.{hpp,cpp}`, plus tests. No Gazebo run, no MoveIt
+manipulation, no C3A/C3B/C3C rerun, and no change to `TransportExecutor`,
+`TransportPathMonitor`, C2 arbitration, Stage-3A housing, Stage-3B dynamic
+scene ownership, `deterministic_motion_system.cpp`, the production obstacle
+SDF, controllers, or the SRDF.
+
+- **A — gate send exception.** `rclcpp::Client<T>::async_send_request()`
+  reports a send failure by THROWING (`rcl_send_request()` →
+  `throw_from_rcl_error()`), and always returns a valid future on a normal
+  return — so the previous post-call `future.valid()` test could never
+  observe a send failure, and a throw would have escaped `executeTransport()`
+  instead of becoming a typed result. The send now goes through
+  `send_gate_request_guarded()`; every send failure becomes
+  `PreReplanGateOutcome::SEND_FAILED` → `reason=SEND_FAILED` →
+  `Result::TRANSPORT_PRE_REPLAN_GATE_FAILED`, with no SCENE_A, no replacement
+  plan, no attempt-1 FJT goal, and Stage 5–7 suppression unchanged.
+- **B — nonfinite pose coherence.** `is_pose_coherent()` accepted a NaN/Inf
+  pose as COHERENT (every comparison resolves in the accepting direction for
+  NaN). It now rejects any nonfinite position or quaternion component in
+  either pose before comparing. Valid-data tolerances (0.1 mm, 1e-3 rad) and
+  quaternion sign-invariance are unchanged; nonfinite input is rejected, never
+  sanitized or clamped.
+- **C — response-time freshness.** The obstacle sample authorizing a scene
+  could age past the 250 ms authority while the PlanningScene response was in
+  flight. Acceptance now requires `sample_stamp >= baseline` **and**
+  `0 <= age_at_scene_acceptance <= 250 ms` **and** pose coherence, for the same
+  sample/snapshot pair, with a bounded retry inside the pre-existing
+  acquisition budget (`acquireFreshCoherentScene()`). The 250 ms threshold is
+  unchanged, the retry is bounded by one steady-clock deadline equal to the
+  sum of the two bounded steps it replaces, and the invariant is applied to
+  both SCENE_A (baseline `max(t_settle, t_gate_done)`) and SCENE_B (baseline
+  `t_plan_done`) — neither causal baseline is relaxed.
+- **D — same-snapshot scene integrity.** SCENE_A retained one snapshot but
+  `verifyExpectedScene()` fetched a *second* scene, so the table / touch-link /
+  ACM properties it proved belonged to that other scene. Split into
+  `PlanningSceneManager::verifyExpectedSceneSnapshot()` (static, no service
+  call) plus `verify_retained_snapshot_obstacle_and_attachment()`; both are
+  now applied to the exact retained snapshot, for SCENE_A **and** SCENE_B, with
+  no second fetch and no mutation of the snapshot. Note: SCENE_A/SCENE_B do not
+  request `LINK_PADDING_AND_SCALING`, so padding/scale is explicitly excluded
+  from their snapshot authority (`check_link_padding_and_scaling=false`) rather
+  than passing vacuously; `verifyExpectedScene()`'s own fetch still requests it
+  and its behavior is unchanged for all six pre-existing callers.
+
+### Phase-2 causal-order evidence hardening (evidence/parser only)
+
+No runtime change. The previous reanalysis gate
+`phase2_began_after_attempt1_accepted` tested only that
+`c3c_causal.t_phase2_begin_sim` **existed**. It is superseded by an explicit
+ordering proof computed from raw log-line order in one file, one process, one
+logger clock (`scripts/lib/stage3c_c3c_causal.py`):
+
+```
+CANDIDATE_VALIDATION_OK            (m3_grasp.log line 106)
+  < FJT_GOAL_ACCEPTED attempt=1    (line 116)
+  < last tick with a LIVE obstacle stream, scene_age_ms=12  (line 120)
+  < first tick with the stream INTERRUPTED, scene_stale=1   (line 123)
+  <= FUTURE_PATH_INVALID dynamic_obstacle_0<->ur_to_robotiq_link (line 127)
+```
+
+The third anchor is what makes this a proof about the CAUSE and not merely
+about an effect: it is positive evidence, at a line strictly after the
+attempt-1 goal acceptance, that the Phase-1/HOLD obstacle update stream was
+still live — i.e. the harness's Phase-2 despawn had not yet happened.
+
+**Timestamp discrepancy, explained from source and evidence, not invented.**
+The harness records `t_phase2_begin_sim = 47.924` while m3_grasp logs
+`t_fjt_goal_accept = 48.006`. **Both are ROS sim time — the same nominal time
+domain, driven by the same `/clock` publisher. This is deliberately NOT
+described as a clock-domain mismatch.** What differs is the *observer*: each
+number is a different node's locally-sampled snapshot of that one domain, and
+a ROS node's sim clock advances only when *that node* processes a `/clock`
+message. m3_grasp's node is spun continuously by a dedicated
+`SingleThreadedExecutor` thread (`m3_grasp.cpp`), so its snapshot tracks
+`/clock` closely. The harness's `c1b_monitor_node` (`use_sim_time=True`,
+`scripts/test_stage3c_c1b.py`) is serviced by
+`rclpy.spin_once(monitor, timeout_sec=0.05)` — one callback per loop
+iteration — in a loop that also reads the whole log file and sleeps 0.1 s,
+while a high-rate `/model/dynamic_obstacle/pose` subscription competes for the
+same single-callback opportunities; its snapshot therefore lags. Measured lag
+in this run: **82 ms** (48.006 − 47.924). Differencing two independently
+sampled node-local snapshots measures that servicing latency, not elapsed time
+between the events, so it cannot order them in either direction and **no gate
+uses `t_phase2_begin_sim`**. Qualification authority is same-process
+event/control-flow ordering.
+
+### Reanalysis artifacts (append-only, nothing overwritten)
+
+- `evidence/stage3c_c3c_20260909_024120/qualification_results.json` —
+  the original runtime record, verdict `NEEDS_CORRECTION`, **unmodified**.
+- `.../qualification_results_reanalysis.json` — v1, 21 gates, verdict `PASS`,
+  `runtime_rerun=false`. Regenerated byte-identically this closeout; its logic
+  is unchanged.
+- `.../qualification_results_reanalysis_v2.json` — **new**. Every v1 gate plus
+  the strengthened Phase-2 causal-order gate; 21 gates, verdict `PASS`,
+  `runtime_rerun=false`, `production_runtime_unchanged=true`,
+  `parser_evidence_analysis_revision=true`. v1's presence-only gate is retained
+  under `gates_v1_superseded` as a labelled record, not as a live gate.
+
+**No simulation was run in this closeout.** No Gazebo, no MoveIt manipulation,
+no C3A/C3B/C3C/perception qualification run. The preserved C3C runtime
+evidence is untouched.
+
+### Repeat final static/evidence/diff closeout — PASSED (2026-09-09)
+
+The corrections above were re-audited from live source (not from the prior
+report) and the closeout re-run end to end: 244 CTest / 232 gtest / 12
+binaries / 0 failures; all offline scripts pass; reanalysis v1 and v2 both
+`PASS` and regenerate byte-identically; every raw-evidence check reconfirmed
+directly from `m3_grasp.log` / `m3_grasp.csv` / the contact CSV rather than
+from any JSON summary. Findings from the repeat closeout:
+
+- **One documentation-accuracy defect found and fixed** (wording only, no code
+  behavior): the 47.924 vs 48.006 discrepancy had been described as
+  "cross-domain timestamp arithmetic". Both values are ROS sim time — the
+  *same* nominal domain — so that framing overstated the problem. Corrected
+  throughout to the accurate account: two different **nodes' locally-observed
+  snapshots** of one sim-time domain, differing by `/clock` servicing latency.
+  The analysis field `uses_cross_domain_timestamps` was renamed
+  `uses_cross_node_clock_timestamps` to match.
+- **Padding/scale exclusion measured, not assumed.** A scratchpad probe against
+  the installed MoveIt confirmed that a fresh `planning_scene::PlanningScene`
+  carries zero padding/scale entries and that `usePlanningSceneMsg()` with an
+  absent padding section leaves them at that default, while a snapshot *with*
+  a padding section applies it. So SCENE_A/SCENE_B collision math runs at a
+  deterministic padding 0.0 / scale 1.0 fixed at construction, and production
+  cannot depend on the retained snapshot's padding — it never reads it. Adding
+  `LINK_PADDING_AND_SCALING` to the request would therefore be a real semantic
+  change to candidate validation, which is why it was not done.
+- **`PlanningSceneManager` refactor proven non-regressive** by statement-level
+  comparison against the published baseline: all 33 check statements and all 7
+  error codes are identical; the only structural difference is the
+  `check_link_padding_and_scaling` wrapper. All 11 pre-existing
+  `verifyExpectedScene()` callers keep `fetch()` (which still requests
+  `LINK_PADDING_AND_SCALING`) plus the default spec, so their behavior is
+  unchanged.
+
+## 2026-09-08 Stage-3C C3 Orientation-Constrained Reactive Replan (C3A/C3B/C3C Qualified, Unpublished) — SUPERSEDED by the 2026-09-09 static-correction block above (detail retained)
+
+Supersedes the Stage-3C C2 section immediately below for "current
+authority" purposes. That section's own content (C2 architecture,
+arbitration-correction evidence, C2A/C2B/WATCHDOG evidence) is unchanged
+and not restated here — read it for C2 detail. Stage-3A and Stage-3B
+remain **CLOSED / VALIDATED**; nothing in C3 modified any Stage-3A/3B
+file, node, model, or lifecycle semantics (confirmed by a diff audit
+against production Stage-3A/3B assets, `PlanningSceneManager`,
+`controllers.yaml`, and the tracked `ur5e_robotiq.srdf.xacro` during this
+closeout — none appear anywhere in the current diff).
+
+### Publication status
+
+**Stage-3C C0/C1/C2: CLOSED / VALIDATED / PUBLISHED.** Published baseline
+(`main`): `63871cc44b38e7dbb43933ccf8f39037eabdf162` ("Merge pull request
+#12 from Sachin6120/stage3c-c2-collision-stop").
+
+**Stage-3C C3: FUNCTIONALLY QUALIFIED (C3A + C3B + C3C) / ACTIVE
+FEATURE-BRANCH WORK / UNPUBLISHED.** Branch `stage3c-c3-reactive-replan`.
+Deliberately identified by branch, not by a mutable feature-commit SHA — the
+C3 implementation is uncommitted WIP on this branch as of this writing and
+any embedded SHA would go stale immediately; read the exact commit identity
+live from the branch/eventual publication PR when needed. Functional
+qualification of all three sub-phases is not publication: **C3 must not be
+cited as published until its own Stage-3C C3 publication PR is merged into
+`main`** — the same durable
+rule this document has applied to every prior Stage-3C sub-phase.
+
+### C3 architecture
+
+`TransportCoordinator`
+(`ur5e_pick_place/{include,src}/transport_coordinator.{hpp,cpp}`) sits
+above `TransportExecutor`/`TransportPathMonitor` and owns: the 1-replan
+budget, State E validation, SCENE_A/SCENE_B acquisition, attachment-
+preserving start-state construction, orientation-constrained replacement
+planning (RAII-scoped `MoveGroupInterface::setPathConstraints`/
+`clearPathConstraints` around exactly one `arm.plan()` call), dense
+candidate-trajectory collision + orientation validation against SCENE_B,
+and replacement execution via a second direct-FJT `TransportExecutor`
+instance. Maximum one reactive replan; a second collision trigger on the
+replacement attempt yields `Result::TRANSPORT_REPLAN_LIMIT_REACHED` (State
+E2 captured, no third trajectory attempted) — *HISTORICAL / SUPERSEDED: as
+written at the time, "this code path exists as of this writing but is NOT
+runtime-qualified". It was subsequently exercised end to end by
+`evidence/stage3c_c3c_20260909_024120/` and is QUALIFIED on preserved runtime
+evidence; see the CURRENT AUTHORITY block at the top of this file and
+"C3 qualification state" below.*
+
+### C3 qualification state
+
+- **C3A** (non-trigger parity): QUALIFIED. Evidence:
+  `evidence/stage3c_c3a_20260908_125925/`, verdict `PASS`.
+- **C3B** (orientation-constrained collision-triggered recovery):
+  QUALIFIED. Evidence: `evidence/stage3c_c3b_20260908_135359/`, verdict
+  `PASS` — see "Final C3B authority" below. Six earlier same-day attempts
+  are preserved, not deleted
+  (`evidence/stage3c_c3b_20260908_{130136,131953,134111,134300,134603,134850}/`),
+  all `NEEDS_CORRECTION`; the harness's qualification-only obstacle active
+  window was corrected from `1.2 s` (inherited from the C1B/C2B scenario)
+  to `10.0 s` to keep the obstacle present through the measured ~5.7 s
+  orientation-constrained STOMP replan latency — a qualification-harness
+  parameter only, never a production constant.
+- **C3C** (second-trigger replan-limit boundary): *HISTORICAL / SUPERSEDED —
+  written before the 2026-09-09 run; C3C is now QUALIFIED on preserved runtime
+  evidence, see the CURRENT AUTHORITY block at the top of this file and the
+  "C3C is now runtime-qualified" bullet later in this same list.* The text as
+  written at the time: **NOT YET RUNTIME
+  QUALIFIED.** The `TRANSPORT_REPLAN_LIMIT_REACHED` code path exists (see
+  "C3 architecture" above) but no evidence run in this repository has
+  exercised a genuine second collision trigger. Two attempts are preserved,
+  neither of which is a C3 production failure:
+  - `evidence/stage3c_c3c_20260909_013351/` — aborted **before** the
+    manipulation window (`manipulation_started=false`; `m3_grasp` never
+    launched, no obstacle spawned, no FJT goal sent). Cause: the
+    qualification harness's pre-manipulation perception-readiness check ran
+    a single `ros2 topic echo --once`, which resolves the topic type from
+    the ROS graph once and exits nonzero immediately if that fails, rather
+    than polling. It exited after 345 ms; the same step took 2.57 s (C3A)
+    and 2.95 s (C3B) when it won the race. Corrected harness-only into two
+    bounded gates (graph/type discovery, then first actual sample) in
+    `scripts/test_stage3c_c3.py`; validated at
+    `evidence/stage3c_c3c_readiness_validation_20260909_014215/` and again
+    live in the run below (`manipulation_started=true`).
+  - `evidence/stage3c_c3c_20260909_014313/` — reached replacement
+    **candidate validation**, which correctly rejected the candidate:
+    `CANDIDATE_VALIDATION_FAILED ... sample_index=25 time_s=1.25
+    pairs=dynamic_obstacle_0<->pick_target`, terminating with
+    `Result::PAYLOAD_COLLISION`. Attempt 1 was never sent, so the
+    second-trigger/State-E2/budget-exhaustion chain stayed unexercised.
+    Attempt 0 (trigger, exact cancel, `CANCELED`, six-sample settle, State
+    E), SCENE_A, orientation-constrained replanning and SCENE_B all
+    behaved exactly as C3B qualified them.
+    **Classification: qualification-scenario determinism defect, not a
+    production defect.** The scenario assumed the still-live Phase-1
+    obstacle stays harmless to *any* replacement path; C3B only ever proved
+    that of one particular 389-waypoint plan. Under stochastic RRTConnect
+    the obstacle also *moves* between SCENE_A and SCENE_B (1.0 s sweep
+    period vs. a 2.6–6.5 s planning latency), so the pose the planner
+    avoided is uncorrelated with the pose the candidate is validated
+    against.
+  - That run's contact-observer liveness **also** failed independently and
+    for an unrelated reason: the positive-control blocker was staged at the
+    Phase-2 region (Y=0.24) while the obstacle was still sweeping Phase 1
+    (Y∈[−0.05,+0.05]) — a 140 mm gap it could never close — so the probe
+    recorded 0 rows and the run's own zero-contact result was left
+    unfalsifiable. The observer itself is healthy: a same-observer,
+    same-topic probe recorded **4976** positive-control contact rows
+    (`evidence/stage3c_c3c_hold_contact_probe_20260909_020320/`). Harness
+    fixed to choose the blocker from the phase it actually reached.
+  - **`evidence/stage3c_c3c_20260909_024120/`** — the final one-shot
+    three-phase run, executed after the pre-replan scene gate (below) closed
+    the Phase-1 → HOLD race. Production demonstrated the complete intended
+    chain at runtime: Attempt-0 trigger (pair
+    `dynamic_obstacle_0<->pick_target`, temporal lead 1.150 s) → exact cancel
+    (`this_goal_confirmed=1`) → CANCELED → six-sample settle → State E →
+    `PRE_REPLAN_SCENE_GATE_BEGIN`/`_DONE` (latency 1971.021 ms, `t_gate_done
+    =36.124`) → HOLD → post-gate SCENE_A (`obstacle_age_ms=0.000`, baseline
+    `max(t_settle=34.394, t_gate_done=36.124)=36.124`) → replacement plan
+    (`REPLAN_PLAN_OK`, 34 waypoints, 3.2492 s) → SCENE_B with HOLD →
+    `CANDIDATE_VALIDATION_OK` (payload/tool tilt 0.0377 deg) →
+    `FJT_GOAL_ACCEPTED attempt=1` (goal_1, distinct from goal_0) → Phase-2
+    transition (scene converged to `y=0.212`) → second trigger (pair
+    `dynamic_obstacle_0<->ur_to_robotiq_link`, temporal lead **2.300 s**,
+    actual runtime value, not the earlier 50.8% offline fractional-lead
+    estimate) → exact second cancel → CANCELED → six-sample settle → State
+    E2 → `REPLAN_BUDGET_EXHAUSTED` → `TRANSPORT_REPLAN_LIMIT_REACHED`. Zero
+    watchdogs; payload remained attached (`gripper_base_link`, touch links
+    intact) with PLACE/release/detach/retreat all suppressed; zero in-window
+    Gazebo contacts with a healthy, live positive-control observer.
+    **The harness's own live-run verdict was `NEEDS_CORRECTION`** — 20 of 21
+    gates passed; the sole failure (`second_trigger_limit`) was a
+    qualification-tooling parser defect, not a production or scenario
+    failure (see immediately below).
+  - **Parser defect found and fixed (2026-09-09 closeout, harness-only)**:
+    `analyze_c3()` extracted `M3 C3` event names via
+    `re.search(r'M3 C3 (\w+) ', line)`, which requires a trailing SPACE.
+    Production has always used two established delimiter forms for its own
+    telemetry (confirmed by a full grep of every emission site in
+    `transport_coordinator.cpp`/`transport_executor.cpp`): space-delimited
+    `key=value` lines, and colon-delimited human-readable lines (every
+    `*_FAILED`/`*_TIMEOUT`/`*_INVALID` diagnostic, plus
+    `SECOND_TRIGGER_REPLAN_LIMIT_REACHED`). The old regex only recognized
+    the space form. `SECOND_TRIGGER_REPLAN_LIMIT_REACHED:` is present
+    exactly once in the preserved raw log (line 148) and was emitted
+    correctly by production — the parser simply never matched it. Fixed via
+    a new, directly-unit-tested helper, `parse_c3_event_name()`
+    (`scripts/test_stage3c_c3.py`), requiring the exact prefix `"M3 C3 "`,
+    an `[A-Z0-9_]+` event name, and a delimiter of space, colon, or
+    end-of-line — a malformed delimiter (e.g. a hyphen or period) fails the
+    whole match rather than silently truncating the event name. Verified
+    byte-identical event extraction against the preserved C3A and C3B raw
+    logs (12 regression cases, `scripts/test_c3c_event_parser.py`) — zero
+    change to already-qualified evidence's interpretation. This is the same
+    class of qualification-tooling defect as the 2026-09-08 C2 ANSI-escape
+    parser fix: never a production defect.
+  - **Preserved-evidence reanalysis: PASS, `runtime_rerun=false`.**
+    `evidence/stage3c_c3c_20260909_024120/qualification_results_reanalysis.json`
+    independently recomputed all 21 gates from the same raw
+    `m3_grasp.log`/`m3_grasp.csv`/`post_stop_planning_scene.json`/
+    `gazebo_obstacle_contacts.csv`/`contact_observer_liveness.json` — no
+    simulator, no process launch, no manipulation. All 21 gates PASS,
+    including the previously-failing `second_trigger_limit`. The original
+    `evidence/stage3c_c3c_20260909_024120/qualification_results.json` is
+    **preserved unmodified** at its original `NEEDS_CORRECTION` verdict, as
+    the historical record of the parser defect; the reanalysis is the
+    authoritative interpretation of that same runtime execution. One
+    benign, explained discrepancy: the reanalysis independently recomputed
+    positive-control contact rows as **4982** against the original run's
+    in-process **4793** — both are simply two different-time reads of the
+    same monotonically-growing CSV (the contact observer kept writing
+    briefly after the original in-process summary was taken, before
+    teardown), and the difference does not affect any gate (`>0` holds
+    either way; the in-window zero-contact count is identical in both).
+  - **C3C is now runtime-qualified** on this branch, via the preserved
+    2026-09-09 run plus its preserved-evidence reanalysis. **Still
+    unpublished feature-branch work** — see "Publication status" above.
+
+**Stage-3C C3 overall: functionally qualified (C3A + C3B + C3C all
+QUALIFIED on this branch) but NOT CLOSED / NOT PUBLISHED** — no Stage-3C C3
+publication PR has been opened or merged, and this section records
+feature-branch qualification state, not a release.
+
+### C3C pre-replan scene gate — implemented, UNPUBLISHED (2026-09-09)
+
+A generic, **disabled-by-default** synchronization boundary now exists in
+`TransportCoordinator`, closing the Phase-1 → HOLD race documented in the
+design-findings section below. **Unpublished feature-branch work. Stage-3C
+is not closed** — that part still stands.
+
+> *HISTORICAL / SUPERSEDED:* this sub-section originally continued "…and C3C
+> is still not runtime-qualified — no full C3C manipulation run has been
+> performed." That was true when written and is no longer: the single
+> authorized run `evidence/stage3c_c3c_20260909_024120/` was performed later
+> the same day and C3C is now QUALIFIED on preserved runtime evidence. See the
+> CURRENT AUTHORITY block at the top of this file.
+
+- **API**: `TransportParams::transport_pre_replan_gate_service_name`
+  (default `""`) and `transport_pre_replan_gate_timeout_s` (default 5.0),
+  plumbed through `m3_grasp.launch.py` like every other transport parameter.
+  An empty name means the gate does not exist: no client is created, no
+  discovery is attempted, no wait occurs. **C3A/C3B semantics are unchanged
+  by construction** — the disabled path is a single branch.
+- **Mechanism**: one `std_srvs/srv/Trigger` handshake, placed strictly after
+  the attempt-0 exact cancel / terminal CANCELED / physical settle / State E
+  validation, and strictly before SCENE_A's fresh-obstacle acquisition. It is
+  invoked from the single one-shot replan block of a straight-line
+  `executeTransport()` (no loop, no recursion), so **exactly one invocation is
+  structurally possible** and no second gate can occur after an attempt-1
+  collision.
+- **Threading**: `wait_for_service` + `async_send_request` + a raw
+  `future.wait_for` on the caller thread — never
+  `rclcpp::spin_until_future_complete()`, because the node is already owned by
+  a `SingleThreadedExecutor` spinning on its own thread (`m3_grasp.cpp`). This
+  is the same idiom `acquireCoherentScene()` already relies on, and the new
+  unit tests exercise it against a real service under that same executor model.
+- **Clocks, deliberately two**: every handshake deadline uses `steady_clock`
+  so a paused simulation clock cannot hang it; `t_gate_done` is ROS/node time
+  because it is compared against ROS-stamped `/collision_object` updates.
+- **Post-gate freshness invariant**: SCENE_A's baseline is
+  `max(t_settle, t_gate_done)`, so an obstacle update that predates the
+  external transition can no longer satisfy SCENE_A merely by postdating the
+  settle. The existing 250 ms staleness cap, pose coherence, scene
+  verification and attachment checks are unchanged, and the Trigger response
+  itself never establishes scene authority.
+- **Failure**: one new `Result::TRANSPORT_PRE_REPLAN_GATE_FAILED`, covering
+  SERVICE_UNAVAILABLE / SEND_FAILED / TIMEOUT / SUCCESS_FALSE / SHUTDOWN,
+  deliberately NOT mapped onto `SCENE_STALE_OR_CORRUPT` (nothing about scene
+  integrity is being asserted). `ok()` is `== SUCCESS`, so
+  `lift_transport_place()`'s existing early return suppresses
+  PLACE/release/detach/retreat and retains payload attachment with no
+  duplicated stage logic.
+- **Test authority** *(HISTORICAL — snapshot at the pre-replan-gate change;
+  current is 244/232/12, see the CURRENT AUTHORITY block at the top)*: **219**
+  `colcon test-result` / **207** true gtest cases / 12 binaries, 0 errors,
+  0 failures, 0 skipped — up from 209/197 by exactly the 10 new gate tests.
+
+**Entity-presence authority migrated off `gz model`.** R1 closed at
+`evidence/stage3c_c3c_r1_pose_census_20260909_021756/`: the obstacle appears
+in `/world/empty/pose/info` (`gz.msgs.Pose_V`) model-level as the bare name
+`dynamic_obstacle`, present exactly once, with absence and duplicate count
+answerable from one census message. Note `sample_pose.parse_pose_v()` returns
+a **dict**, so it silently collapses same-name duplicates and cannot answer
+duplicate count on its own — the harness counts `name:` occurrences instead.
+Create success now requires BOTH an exactly-one census count AND fresh
+messages on `/model/dynamic_obstacle/pose`; the create Boolean alone is never
+accepted.
+
+**HOLD transition integration proven**
+(`evidence/stage3c_c3c_hold_integration_20260909_023230/`): the harness
+Trigger server performed remove → census-confirmed absence → same-name HOLD
+create → exactly-one census → pose-stream resume → PlanningScene convergence
+in **1943.6 ms** (well inside the 5.0 s bound), and the first post-gate
+`/collision_object` update carried ROS stamp 8.952 s ≥ the 8.922 s gate
+baseline at `y = −1.2081`, causally proving the post-gate freshness
+invariant. With the obstacle at HOLD and the payload attached, **9 of 10**
+orientation-constrained planning-only replacement trials succeeded at the
+**production** 10 s budget, every successful path passed candidate validation
+at every waypoint, and minimum tool0→HOLD clearance was **1.0315 m**.
+
+**Phase-2 offline proof redone and PASSING**
+(`evidence/stage3c_c3c_phase2_offline_20260909_023529/`), against a freshly
+HOLD-planned replacement trajectory with the REAL Gazebo entity moved into
+Phase 2 (`X=0.450`, `Z=0.8725`, `Y∈[0.15,0.25]`, period 1.0 s): PlanningScene
+converged to `y = 0.1604`; the current state at a representative post-send
+onset was **valid**; the remaining future path was **invalid** at
+`ur_to_robotiq_link ↔ dynamic_obstacle_0`; fractional lead **50.8%** of the
+remaining path (dense sample 25 → 152 of 251).
+
+**Two measurement caveats, stated rather than glossed.** (1) The lead figure
+is in the raw OMPL path's own un-time-parameterized timeline (planned duration
+0.949 s), which is NOT production's velocity-scaled ~40 s trajectory — the
+robust, transferable quantity is the 50.8% fractional lead, and trajectory-time
+lead must not be confused with wall-clock monitor detection latency. (2)
+`/plan_kinematic_path` returns ~11 raw waypoints, so the path was densified to
+251 samples before checking; a coarse check can step straight over a 50 mm
+obstacle.
+
+**The Phase-2 section of `evidence/stage3c_c3c_hold_integration_20260909_023230/`
+is INVALID and superseded by the above.** That probe injected the Phase-2 pose
+via `/apply_planning_scene` while `dynamic_obstacle_scene_node` was running,
+and the scene node continuously republished the real obstacle (still at HOLD)
+over the injection — so every sample was actually evaluated against HOLD and
+found no invalidity. Its Phase-A and Phase-B results are unaffected and stand.
+
+**Correction to the previous closeout:** that report attributed the earlier
+single planning failure to the probe's 5 s budget. That was wrong — a failure
+recurred at the production 10 s budget, so orientation-constrained
+RRTConnect from State E to `above_place` carries a genuine ~10% planning-
+failure rate independent of budget. Production handles it cleanly
+(`REPLAN_FAILED`), but it is a real risk to any single authorized run.
+
+### C3C deterministic three-phase scenario — design findings (2026-09-09)
+
+Design/infrastructure task only; no C3C manipulation run was performed.
+The intended architecture is one logical `dynamic_obstacle_0` moving
+Phase 1 (first-trigger sweep) → Phase H (clear HOLD, so replacement
+planning is independent of stochastic path choice) → Phase 2
+(goal-anchored, post-`FJT_GOAL_ACCEPTED attempt=1`).
+
+**The Phase-1 → HOLD transition is the open blocker.** Measured from the
+preserved logs, the coordinator reaches SCENE_A **59.2 ms** after the
+attempt-0 collision trigger (C3C `20260909_014313`) and **119.0 ms** in
+C3B — trigger → settle is 54.9 / 57.8 ms, settle → SCENE_A only 4.3 /
+61.2 ms. Against that window:
+
+- **Gazebo pose relocation of the live entity is impossible** while the
+  obstacle is running `libdeterministic_motion_system.so`:
+  `DeterministicMotion::PreUpdate()` calls `SetWorldPoseCmd()`
+  unconditionally every physics tick from sim time, so any externally
+  commanded pose is overwritten on the next iteration (source-read,
+  `ur5e_robotiq_description/src/deterministic_motion_system.cpp`).
+- **Same-name despawn/respawn is too slow.** The measured lifecycle
+  (`evidence/stage3c_c3c_probe_20260908_151829/`) is 844.67 ms from a
+  successful remove response to authoritative absence, plus 295.5 ms for
+  create — ≥1.14 s before pose-stream resume and the scene node's own
+  MOVE publication, against a 59–119 ms window.
+- Stopping the Phase-1 pose stream does buy time, because
+  `waitForFreshObstacleUpdate()` blocks up to **1.0 s** for an update with
+  `stamp >= t_settle` and age ≤ 250 ms (`kObstacleStaleThresholdS`) — but
+  ≥1.14 s still exceeds even that extended budget.
+- An event-driven transition inside the motion plugin would act within one
+  physics tick, but the harness can only *learn* of the trigger by tailing
+  `m3_grasp`'s log (0.1 s poll), so the command would still arrive after
+  SCENE_A has already captured a live Phase-1 pose.
+
+**Conclusion (validated by measurement, not assumed): no harness-only
+mechanism can establish HOLD before SCENE_A.** Closing that race requires
+a minimal production synchronization hook (e.g. a trigger notification the
+harness can observe without log-tailing). Per this task's own
+authorization limits that hook was **not** designed or implemented, and no
+production file was modified.
+
+**HOLD geometry is nevertheless derived and validated**
+(`evidence/stage3c_c3c_hold_contact_probe_20260909_020320/`), so it is
+reusable once the transition question is settled: HOLD at `X=0.450`,
+`Z=0.860`, `Y∈[−1.21,−1.19]` (centre `−1.20`), period 1.0 s, same
+`0.05 × 0.05 × 0.10 m` box — keeping Phase 1's X/Z and moving only along
+the axis the plugin already sweeps, 0.80 m clear of the table's
+`Y∈[−0.40,+0.40]` footprint and outside the arm's reachable `|Y|` at that
+X. A small residual sweep is retained deliberately so the pose stream keeps
+changing and cannot starve the 250 ms freshness gate. Measured with the
+payload attached and `dynamic_obstacle_0` at HOLD: State E valid,
+tool0 clearance **1.0315 m**; `above_place` valid, clearance **1.3750 m**;
+**11 of 12** orientation-constrained planning-only replacement trials
+(production tolerances: 1.8 deg roll/pitch, free yaw) succeeded, every
+successful path collision-free at every waypoint, minimum tool0→HOLD
+clearance **1.0315 m** across all trials. The single planning failure is a
+probe-budget artifact, not a HOLD property — the probe allowed 5.0 s and
+one attempt, where production allows 10.0 s
+(`transport_coordinator.cpp`, `setPlanningTime(max(original, 10.0))`).
+
+### Final C3B authority
+
+Evidence: `evidence/stage3c_c3b_20260908_135359/`
+(`qualification_results.json`, verdict `PASS`).
+
+Scenario (qualification-only obstacle; production `dynamic_obstacle`
+`model.sdf` untouched): obstacle box `0.05 x 0.05 x 0.10 m`, center
+`X=0.450 m, Z=0.860 m`, `Y=[-0.05, +0.05] m`, `period=1.0 s`, active window
+`10.0 s`.
+
+- Initial trigger count: **1**; initial cancel count: **1**;
+  `replan_count`: **1**; State E captured and valid.
+- SCENE_A: coherent, acquired post-settle.
+- Replacement planning: **SUCCESS**, orientation-constrained. Two
+  DISTINCT timing measurements, not interchangeable — correction, this
+  closeout: the earlier "`planning_time_s ≈ 5.734`" line conflated them:
+  - **Planning request latency** (harness-observed wall time from
+    `REPLAN_TRIGGERED` request to `REPLAN_PLAN_OK` response,
+    `m3_grasp.log`): **6533 ms** (`REPLAN_PLAN_OK latency_ms=6533.000`).
+  - **OMPL compute/planning time** (the planner's own internal solve time,
+    a strict subset of the request latency above, not the same
+    measurement): **≈5.7337 s** (`manipulation_metrics.planning_time_s`
+    in `qualification_results.json`).
+- SCENE_B: coherent, acquired post-plan.
+- Candidate collision + orientation validation: **PASS**.
+- Replacement FJT: **SUCCEEDED**; replacement terminal cause: **NATURAL**;
+  replacement triggers: **0**; replacement cancels: **0**.
+- Tilt authority, both figures present in
+  `evidence/stage3c_c3b_20260908_135359/` — correction, this closeout: an
+  earlier note that the analytical figure "could not be located" was
+  itself wrong; both values are in `m3_grasp.log`'s
+  `CANDIDATE_VALIDATION_OK` line:
+  - **Analytical candidate tilt** (the C3 candidate-orientation
+    validator's own computed max, `validateCandidateTrajectory()`,
+    checked against the 2.0 deg gate before the replacement trajectory
+    was ever sent): `max_payload_tilt_deg` = **1.2928 deg**,
+    `max_tool_tilt_deg` = **1.2928 deg**
+    (`CANDIDATE_VALIDATION_OK max_payload_tilt_deg=1.2928
+    max_tool_tilt_deg=1.2928`).
+  - **Gazebo-measured tilt** (the executed run's actual physical tilt,
+    `max_grasp_tilt_deg`/`max_upright_tilt_deg` in
+    `manipulation_metrics`): **1.2830 deg**. The ~0.01 deg difference
+    between the two is the ordinary analytical-prediction-vs-executed-
+    physics gap, not a discrepancy requiring investigation.
+- Transport slip: **0.2961 mm** (`transport_slip_mm =
+  0.29608747911319044`).
+- PLACE/release/detach/retreat: all completed (`flow` all `true`). Full
+  cycle: **SUCCESS**.
+- Gazebo physical contacts involving `dynamic_obstacle_0` in-window: **0**;
+  observer liveness proven by a post-window in-session probe (4808
+  positive-control contact messages). Cleanup: clean.
+- **Do not confuse the ~137.84 deg `max_grasp_orientation_change_boundary_deg`
+  figure with tilt.** Measured upright tilt stayed at 1.283 deg throughout
+  (yaw-invariant by construction); the ~137.84 deg figure is accepted
+  in-flight planar yaw about the gravity/tool-Z axis, not a wrist flip, and
+  is explicitly permitted by this C3 implementation's own orientation path
+  constraint (`absolute_z_axis_tolerance ≈ 180 deg`, i.e. deliberately free
+  yaw). It does not violate the locked manipulation criterion and does not
+  propagate into a placement defect (final placement yaw error 0.0423 deg).
+
+### Accepted manipulation thresholds (unchanged, same authority as Stage-2D/3A/3B/C2)
+
+From `scripts/perception/stage2a_analyzer.py`'s `GATES` dict, not newly
+introduced for C3: transport/grasp/upright tilt <= 2.0 deg, transport slip
+<= 1.0 mm, placement position error <= 10.0 mm, placement
+orientation/yaw error <= 5.0 deg.
+
+### Nonfinite-orientation validation gap (found and fixed during this closeout)
+
+The C3B static closeout audit found that
+`TransportCoordinator::validateCandidateTrajectory()`'s per-sample
+orientation check computed `payload_tilt_deg`/`tool_tilt_deg` via
+`std::acos(std::clamp(dot, -1, 1))` without an explicit finiteness guard: a
+NaN or +/-Inf `dot` value survives `std::clamp()` unchanged (its internal
+comparisons are both false for NaN) and propagates through `acos()` into a
+NaN/Inf tilt value, at which point the acceptance comparison (`tilt_deg >
+kMaxAllowedPayloadTiltDeg`) is ALSO false for NaN — an invalid orientation
+could silently pass undetected rather than being rejected.
+
+**Corrected**: the dot-to-tilt conversion was extracted into a new pure,
+directly-unit-tested helper, `tilt_deg_from_up_dot_checked()`
+(`transport_coordinator.{hpp,cpp}`), which explicitly returns `false` (via
+`std::isfinite()`) for a nonfinite input or a nonfinite result, and
+`validateCandidateTrajectory()` now rejects with an explicit
+`ORIENTATION_NONFINITE` diagnostic (sample index, time, both raw dot
+values) before any nonfinite value could reach the threshold comparison.
+The fix is purely additive: the finite-input math
+(`acos(clamp(dot))`), the 2.0 deg threshold comparison, the RAII
+path-constraint scope, the free-yaw policy, SCENE_A/B acquisition, the
+replan budget, `TransportExecutor`, and C2 arbitration are all
+byte-for-byte unchanged. Seven new unit tests were added to
+`test_transport_coordinator.cpp` (NaN/+Inf/-Inf rejection, finite
+upright/inverted/145-deg/out-of-range-noise acceptance) — see "Current
+test authority" below. No Gazebo rerun was performed or required: only the
+explicit nonfinite-rejection branch changed production behavior, and it is
+unreachable on any of this run's already-finite, already-validated
+orientation samples.
+
+### Test authority as of the 2026-09-08 C3B closeout — HISTORICAL / SUPERSEDED
+
+> *Superseded by "Current test authority (2026-09-09 static-correction
+> closeout)" in the CURRENT AUTHORITY block at the top of this file:
+> **244** colcon / **232** true gtest / **12** binaries. The 190/202 figures
+> below are the 2026-09-08 snapshot and are NOT current.*
+
+Baseline at the published C2 merge commit (`63871cc4...`): 11 gtest
+binaries, 167 true individual gtest test cases (`colcon test-result --all`
+reports this as 178 — 167 gtest cases + 11 CTest-executable-level pass
+entries, a known colcon double-counting convention this document's C2
+section already used).
+
+Current C3 WIP (this closeout, including the nonfinite-guard fix and its 7
+new tests): 12 gtest binaries, **190** true individual gtest test cases,
+`colcon test-result --all` reports **202** (190 + 12, same counting
+convention). 0 errors, 0 failures, 0 skipped. No tests were removed or
+renamed at any point in C3 development.
+
+## 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — SUPERSEDED
 
 Supersedes the Stage-3C C0/C1 section immediately below for "current
 authority" purposes. That section's own content (C0/C1 architecture,
@@ -1210,7 +1857,12 @@ HISTORICAL STATE — 2026-08-30 (superseded by the section above):
   campaign's N; see HANDOFF.md 2026-08-28 "Baseline Frozen" section.
 ```
 
-## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Complete — CURRENT AUTHORITY
+## 2026-08-30 Stage-1 P200 Requalification + Stage-2A Complete — SUPERSEDED
+
+> *Relabelled 2026-09-09: this heading still read "CURRENT AUTHORITY" long
+> after it had been superseded. Current authority is the 2026-09-09 Stage-3C
+> C3 Static-Correction Closeout block at the top of this file; the content
+> below is retained as historical Stage-1/Stage-2A evidence.*
 
 Branch `stage2-orientation-generalization`, HEAD `e37383e` (`control: raise
 parallel-jaw grasp gain to validated value`). `parallel_jaw_gripper_controller`

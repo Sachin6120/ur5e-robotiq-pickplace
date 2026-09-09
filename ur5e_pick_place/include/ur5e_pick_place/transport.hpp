@@ -222,6 +222,28 @@ struct TransportParams
   double transport_monitor_rate_hz = 10.0;
   double transport_monitor_future_sample_dt_s = 0.05;
   std::string transport_monitor_scene_service_name = "/get_planning_scene";
+
+  // --- Stage-3C C3: OPTIONAL pre-replan scene gate -------------------------
+  // A generic synchronization boundary that lets an EXTERNAL environment
+  // manager finish a world transition after the attempt-0 physical settle and
+  // State E capture, but strictly BEFORE SCENE_A's fresh-obstacle acquisition.
+  //
+  // Empty service name (the default) means the gate does not exist: no client
+  // is created, no discovery is attempted, no wait occurs, and control flow is
+  // byte-for-byte the pre-gate behavior that qualified C3A and C3B. A non-empty
+  // name enables exactly one std_srvs/srv/Trigger handshake before the single
+  // permitted replan.
+  //
+  // The responder may only answer "the transition I was asked to perform is
+  // finished". It cannot supply a scene, a pose, or any safety claim:
+  // TransportCoordinator still independently acquires a NEW post-gate obstacle
+  // update and re-verifies freshness, pose coherence, and attachment itself.
+  //
+  // The timeout is a configurable engineering bound, NOT a certified timing
+  // guarantee -- the only measured same-name Gazebo transition (>=1.14 s) is a
+  // single observation, deliberately not promoted to a bound.
+  std::string transport_pre_replan_gate_service_name = "";
+  double transport_pre_replan_gate_timeout_s = 5.0;
 };
 
 // Runs lift -> transport -> place -> release -> retreat.

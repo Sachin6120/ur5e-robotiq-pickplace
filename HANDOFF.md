@@ -1,15 +1,310 @@
 # HANDOFF.md
 
-> READ THIS SECTION FIRST. The section immediately below, "2026-09-08 Stage-3C
-> C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT
-> AUTHORITY", is the sole current-authority statement of repository state.
-> Every other authority label anywhere else in this file is superseded and
-> has been relabelled
-> accordingly; their content is retained as historical evidence, not current
-> state — do not act on any instruction inside a superseded section without
-> checking it against the section below first.
+> READ THIS SECTION FIRST. The section immediately below, "2026-09-09 Stage-3C
+> C3 Static-Correction Closeout — CURRENT AUTHORITY", is the sole
+> current-authority statement of repository state. Every other authority label
+> anywhere else in this file — including the "2026-09-08 ... — CURRENT
+> AUTHORITY" section that follows it — is superseded; their content is retained
+> as historical evidence, not current state. Individual stale statements inside
+> the 2026-09-08 section have been relabelled `HISTORICAL / SUPERSEDED` in
+> place. Do not act on any instruction in a superseded section without checking
+> it against the section below first.
 
-### 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — CURRENT AUTHORITY
+### 2026-09-09 Stage-3C C3 Static-Correction Closeout — CURRENT AUTHORITY
+
+**Read `PROJECT_STATE.md`'s matching 2026-09-09 CURRENT AUTHORITY block for the
+full correction detail, exact source locations, and the Phase-2 causal-order
+proof — this section is operational: what is true now, what is next, and what
+must not be done.**
+
+#### State right now
+
+| Item | Current authority |
+| --- | --- |
+| Published baseline (`main`) | `63871cc44b38e7dbb43933ccf8f39037eabdf162` |
+| Branch | `stage3c-c3-reactive-replan` |
+| C3A | **QUALIFIED** |
+| C3B | **QUALIFIED** |
+| C3C | **QUALIFIED** on preserved runtime evidence, via preserved-evidence reanalysis **v2** (`runtime_rerun=false`) |
+| C3 overall | **FUNCTIONALLY QUALIFIED** on the tested scenario. Static corrections + repeat final closeout **PASSED** (2026-09-09); still not published |
+| C3 commit state | **COMMITTED ON FEATURE BRANCH** / **PUSHED TO ORIGIN FEATURE BRANCH** / **NOT MERGED** / **UNPUBLISHED** — the work exists on `origin/stage3c-c3-reactive-replan`; that is a pushed branch, not a publication. Read the SHA live from the branch tip, not from this document. |
+| PR state | **OPEN — PR #13** ("Stage-3C C3: collision-triggered stop and single reactive replan"), source `stage3c-c3-reactive-replan`, target `main`. Not merged. |
+| Stage-3C | **NOT YET CLOSED / NOT PUBLISHED** |
+| Original C3C runtime result | `NEEDS_CORRECTION`, from a qualification-tooling parser defect |
+| Preserved-evidence reanalysis | **PASS**, `runtime_rerun=false` (v1 and v2) |
+
+#### Current test authority
+
+**244** `colcon test-result` entries / **232** true individual gtest cases /
+**12** gtest binaries. 0 errors, 0 failures, 0 skipped, live this session.
+Up from 219/207/12 by exactly the 25 new static-correction regression tests.
+No test was removed or renamed.
+
+Offline analysis/regression scripts, all passing, no simulator:
+`scripts/test_c3c_event_parser.py` (12), `scripts/test_perception_readiness_gate.py`
+(4), `scripts/test_c3c_phase2_causal_order.py` (16, new).
+
+#### What this closeout changed
+
+Four bounded production corrections, source-level only, each with offline
+regression tests. No Gazebo, no MoveIt manipulation, no C3A/C3B/C3C rerun.
+
+- **A** — the pre-replan gate's service send is now exception-safe:
+  `async_send_request()` throws on send failure (it never returns an invalid
+  future), so every send failure now becomes `reason=SEND_FAILED` →
+  `Result::TRANSPORT_PRE_REPLAN_GATE_FAILED` instead of escaping
+  `executeTransport()`.
+- **B** — `is_pose_coherent()` rejects NaN/±Inf instead of accepting it as
+  coherent. Valid-data tolerances and quaternion sign-invariance unchanged.
+- **C** — the obstacle sample authorizing a scene must still be within the
+  250 ms authority **at scene acceptance**, with a bounded retry inside the
+  pre-existing acquisition budget. Applied to SCENE_A and SCENE_B; the 250 ms
+  threshold and both causal baselines are unchanged.
+- **D** — SCENE_A/SCENE_B integrity is asserted against the **retained**
+  snapshot, not a second scene fetched from the service.
+
+Files touched: `transport_coordinator.{hpp,cpp}`,
+`planning_scene_manager.{hpp,cpp}`, `test_transport_coordinator.cpp`,
+`test_planning_scene_manager.cpp`, plus new offline tooling
+(`scripts/lib/stage3c_c3c_causal.py`, `scripts/reanalyze_c3c_evidence_v2.py`,
+`scripts/test_c3c_phase2_causal_order.py`) and these two documents.
+**Untouched:** `TransportExecutor`, `TransportPathMonitor`, C2 arbitration,
+Stage-3A housing, Stage-3B dynamic-scene ownership,
+`deterministic_motion_system.cpp`, the production obstacle SDF, controllers,
+the SRDF.
+
+#### Evidence, append-only
+
+`evidence/stage3c_c3c_20260909_024120/qualification_results.json` (original,
+`NEEDS_CORRECTION`) and `qualification_results_reanalysis.json` (v1, `PASS`)
+are unmodified. A new `qualification_results_reanalysis_v2.json` adds the
+strengthened Phase-2 causal-order gate — proven from raw `m3_grasp.log` line
+order in one process and one logger clock (lines 106 < 116 < 120 < 123 < 127),
+never by differencing two nodes' separately-sampled sim-time snapshots. The
+harness's `t_phase2_begin_sim=47.924` is recorded but used by no gate: it is
+the same nominal ROS sim-time domain as m3_grasp's `t_fjt_goal_accept=48.006`
+(**not** a different clock domain), but a different node's lagging observation
+of it — measured lag 82 ms from node-local `/clock` servicing latency.
+
+#### Repeat final closeout — PASSED (2026-09-09)
+
+The repeat static/evidence/diff closeout re-audited all four corrections from
+live source, re-ran the full suite (244/232/12, 0 failures), reconfirmed every
+raw-evidence claim directly from `m3_grasp.log`/`m3_grasp.csv`/the contact CSV,
+and re-verified evidence immutability by checksum. It found **one
+documentation-accuracy defect** — the 47.924 vs 48.006 discrepancy had been
+called "cross-domain timestamp arithmetic" when both values are ROS sim time
+(same nominal domain, different node-local observations). Wording corrected in
+both documents and in `scripts/lib/stage3c_c3c_causal.py`; no production code
+changed. No other defect was found.
+
+#### Exact next step
+
+The Stage-3C C3 feature commit has been created and pushed to
+`origin/stage3c-c3-reactive-replan` (25 files: production + tests + reusable
+tooling + these two documents; `evidence/` and the eight one-off probes
+deliberately excluded and still untracked). **Publication PR #13 is now OPEN**
+(source `stage3c-c3-reactive-replan`, target `main`, base
+`63871cc44b38e7dbb43933ccf8f39037eabdf162`) and **not merged**. The
+implementation commit `0ae3025794ac657ab6e42258c759abea8dc3bc72` is recorded
+here as provenance only; the branch tip has since advanced with docs-only
+commits, so read the tip and PR head live rather than trusting any SHA in this
+document to be current.
+
+Next: conduct the final PR audit before merge — verify the PR diff against the
+approved feature set, confirm source/target and base SHA, inspect CI checks,
+inspect review threads/comments, and confirm no branch drift occurred between
+audit and merge. Merging requires its own explicit authorization; a prior
+approval never carries forward. Only after PR #13 is **merged** may C3 be
+called PUBLISHED, may Stage-3C be marked CLOSED/PUBLISHED, and may the
+published baseline move forward from
+`63871cc44b38e7dbb43933ccf8f39037eabdf162`. **No new runtime qualification run
+is authorized**, and none is needed.
+
+---
+
+### 2026-09-08 Stage-3C C3 Orientation-Constrained Reactive Replan (C3A/C3B/C3C Qualified, Unpublished) — SUPERSEDED by the 2026-09-09 static-correction section above (detail retained)
+
+**Read `PROJECT_STATE.md`'s matching current-authority section first for the
+full architecture, exact numbers, and evidence-path detail — this section
+is operational (what to do next, what's published vs. WIP, what remains)
+and does not restate every metric.**
+
+#### Repository state right now
+
+- **Published (on `main`)**: Stage-3C C0 (direct-FJT TRANSPORT execution),
+  C1 (observe-only future-path monitoring), and C2 (collision-triggered
+  reactive stop, arbitration-corrected). Published baseline HEAD
+  `63871cc44b38e7dbb43933ccf8f39037eabdf162` (`main`, "Merge pull request
+  #12 from Sachin6120/stage3c-c2-collision-stop"). All closed, validated,
+  merged — do not re-litigate their design.
+- **Active feature-branch work, unpublished**: Stage-3C C3 — orientation-
+  constrained reactive replan recovery. Current branch
+  `stage3c-c3-reactive-replan`. Implementation is uncommitted WIP on this
+  branch as of this writing — deliberately not identified by a feature
+  commit SHA here, since none is stable yet; read it live from the branch
+  if needed. **C3A, C3B, and C3C are all now qualified on this branch (see
+  "C3 qualification snapshot" below), i.e. Stage-3C C3 is functionally
+  qualified — but functional qualification is not publication. C3 must not
+  be cited as published until its own Stage-3C C3 publication PR is merged
+  into `main`.**
+
+#### C3 qualification snapshot
+
+- **C3A** (non-trigger parity): **PASS**.
+  `evidence/stage3c_c3a_20260908_125925/`.
+- **C3B** (orientation-constrained collision-triggered recovery):
+  **PASS**. `evidence/stage3c_c3b_20260908_135359/` — this is current
+  runtime authority for C3B. One collision stop, one replan, orientation-
+  constrained replacement plan, replacement executed NATURAL, full cycle
+  SUCCESS, 0 genuine Gazebo obstacle contacts, cleanup clean.
+- **C3C** (second-trigger replan-limit boundary): *HISTORICAL / SUPERSEDED —
+  C3C is now QUALIFIED on preserved runtime evidence; see the 2026-09-09
+  CURRENT AUTHORITY section above and the "C3C RUNTIME-QUALIFIED" bullet later
+  in this same list.* As written at the time: **not runtime
+  qualified**. The `TRANSPORT_REPLAN_LIMIT_REACHED` code path already
+  exists in `transport_coordinator.cpp` but has not been exercised by any
+  evidence run in this repository. Two preserved attempts, **neither a C3
+  production failure** — read `PROJECT_STATE.md`'s matching section for the
+  measured detail:
+  - `evidence/stage3c_c3c_20260909_013351/` — never entered the
+    manipulation window; harness perception-readiness race. Corrected
+    harness-only (two bounded gates); validated, and the next run reached
+    `manipulation_started=true`.
+  - `evidence/stage3c_c3c_20260909_014313/` — reached replacement
+    candidate validation, which **correctly rejected** a stochastic
+    replacement path that collided with the still-live Phase-1 obstacle
+    (`PAYLOAD_COLLISION`). Classification: **qualification-scenario
+    determinism defect**. Attempt 0, SCENE_A, replanning and SCENE_B all
+    behaved as C3B qualified them.
+  - Contact-observer liveness failed in that run for an independent
+    reason (positive control staged 140 mm outside the obstacle's actual
+    sweep). The observer is healthy — **4976** positive-control rows in
+    `evidence/stage3c_c3c_hold_contact_probe_20260909_020320/`. Harness
+    fixed.
+- *Test counts in this bullet are HISTORICAL; current is 244/232/12.*
+  **Pre-replan scene gate implemented (UNPUBLISHED), disabled by default.**
+  `TransportParams::transport_pre_replan_gate_service_name` empty = no gate,
+  which is exactly the C3A/C3B-qualified path. One `std_srvs/srv/Trigger`
+  handshake after State E and before SCENE_A; SCENE_A baseline becomes
+  `max(t_settle, t_gate_done)`; failures return the new
+  `TRANSPORT_PRE_REPLAN_GATE_FAILED`. Tests now **219** colcon / **207** gtest
+  / 12 binaries, 0 failures. HOLD transition proven end to end in
+  **1943.6 ms** with the post-gate freshness invariant causally demonstrated
+  (`evidence/stage3c_c3c_hold_integration_20260909_023230/`); Phase-2 offline
+  proof redone and PASSING
+  (`evidence/stage3c_c3c_phase2_offline_20260909_023529/`). Entity presence
+  migrated off the unreliable `gz model` onto the `/world/empty/pose/info`
+  census (R1 closed,
+  `evidence/stage3c_c3c_r1_pose_census_20260909_021756/`).
+  *HISTORICAL / SUPERSEDED — as written at the time: "C3A/C3B remain
+  qualified; C3C is still NOT runtime-qualified and no full C3C manipulation
+  run has been performed." The authorized run was performed later the same day
+  (`evidence/stage3c_c3c_20260909_024120/`) and C3C is now QUALIFIED on
+  preserved runtime evidence.*
+- *HISTORICAL / SUPERSEDED — the run was subsequently authorized and
+  performed; see the "C3C RUNTIME-QUALIFIED" bullet below. As written at the
+  time:* **No new C3C qualification run is authorized by this task.** The deterministic
+  three-phase scenario needs a Phase-1 → clear-HOLD transition, and
+  measurement shows SCENE_A is reached only **59–119 ms** after the
+  attempt-0 trigger while the fastest available harness-only transition
+  (same-name despawn/respawn) needs **≥1.14 s** — and live-entity pose
+  relocation is impossible because the motion plugin rewrites the pose
+  every physics tick. Closing that race needs a minimal **production**
+  synchronization hook, which this task deliberately did not design or
+  implement. HOLD geometry itself is already derived and validated
+  (1.03 m minimum clearance, 11/12 planning trials) and is reusable.
+- **C3C RUNTIME-QUALIFIED (2026-09-09 closeout).** The single authorized
+  full three-phase run (`evidence/stage3c_c3c_20260909_024120/`) executed
+  the complete intended chain end to end: Attempt-0 trigger → exact cancel
+  → State E → pre-replan gate (1971.021 ms) → HOLD → post-gate SCENE_A
+  (baseline `max(t_settle, t_gate_done)=36.124`) → replacement plan →
+  SCENE_B with HOLD → candidate validation → `FJT_GOAL_ACCEPTED attempt=1`
+  → Phase-2 transition → second trigger (temporal lead **2.300 s**, actual
+  runtime value) → exact second cancel → State E2 →
+  `REPLAN_BUDGET_EXHAUSTED` → `TRANSPORT_REPLAN_LIMIT_REACHED`. The
+  harness's own live verdict was `NEEDS_CORRECTION` on exactly one gate
+  (`second_trigger_limit`) due to a **qualification-tooling parser
+  defect** — `analyze_c3()`'s event-name regex required a trailing space
+  and could not recognize production's colon-delimited
+  `SECOND_TRIGGER_REPLAN_LIMIT_REACHED:` line, which was present and
+  correct in the raw log throughout. Fixed harness-only via
+  `parse_c3_event_name()` (`scripts/test_stage3c_c3.py`), verified
+  byte-identical against preserved C3A/C3B logs
+  (`scripts/test_c3c_event_parser.py`, 12 cases). A **preserved-evidence
+  reanalysis** (`evidence/stage3c_c3c_20260909_024120/qualification_results_reanalysis.json`,
+  `runtime_rerun=false`) independently recomputed all 21 gates from the
+  same raw artifacts: **all 21 PASS**. The original
+  `qualification_results.json` is preserved unmodified at its original
+  `NEEDS_CORRECTION` verdict as the historical parser-defect record; the
+  reanalysis is authoritative for that same runtime execution.
+  **C3A, C3B, and C3C are all now qualified on this branch — Stage-3C C3 is
+  functionally qualified but remains unpublished, uncommitted feature-branch
+  work. No commit, no publication PR, no merge has occurred.**
+
+#### Test authority as of the 2026-09-08 C3B closeout — HISTORICAL / SUPERSEDED
+
+> *Superseded by "Current test authority" in the 2026-09-09 CURRENT AUTHORITY
+> section above: **244** colcon / **232** true gtest / **12** binaries. The
+> 190/202 figures below are the 2026-09-08 snapshot and are NOT current.*
+
+12 gtest binaries, **190** true individual gtest test cases; `colcon
+test-result --all` reports **202** (190 + 12 CTest-executable-level pass
+entries — the same double-counting convention this document's earlier C2
+section used, where 178 = 167 + 11). 0 errors, 0 failures, 0 skipped, live
+this session. No tests removed or renamed.
+
+#### Nonfinite-orientation validation gap — found and fixed this closeout
+
+`TransportCoordinator::validateCandidateTrajectory()`'s tilt check did not
+explicitly reject a NaN/Inf orientation sample (it would silently survive
+`std::clamp()` + `acos()` and then fail the `> 2.0 deg` comparison too,
+passing undetected). Fixed via a new, directly-unit-tested helper
+`tilt_deg_from_up_dot_checked()` that explicitly rejects nonfinite input/
+output with an `ORIENTATION_NONFINITE` diagnostic, before the threshold
+comparison is ever reached. Purely additive: the finite-path math, the 2.0
+deg tilt gate, the 1.8 deg path-constraint tolerance, the free-yaw policy,
+SCENE_A/B, the replan budget, `TransportExecutor`, and C2 arbitration are
+all unchanged. See `PROJECT_STATE.md`'s matching section for the full
+audit trail. **No known C3B production defect remains after this
+correction.**
+
+#### Next phase: C3C DESIGN ONLY — HISTORICAL / SUPERSEDED
+
+> *This was the next step as of 2026-09-08. C3C has since been designed,
+> implemented, run once (`evidence/stage3c_c3c_20260909_024120/`) and
+> QUALIFIED on preserved runtime evidence. The current next step is in the
+> 2026-09-09 CURRENT AUTHORITY section at the top of this file: re-run the
+> final Stage-3C C3 static closeout. Do NOT act on the instructions below.*
+
+C3C objective (do not design the obstacle trajectory itself yet — that is
+a separate, later step):
+
+```
+replacement monitor future-invalidity
+  -> exact replacement-goal FJT cancel
+  -> FJT CANCELED
+  -> six-distinct-sample physical settle
+  -> State E2
+  -> Result::TRANSPORT_REPLAN_LIMIT_REACHED
+  -> no third trajectory
+  -> no PLACE/release/detach/retreat
+  -> payload remains attached
+  -> 0 Gazebo physical contacts
+```
+
+Starting facts already true going into C3C design: attempt-0 collision
+can stop and replan (C3B qualified this); the accepted replacement
+trajectory shape is now known; the one-replan budget is exactly 1; the
+`TRANSPORT_REPLAN_LIMIT_REACHED` result and State E2 capture already exist
+in code (unqualified). C3C must make the replacement monitor trigger
+exactly once and prove the chain above end to end. Do not start C3C
+implementation or design the obstacle scenario until a separately
+authorized task says so.
+
+---
+
+### 2026-09-08 Stage-3C C2 Collision-Triggered Reactive Stop (Arbitration-Corrected) — SUPERSEDED
 
 **Read `PROJECT_STATE.md`'s matching current-authority section first for the
 full architecture, exact numbers, and evidence-path detail — this section is

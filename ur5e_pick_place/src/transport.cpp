@@ -43,6 +43,7 @@
 #include "ur5e_pick_place/moveit_compat.hpp"
 #include "ur5e_pick_place/transport_executor.hpp"
 #include "ur5e_pick_place/transport_path_monitor.hpp"
+#include "ur5e_pick_place/transport_coordinator.hpp"
 
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 
@@ -378,67 +379,29 @@ Result lift_transport_place(
       "released.", p.standoff);
     return Result::PLAN_FAILURE;
   }
-  // Stage-3C C0: TRANSPORT execution goes through a dedicated direct
-  // FollowJointTrajectory client, not MoveGroupInterface::execute() --
-  // see transport_executor.hpp's header for the empirical reason
-  // (Stage-3C Phase 0.1-0.3 proof evidence). Every other leg in this file
-  // (lift, place, retreat, via cartesian_translate) is unaffected and
-  // still calls arm.execute() exactly as before.
+  // Stage-3C C3: TRANSPORT execution and reactive replan recovery coordinated
+  // by TransportCoordinator.
   {
-    TransportExecutionParams exec_params;
-    exec_params.fjt_action_name = p.transport_fjt_action_name;
-    exec_params.controller_name = p.transport_controller_name;
-    exec_params.controller_wait_timeout_s = p.transport_controller_wait_timeout_s;
-    exec_params.allowed_start_tolerance_rad = p.transport_allowed_start_tolerance_rad;
-    exec_params.execution_duration_scaling = p.transport_execution_duration_scaling;
-    exec_params.goal_duration_margin_s = p.transport_goal_duration_margin_s;
-    exec_params.joint_states_topic = p.joint_states_topic;
-    exec_params.stationary_velocity_eps_rad_s = p.stationary_velocity_eps_rad_s;
-    exec_params.stationary_consecutive_samples = p.stationary_consecutive_samples;
-    exec_params.stationary_timeout_s = p.stationary_timeout_s;
-    TransportExecutor executor(node, exec_params);
-
-    double max_start_error_rad = 0.0;
-    const Result validate_result = executor.preSendValidate(
-      plan.trajectory.joint_trajectory, arm, max_start_error_rad);
-    if (!ok(validate_result)) {
-      return validate_result;
-    }
-
-    // Stage-3C C1: OBSERVE-ONLY future-path monitoring runs concurrently
-    // with executeAndWait() below, watching the SAME planned trajectory
-    // against the live Stage-3B PlanningScene. It never cancels, stops, or
-    // replans -- see transport_path_monitor.hpp's C1 SCOPE note. It is a
-    // local object with the same lifetime discipline as `executor` above:
-    // stop() is called (joining its worker thread) before this block ends,
-    // on every path, so no monitor thread or callback can ever outlive it.
-    TransportMonitorParams monitor_params;
-    monitor_params.enabled = p.transport_monitor_enabled;
-    monitor_params.rate_hz = p.transport_monitor_rate_hz;
-    monitor_params.future_sample_dt_s = p.transport_monitor_future_sample_dt_s;
-    monitor_params.scene_service_name = p.transport_monitor_scene_service_name;
-    auto stop_signal = std::make_shared<TransportReactiveStopSignal>(
-      p.transport_reactive_stop_enabled);
-    TransportPathMonitor monitor(node, arm.getRobotModel(), monitor_params, stop_signal);
-    monitor.start(plan.trajectory.joint_trajectory);
-
-    const Result exec_result = executor.executeAndWait(plan.trajectory.joint_trajectory, stop_signal);
-    monitor.stop();
-    if (exec_result == Result::TRANSPORT_COLLISION_STOPPED) {
-      RCLCPP_INFO(
-        node->get_logger(),
-        "M3 C2 TRANSPORT_COLLISION_STOPPED: monitor_joined=1 place_planning=0 "
-        "place_execution=0 release=0 detach=0 retreat=0 replan_count=0; "
-        "returning at Stage 4 with payload attachment retained.");
-      return exec_result;
-    }
-    if (!ok(exec_result)) {
-      RCLCPP_ERROR(
-        node->get_logger(),
-        "%s: direct-FJT transport execution failed (fjt_error_code=%d fjt_error_string=\"%s\").",
-        to_string(exec_result), executor.lastFjtErrorCode(),
-        executor.lastFjtErrorString().c_str());
-      return exec_result;
+    TransportCoordinator coordinator(node, arm, p, above_place, p.planning_scene_manager);
+    const Result transport_result = coordinator.executeTransport(plan);
+    if (!ok(transport_result)) {
+      if (transport_result == Result::TRANSPORT_COLLISION_STOPPED ||
+        transport_result == Result::TRANSPORT_REPLAN_LIMIT_REACHED)
+      {
+        RCLCPP_INFO(
+          node->get_logger(),
+          "M3 C3 %s: monitor_joined=1 place_planning=0 "
+          "place_execution=0 release=0 detach=0 retreat=0 replan_count=%d; "
+          "returning at Stage 4 with payload attachment retained.",
+          to_string(transport_result),
+          coordinator.telemetry().replan_count);
+      } else {
+        RCLCPP_ERROR(
+          node->get_logger(),
+          "%s: direct-FJT transport execution failed.",
+          to_string(transport_result));
+      }
+      return transport_result;
     }
   }
   mark(
