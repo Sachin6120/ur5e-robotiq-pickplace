@@ -40,7 +40,7 @@ as instructions.
 | C3C | **QUALIFIED** on preserved runtime evidence, via preserved-evidence reanalysis **v2** (`runtime_rerun=false`) |
 | C3 overall | **FUNCTIONALLY QUALIFIED** on the tested scenario. Static corrections and the repeat final closeout have **PASSED** (2026-09-09); still not published |
 | C3 commit state | **COMMITTED ON FEATURE BRANCH** / **PUSHED TO ORIGIN FEATURE BRANCH** (`origin/stage3c-c3-reactive-replan`) / **NOT MERGED** / **UNPUBLISHED**. A branch existing on `origin` is publication of a *branch*, not of Stage-3C — nothing is published until the PR merges into `main`. Deliberately identified by branch, not by a mutable SHA: read the tip live. |
-| PR state | **NOT YET OPENED** — source `stage3c-c3-reactive-replan`, target `main` |
+| PR state | **OPEN — PR #13** ("Stage-3C C3: collision-triggered stop and single reactive replan"), source `stage3c-c3-reactive-replan`, target `main`. Not merged. |
 | Stage-3C | **NOT YET CLOSED / NOT PUBLISHED** |
 | Original C3C runtime result | `NEEDS_CORRECTION`, caused by a qualification-tooling parser defect |
 | Preserved-evidence reanalysis | **PASS**, `runtime_rerun=false` (v1 and v2, see below) |
