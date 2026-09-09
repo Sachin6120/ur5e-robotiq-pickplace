@@ -31,6 +31,18 @@ std::string result_code_to_string(rclcpp_action::ResultCode code)
 using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
 using FjtGoalHandle = rclcpp_action::ClientGoalHandle<FollowJointTrajectory>;
 
+// Stage-3C C3C: single formatting site for a goal UUID as lowercase hex,
+// shared by the pre-existing cancellation telemetry and the new
+// attempt-aware FJT_* observational telemetry -- previously this exact
+// formatting was inlined only at the cancellation call site.
+std::string format_goal_uuid(const rclcpp_action::GoalUUID & id)
+{
+  std::ostringstream uuid;
+  uuid << std::hex << std::setfill('0');
+  for (auto byte : id) {uuid << std::setw(2) << static_cast<unsigned>(byte);}
+  return uuid.str();
+}
+
 // C0.3: heap-allocated, shared_ptr-refcounted state for every async
 // callback executeAndWait() registers. Captured BY VALUE (a copy of the
 // shared_ptr, not the pointee) in every callback, so a callback that
@@ -350,7 +362,8 @@ Result TransportExecutor::preSendValidate(
 
 Result TransportExecutor::executeAndWait(
   const trajectory_msgs::msg::JointTrajectory & trajectory,
-  std::shared_ptr<TransportReactiveStopSignal> stop_signal)
+  std::shared_ptr<TransportReactiveStopSignal> stop_signal,
+  int attempt)
 {
   const auto logger = node_->get_logger();
   if (state_ != TransportExecutionState::PRE_SEND_VALIDATED) {
@@ -375,11 +388,18 @@ Result TransportExecutor::executeAndWait(
 
   rclcpp_action::Client<FollowJointTrajectory>::SendGoalOptions send_opts;
   send_opts.goal_response_callback =
-    [state](FjtGoalHandle::SharedPtr gh) {
+    [state, attempt](FjtGoalHandle::SharedPtr gh) {
       state->goal_accepted = (gh != nullptr);
       RCLCPP_INFO(
         state->node->get_logger(), "M3 C0 TRANSPORT_EXECUTOR t_fjt_goal_accept=%.6f accepted=%d",
         state->node->now().seconds(), state->goal_accepted.load());
+      // Stage-3C C3C: observational only -- does not affect goal_accepted,
+      // goal_response_done, or any control-flow decision below.
+      if (gh) {
+        RCLCPP_INFO(
+          state->node->get_logger(), "M3 C3 FJT_GOAL_ACCEPTED attempt=%d goal_uuid=%s",
+          attempt, format_goal_uuid(gh->get_goal_id()).c_str());
+      }
       state->goal_response_done = true;
     };
   send_opts.result_callback =
@@ -415,6 +435,7 @@ Result TransportExecutor::executeAndWait(
     std::chrono::duration_cast<TransportClock::duration>(
       std::chrono::duration<double>(last_watchdog_limit_s_)));
   RCLCPP_INFO(logger, "M3 C0 TRANSPORT_EXECUTOR t_fjt_goal_send=%.6f", node_->now().seconds());
+  RCLCPP_INFO(logger, "M3 C3 FJT_SEND_REQUEST attempt=%d", attempt);
   auto send_goal_future = fjt_client_->async_send_goal(goal, send_opts);
   state_ = TransportExecutionState::EXECUTING;
 
@@ -440,6 +461,7 @@ Result TransportExecutor::executeAndWait(
   }
   auto goal_handle = send_goal_future.get();
   const auto goal_uuid = goal_handle->get_goal_id();
+  const std::string goal_uuid_string = format_goal_uuid(goal_uuid);
 
   stop_signal->goalAccepted();
   RCLCPP_INFO(
@@ -467,10 +489,7 @@ Result TransportExecutor::executeAndWait(
         "watchdog_limit_s=%.6f; WATCHDOG_CLEANUP cancellation (not a collision trigger).",
         node_->now().seconds(), last_watchdog_limit_s_);
     }
-    std::ostringstream uuid;
-    uuid << std::hex << std::setfill('0');
-    for (auto byte : goal_uuid) {uuid << std::setw(2) << static_cast<unsigned>(byte);}
-    const std::string uuid_string = uuid.str();
+    const std::string & uuid_string = goal_uuid_string;
     sensor_msgs::msg::JointState::ConstSharedPtr immediate_sample;
     {
       std::lock_guard<std::mutex> lock(joint_state_state_->mutex);
@@ -532,6 +551,12 @@ Result TransportExecutor::executeAndWait(
       label.c_str(), terminal_observed, t_terminal, result_code_to_string(terminal.code).c_str(),
       terminal.error_code, terminal.error_string.c_str(),
       terminal_observed ? (t_terminal - t_cancel) * 1000.0 : -1.0);
+    // Stage-3C C3C: attempt-aware mirror of the terminal above, observational
+    // only -- `label` (COLLISION_STOP/WATCHDOG_CLEANUP) is reused verbatim as
+    // `cause`, not reclassified.
+    RCLCPP_INFO(logger,
+      "M3 C3 FJT_TERMINAL attempt=%d goal_uuid=%s cause=%s action_status=%s",
+      attempt, uuid_string.c_str(), label.c_str(), result_code_to_string(terminal.code).c_str());
 
     // C0 authority is unchanged: six DISTINCT messages, true running maximum,
     // velocity epsilon 1e-3. Observe even on unconfirmed cancel/terminal timeout,
@@ -593,6 +618,19 @@ Result TransportExecutor::executeAndWait(
       "original_target_max_error_rad=%.12f state_e_sample_stamp=%.9f",
       captured, max_delta, target_error,
       settled_sample ? rclcpp::Time(settled_sample->header.stamp).seconds() : -1.0);
+    last_settled_state_e_ = SettledStateE{};
+    if (captured) {
+      last_settled_state_e_.captured = true;
+      last_settled_state_e_.joint_names = trajectory.joint_names;
+      last_settled_state_e_.positions.resize(trajectory.joint_names.size());
+      last_settled_state_e_.stamp = settled_sample ? rclcpp::Time(settled_sample->header.stamp) : rclcpp::Time(0, 0, RCL_ROS_TIME);
+      for (std::size_t i = 0; i < trajectory.joint_names.size(); ++i) {
+        const auto & name = trajectory.joint_names[i];
+        const auto it = std::find(settled_sample->name.begin(), settled_sample->name.end(), name);
+        const auto idx = static_cast<std::size_t>(std::distance(settled_sample->name.begin(), it));
+        last_settled_state_e_.positions[i] = settled_sample->position[idx];
+      }
+    }
     state_ = TransportExecutionState::FAILED;  // deliberate stop is not manipulation SUCCESS
     if (collision) {
       const auto result = collision_stop_result(last_cancel_confirmed_,
@@ -620,6 +658,11 @@ Result TransportExecutor::executeAndWait(
   RCLCPP_INFO(
     logger, "M3 C0 TRANSPORT_EXECUTOR t_transport_execution_done=%.6f execution_elapsed_s=%.6f",
     node_->now().seconds(), last_execution_elapsed_s_);
+  // Stage-3C C3C: observational mirror of the collision/watchdog FJT_TERMINAL
+  // line above, for the natural (no reactive stop) completion path.
+  RCLCPP_INFO(logger,
+    "M3 C3 FJT_TERMINAL attempt=%d goal_uuid=%s cause=NATURAL action_status=%s",
+    attempt, goal_uuid_string.c_str(), result_code_to_string(terminal.code).c_str());
 
   if (terminal.code != rclcpp_action::ResultCode::SUCCEEDED ||
     terminal.error_code != control_msgs::action::FollowJointTrajectory::Result::SUCCESSFUL)

@@ -840,6 +840,10 @@ int main(int argc, char ** argv)
   double transport_monitor_rate_hz = 10.0;
   double transport_monitor_future_sample_dt_s = 0.05;
   std::string transport_monitor_scene_service_name = "/get_planning_scene";
+  // Stage-3C C3 OPTIONAL pre-replan scene gate. Empty name = disabled, which
+  // is the qualified C3A/C3B behavior: no client, no discovery, no wait.
+  std::string transport_pre_replan_gate_service_name = "";
+  double transport_pre_replan_gate_timeout_s = 5.0;
   std::string csv_path = "m3_grasp.csv";
   std::string grasp_mode = "friction";
   std::string gt_wrist3_link_name = "wrist_3_link";
@@ -1044,6 +1048,12 @@ int main(int argc, char ** argv)
   node->get_parameter_or(
     "transport_monitor_scene_service_name", transport_monitor_scene_service_name,
     transport_monitor_scene_service_name);
+  node->get_parameter_or(
+    "transport_pre_replan_gate_service_name", transport_pre_replan_gate_service_name,
+    transport_pre_replan_gate_service_name);
+  node->get_parameter_or(
+    "transport_pre_replan_gate_timeout_s", transport_pre_replan_gate_timeout_s,
+    transport_pre_replan_gate_timeout_s);
   node->get_parameter_or("csv_path", csv_path, csv_path);
   node->get_parameter_or("grasp_mode", grasp_mode, grasp_mode);
   node->get_parameter_or("gt_wrist3_link_name", gt_wrist3_link_name, gt_wrist3_link_name);
@@ -2758,6 +2768,8 @@ int main(int argc, char ** argv)
         tp.transport_monitor_rate_hz = transport_monitor_rate_hz;
         tp.transport_monitor_future_sample_dt_s = transport_monitor_future_sample_dt_s;
         tp.transport_monitor_scene_service_name = transport_monitor_scene_service_name;
+        tp.transport_pre_replan_gate_service_name = transport_pre_replan_gate_service_name;
+        tp.transport_pre_replan_gate_timeout_s = transport_pre_replan_gate_timeout_s;
         // C0.1: watchdog-cleanup physical-settle confirmation reuses these
         // existing, already-parsed startup-stationarity parameters verbatim
         // -- see transport_executor.hpp's C0.1 class header note.
@@ -2897,7 +2909,8 @@ int main(int argc, char ** argv)
             transport_result == Result::TRANSPORT_PHYSICAL_SETTLE_TIMEOUT ||
             transport_result == Result::TRANSPORT_EXECUTION_WATCHDOG_TIMEOUT ||
             transport_result == Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED ||
-            transport_result == Result::TRANSPORT_FJT_EXECUTION_FAILED)
+            transport_result == Result::TRANSPORT_FJT_EXECUTION_FAILED ||
+            transport_result == Result::TRANSPORT_REPLAN_LIMIT_REACHED)
           {
             place_release_attempted = false;
           }

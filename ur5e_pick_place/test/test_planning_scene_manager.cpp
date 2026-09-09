@@ -4,6 +4,11 @@
 
 #include <geometric_shapes/shapes.h>
 #include <moveit/planning_scene/planning_scene.hpp>
+#include <moveit_msgs/msg/attached_collision_object.hpp>
+#include <moveit_msgs/msg/link_padding.hpp>
+#include <moveit_msgs/msg/link_scale.hpp>
+#include <moveit_msgs/msg/planning_scene.hpp>
+#include <string>
 #include <moveit/robot_model/robot_model.hpp>
 #include <srdfdom/srdfdom/model.h>
 #include <urdf_parser/urdf_parser.h>
@@ -654,6 +659,221 @@ TEST(PlanningSceneManager, CloneStatePreservesAttachedBodiesAndUpdatesArmAndGrip
   regression_scene->setCurrentState(measured_state);  // Old bug
   EXPECT_FALSE(regression_scene->getCurrentState().hasAttachedBody("pick_target"));
   EXPECT_EQ(regression_scene->getCurrentState().getAttachedBody("pick_target"), nullptr);
+}
+
+
+// ===========================================================================
+// Stage-3C C3 STATIC-CLOSEOUT CORRECTION D — same-snapshot scene integrity
+// ===========================================================================
+//
+// Before this correction, TransportCoordinator retained one PlanningScene
+// snapshot for replacement planning but called verifyExpectedScene(), which
+// fetches a SECOND scene from /get_planning_scene. The table / touch-link /
+// ACM properties it proved therefore belonged to that second scene, not to the
+// retained one. verifyExpectedSceneSnapshot() is the same set of checks bound
+// to a snapshot the caller supplies: it makes no service call, so what it
+// proves is proven about THAT snapshot.
+//
+// Each test below builds a defective snapshot A (the one that would be
+// retained) alongside a correct snapshot B (the one the service would return)
+// and requires that validating A fails.
+
+namespace
+{
+moveit_msgs::msg::PlanningScene makeExpectedSnapshot()
+{
+  moveit_msgs::msg::PlanningScene scene;
+  scene.world.collision_objects.push_back(PlanningSceneManager::makeTable("world"));
+
+  moveit_msgs::msg::AttachedCollisionObject attached;
+  attached.link_name = "gripper_base_link";
+  attached.object.id = "pick_target";
+  attached.object.header.frame_id = "world";
+  attached.touch_links = PlanningSceneManager::padTouchLinks();
+  scene.robot_state.attached_collision_objects.push_back(attached);
+
+  PlanningSceneManager::setPair(
+    scene.allowed_collision_matrix, "table", "base_link_inertia", true);
+  return scene;
+}
+
+PlanningSceneManager::ExpectedSceneSpec attachedSpec()
+{
+  PlanningSceneManager::ExpectedSceneSpec spec;
+  spec.world_frame = "world";
+  spec.target_state = ur5e_pick_place::SceneTargetState::ATTACHED;
+  // SCENE_A/SCENE_B do not request LINK_PADDING_AND_SCALING; the coordinator
+  // passes exactly this flag for the same reason.
+  spec.check_link_padding_and_scaling = false;
+  return spec;
+}
+}  // namespace
+
+TEST(PlanningSceneManagerSnapshot, CorrectSnapshotPasses)
+{
+  const auto scene = makeExpectedSnapshot();
+  std::string error;
+  EXPECT_TRUE(PlanningSceneManager::verifyExpectedSceneSnapshot(scene, attachedSpec(), error))
+    << error;
+  EXPECT_TRUE(error.empty());
+}
+
+// Bad table in the RETAINED snapshot; a later correct service response exists.
+// The retained snapshot must be rejected.
+TEST(PlanningSceneManagerSnapshot, BadTableInRetainedSnapshotRejected)
+{
+  auto snapshot_a = makeExpectedSnapshot();
+  snapshot_a.world.collision_objects[0].primitives[0].dimensions[0] = 1.50;  // wrong X
+  const auto snapshot_b = makeExpectedSnapshot();  // what a second fetch would return
+
+  std::string error_a;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_a, attachedSpec(), error_a));
+  EXPECT_EQ(error_a, "SCENE_STALE_TABLE");
+
+  std::string error_b;
+  EXPECT_TRUE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_b, attachedSpec(), error_b))
+    << error_b;
+}
+
+TEST(PlanningSceneManagerSnapshot, MissingTableInRetainedSnapshotRejected)
+{
+  auto snapshot_a = makeExpectedSnapshot();
+  snapshot_a.world.collision_objects.clear();
+  std::string error;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_a, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_TABLE");
+}
+
+TEST(PlanningSceneManagerSnapshot, WrongTablePoseInRetainedSnapshotRejected)
+{
+  auto snapshot_a = makeExpectedSnapshot();
+  snapshot_a.world.collision_objects[0].primitive_poses[0].position.y = 0.10;
+  std::string error;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_a, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_TABLE");
+}
+
+// Bad ACM in the RETAINED snapshot; the correct service response must not
+// rescue it.
+TEST(PlanningSceneManagerSnapshot, BadAcmInRetainedSnapshotRejected)
+{
+  auto snapshot_a = makeExpectedSnapshot();
+  PlanningSceneManager::setPair(
+    snapshot_a.allowed_collision_matrix, "table", "base_link_inertia", false);
+  const auto snapshot_b = makeExpectedSnapshot();
+
+  std::string error_a;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_a, attachedSpec(), error_a));
+  EXPECT_EQ(error_a, "SCENE_STALE_ACM_P");
+
+  std::string error_b;
+  EXPECT_TRUE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_b, attachedSpec(), error_b))
+    << error_b;
+}
+
+TEST(PlanningSceneManagerSnapshot, AbsentAcmEntryInRetainedSnapshotRejected)
+{
+  auto snapshot_a = makeExpectedSnapshot();
+  snapshot_a.allowed_collision_matrix = moveit_msgs::msg::AllowedCollisionMatrix();
+  std::string error;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(snapshot_a, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_ACM_P");
+}
+
+// Touch links / attachment parent, bound to the retained snapshot.
+TEST(PlanningSceneManagerSnapshot, BadOrMissingTouchLinksInRetainedSnapshotRejected)
+{
+  auto truncated = makeExpectedSnapshot();
+  truncated.robot_state.attached_collision_objects[0].touch_links = {"pad_fixed_link"};
+  std::string error;
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(truncated, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_ATTACHMENT");
+
+  auto missing = makeExpectedSnapshot();
+  missing.robot_state.attached_collision_objects[0].touch_links.clear();
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(missing, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_ATTACHMENT");
+
+  auto wrong_parent = makeExpectedSnapshot();
+  wrong_parent.robot_state.attached_collision_objects[0].link_name = "tool0";
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(wrong_parent, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_ATTACHMENT");
+
+  auto detached = makeExpectedSnapshot();
+  detached.robot_state.attached_collision_objects.clear();
+  EXPECT_FALSE(
+    PlanningSceneManager::verifyExpectedSceneSnapshot(detached, attachedSpec(), error));
+  EXPECT_EQ(error, "SCENE_STALE_TARGET_STATE");
+}
+
+// The padding/scale section is only asserted when the snapshot actually
+// carries it -- explicit, not vacuous. verifyExpectedScene()'s own fetch DOES
+// request LINK_PADDING_AND_SCALING, so its behavior is unchanged (spec default
+// is true).
+TEST(PlanningSceneManagerSnapshot, LinkPaddingCheckedOnlyWhenSnapshotCarriesIt)
+{
+  auto scene = makeExpectedSnapshot();
+  moveit_msgs::msg::LinkPadding bad_padding;
+  bad_padding.link_name = "pad_fixed_link";
+  bad_padding.padding = 0.01;
+  scene.link_padding.push_back(bad_padding);
+
+  auto spec = attachedSpec();
+  std::string error;
+  EXPECT_TRUE(PlanningSceneManager::verifyExpectedSceneSnapshot(scene, spec, error)) << error;
+
+  spec.check_link_padding_and_scaling = true;  // the verifyExpectedScene() default
+  EXPECT_FALSE(PlanningSceneManager::verifyExpectedSceneSnapshot(scene, spec, error));
+  EXPECT_EQ(error, "SCENE_PADDING_NOT_ZERO");
+
+  moveit_msgs::msg::LinkScale bad_scale;
+  bad_scale.link_name = "pad_moving_link";
+  bad_scale.scale = 1.5;
+  auto scaled = makeExpectedSnapshot();
+  scaled.link_scale.push_back(bad_scale);
+  EXPECT_FALSE(PlanningSceneManager::verifyExpectedSceneSnapshot(scaled, spec, error));
+  EXPECT_EQ(error, "SCENE_SCALE_NOT_ONE");
+}
+
+// A snapshot verified as WORLD-state must carry the world target at the
+// expected pose -- the same expectations, still snapshot-bound.
+TEST(PlanningSceneManagerSnapshot, WorldTargetStateBoundToSnapshot)
+{
+  geometry_msgs::msg::Pose target_pose;
+  target_pose.position.x = 0.45;
+  target_pose.position.y = -0.15;
+  target_pose.position.z = 0.7725;
+  target_pose.orientation.w = 1.0;
+
+  auto scene = makeExpectedSnapshot();
+  scene.robot_state.attached_collision_objects.clear();
+  scene.world.collision_objects.push_back(
+    PlanningSceneManager::makeTarget("world", target_pose,
+      ur5e_pick_place::TargetPoseSource::PRODUCTION_PERCEPTION));
+
+  PlanningSceneManager::ExpectedSceneSpec spec;
+  spec.world_frame = "world";
+  spec.target_state = ur5e_pick_place::SceneTargetState::WORLD;
+  spec.target_pose = target_pose;
+  spec.check_link_padding_and_scaling = false;
+
+  std::string error;
+  EXPECT_TRUE(PlanningSceneManager::verifyExpectedSceneSnapshot(scene, spec, error)) << error;
+
+  auto moved = scene;
+  moved.world.collision_objects.back().primitive_poses[0].position.y += 0.02;
+  EXPECT_FALSE(PlanningSceneManager::verifyExpectedSceneSnapshot(moved, spec, error));
+  EXPECT_EQ(error, "SCENE_STALE_TARGET_POSE");
 }
 
 }  // namespace

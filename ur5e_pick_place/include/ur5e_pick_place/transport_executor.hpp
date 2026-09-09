@@ -171,6 +171,15 @@ struct TransportExecutionParams
   double stationary_timeout_s = 25.0;
 };
 
+// Stage-3C C3: Typed settled state captured strictly after physical settle confirmation
+struct SettledStateE
+{
+  bool captured{false};
+  std::vector<std::string> joint_names;
+  std::vector<double> positions;
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
+};
+
 // True iff a sample carrying `current_seq` has not already been
 // evaluated by a caller that has processed everything through
 // `last_seen_seq`. This is the ENTIRE mechanism (C0.3) that prevents a
@@ -297,9 +306,20 @@ public:
   // execution-duration watchdog armed, and returns a typed Result. Must
   // be called only after preSendValidate() returned Result::SUCCESS.
   // Blocks the calling thread; see the class header for the thread model.
+  //
+  // `attempt` is Stage-3C C3 OBSERVATIONAL telemetry only (default 0
+  // preserves the pre-C3C call signature for any other caller): it is
+  // never used for control flow, branching, or the cancellation/settle
+  // logic below -- it is stamped verbatim onto the new
+  // FJT_SEND_REQUEST/FJT_GOAL_ACCEPTED/FJT_TERMINAL log lines so a
+  // qualification harness can distinguish attempt-0 (initial) from
+  // attempt-1 (replacement) FJT goals without relying on log-line
+  // chronology alone. TransportExecutor remains the sole FJT goal owner
+  // and the sole async_cancel_goal() caller regardless of this value.
   Result executeAndWait(
     const trajectory_msgs::msg::JointTrajectory & trajectory,
-    std::shared_ptr<TransportReactiveStopSignal> stop_signal = nullptr);
+    std::shared_ptr<TransportReactiveStopSignal> stop_signal = nullptr,
+    int attempt = 0);
 
   TransportExecutionState state() const { return state_; }
   int32_t lastFjtErrorCode() const { return last_fjt_error_code_; }
@@ -325,6 +345,9 @@ public:
   // mean the arm kept moving -- only that cancellation itself could not
   // be confirmed; settle observation still runs regardless (fail-safe).
   bool lastWatchdogCancelConfirmed() const { return last_cancel_confirmed_; }
+
+  // Stage-3C C3: Settled state E measured strictly after physical settle
+  const SettledStateE & lastSettledStateE() const { return last_settled_state_e_; }
 
 private:
   using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
@@ -374,6 +397,7 @@ private:
   double last_settle_elapsed_s_{0.0};
   int last_settle_consecutive_achieved_{0};
   bool last_cancel_confirmed_{false};
+  SettledStateE last_settled_state_e_{};
 };
 
 }  // namespace ur5e_pick_place

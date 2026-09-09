@@ -115,7 +115,25 @@ enum class Result
                                // this value means the stop cannot be attributed to
                                // the watchdog's own cancel request with certainty
   TRANSPORT_COLLISION_STOPPED, // exact cancel + CANCELED + physical settle + actual state E
-  TRANSPORT_COLLISION_CANCEL_UNCONFIRMED // exact-goal collision cancel proof absent
+  TRANSPORT_COLLISION_CANCEL_UNCONFIRMED, // exact-goal collision cancel proof absent
+  TRANSPORT_REPLAN_LIMIT_REACHED, // second future-path collision + cancel + settle + state E2 + replan limit reached
+  TRANSPORT_PRE_REPLAN_GATE_FAILED // the OPTIONAL pre-replan scene gate
+                               // (transport_pre_replan_gate_service_name, empty and
+                               // therefore inert by default) was enabled but did not
+                               // complete: the service was unavailable, the request
+                               // could not be sent, no response arrived within
+                               // transport_pre_replan_gate_timeout_s, the responder
+                               // reported success=false, or the node shut down while
+                               // waiting. Deliberately its OWN variant and NOT
+                               // SCENE_STALE_OR_CORRUPT: nothing about the planning
+                               // scene's integrity is being asserted here -- an
+                               // external environment manager simply never confirmed
+                               // the world transition it was asked to perform, and
+                               // conflating the two would make an infrastructure
+                               // stall indistinguishable from a genuine scene-
+                               // integrity failure in the evidence. No SCENE_A
+                               // acquisition, no replacement plan, and no second FJT
+                               // goal occur after this; the payload stays attached.
 };
 
 inline const char * to_string(Result r)
@@ -156,6 +174,8 @@ inline const char * to_string(Result r)
     case Result::TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED: return "TRANSPORT_WATCHDOG_CANCEL_UNCONFIRMED";
     case Result::TRANSPORT_COLLISION_STOPPED: return "TRANSPORT_COLLISION_STOPPED";
     case Result::TRANSPORT_COLLISION_CANCEL_UNCONFIRMED: return "TRANSPORT_COLLISION_CANCEL_UNCONFIRMED";
+    case Result::TRANSPORT_REPLAN_LIMIT_REACHED: return "TRANSPORT_REPLAN_LIMIT_REACHED";
+    case Result::TRANSPORT_PRE_REPLAN_GATE_FAILED: return "TRANSPORT_PRE_REPLAN_GATE_FAILED";
   }
   // Unreachable for a well-formed Result. Deliberately NOT "UNKNOWN" as a
   // default case inside the switch: leaving the switch exhaustive means the
