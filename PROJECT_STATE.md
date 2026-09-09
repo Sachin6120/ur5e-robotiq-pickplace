@@ -1,5 +1,101 @@
 # PROJECT_STATE.md
 
+## 2026-09-09 Stage-3C C3 Post-Merge Publication Closeout — CURRENT AUTHORITY (READ THIS FIRST)
+
+**This is the sole current authority. It supersedes every authority label,
+state, and next-step instruction in the historical sections below, including
+the earlier same-day Static-Correction Closeout.** Those sections are retained
+unchanged as qualification and engineering history. Their pre-merge publication
+statements and review/merge instructions are no longer active.
+
+### Published state and immutable identity
+
+| Item | Current authority |
+| --- | --- |
+| Branch | `main` |
+| PR #13 | **MERGED** — Stage-3C C3: collision-triggered stop and single reactive replan |
+| C3A | **QUALIFIED / PUBLISHED** |
+| C3B | **QUALIFIED / PUBLISHED** |
+| C3C | **QUALIFIED / PUBLISHED** via preserved-evidence reanalysis **v2**, `runtime_rerun=false` |
+| C3 overall | **FUNCTIONALLY QUALIFIED / PUBLISHED** on the tested scenario |
+| Stage-3C | **CLOSED / PUBLISHED** |
+| Immutable Stage-3C publication merge commit | `3220d8fb5ad51b2f510f61e64a352d1f6d737d22` |
+| Previous published baseline / merge parent 1 | `63871cc44b38e7dbb43933ccf8f39037eabdf162` |
+| Reviewed feature head / merge parent 2 | `4477485f4656609f35060decbafded64bff349ec` |
+| Identical merge and reviewed PR-head tree | `60f9e25c0a865249c68405f9e94b92fcad5e03d6` |
+
+Post-merge Git verification: after `git fetch origin`, `origin/main` and
+`origin/stage3c-c3-reactive-replan` matched the merge and feature identities
+above. `git show --no-patch --pretty=raw` confirmed exactly those two parents;
+`git rev-parse <commit>^{tree}` confirmed identical trees. Local `main` was
+fast-forwarded to the publication merge before these documentation changes.
+A later docs-only closeout commit may advance `main`; it does **not** redefine
+the immutable Stage-3C publication merge SHA.
+
+### Retained qualification and test authority
+
+Publication rests on preserved runtime evidence, the parser/reanalysis
+correction, strengthened Phase-2 causal proof, static hardening, repeat final
+closeout, and PR #13 review and merge. No qualification is restarted here.
+
+- C3A: `evidence/stage3c_c3a_20260908_125925/`, qualified.
+- C3B: `evidence/stage3c_c3b_20260908_135359/`, qualified.
+- C3C: `evidence/stage3c_c3c_20260909_024120/`.
+  Original `qualification_results.json`: **NEEDS_CORRECTION**, caused by a
+  qualification parser defect. Preserved-evidence reanalysis v1
+  (`qualification_results_reanalysis.json`): **PASS**. Reanalysis v2
+  (`qualification_results_reanalysis_v2.json`): **PASS**, with the strengthened
+  Phase-2 causal-order proof. Both retain `runtime_rerun=false`; the original
+  result and all historical evidence remain unmodified.
+- Current test authority remains **244 CTest / 232 true gtests / 12 binaries /
+  0 failures / 0 errors / 0 skips**, from the 2026-09-09 repeat final
+  static-correction closeout recorded below. No tests, Gazebo, or manipulation
+  were rerun for this Markdown-only publication closeout.
+
+### Preserved final C3C runtime summary
+
+Authority: the C3C evidence directory above, its `m3_grasp.log`,
+`m3_grasp.csv`, `gazebo_obstacle_contacts.csv`,
+`contact_observer_liveness.json`, and preserved-evidence reanalysis v2.
+
+- Attempt 0: future collision → exact UUID cancel →
+  `CANCELED/COLLISION_STOP` → physical settle → State E.
+- Replacement: pre-replan gate → fresh SCENE_A → one orientation-constrained
+  replacement plan → fresh SCENE_B → candidate validation → Attempt 1.
+- Attempt 1: future collision → exact UUID cancel →
+  `CANCELED/COLLISION_STOP` → physical settle → State E2 →
+  `TRANSPORT_REPLAN_LIMIT_REACHED`.
+- Exactly **2 accepted FJT goals**, **1 replacement plan**, **0 third goals**.
+- After final stop: **PLACE = 0, release = 0, detach = 0, retreat = 0**.
+- Physical-contact authority: **in-window contacts = 0**; same-observer
+  positive-control liveness proven (**>0**).
+
+### Supported scope and limits
+
+Transport-only, one reactive replan, maximum two FJT attempts, approximately
+10 Hz periodic future-path monitoring, 0.05 s discrete future sampling, exact
+cancellation, physical settle, fresh SCENE_A / SCENE_B, orientation-constrained
+replacement, and zero in-window obstacle contacts in qualification. Monitoring
+and sampling authority is retained in the Stage-3C C1 detail below; C3 runtime
+authority is the preserved evidence cited above.
+
+This qualification does not establish continuous collision detection,
+prediction, safety certification, guaranteed stopping distance, multiple
+replans, dynamic-goal adaptation, full SO(3), or multi-object generality.
+
+### Active next step
+
+**Stage-3C is CLOSED / PUBLISHED.** The docs-only closeout commit is prepared
+locally for a final documentation push; pushing requires a separate explicit
+instruction and is not part of this closeout. Any future project phase must
+start from the published Stage-3C baseline identified above. No Stage-3D scope
+is defined or authorized here.
+
+---
+
+> HISTORICAL / SUPERSEDED: All sections below, including their authority
+> labels and opening reading instructions, are preserved historical text.
+
 ## Project
 
 UR5e + Robotiq 2F-85 pick-and-place simulation.
